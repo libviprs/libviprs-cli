@@ -1,0 +1,13 @@
+[package]
+name = "libviprs-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[[bin]]
+name = "viprs"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+libviprs = { path = "../libviprs", features = ["pdfium"] }
