@@ -1,1 +1,35 @@
-/target
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.exe
+*.pdb
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Temporary files
+/tmp/
+*.tmp
+*.bak
+*.log
