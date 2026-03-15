@@ -1,4 +1,13 @@
-# libviprs-cli
+<p align="center">
+  <img src="https://raw.githubusercontent.com/libviprs/libviprs/main/images/libviprs-logo-claws.svg" alt="libviprs" width="200">
+</p>
+
+<h1 align="center">libviprs-cli</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License">
+</p>
 
 Command-line interface for [libviprs](../libviprs), a pure-Rust image pyramiding engine.
 
