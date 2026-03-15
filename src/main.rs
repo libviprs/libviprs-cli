@@ -5,9 +5,9 @@ use std::time::Instant;
 
 use clap::{Parser, ValueEnum};
 use libviprs::{
-    extract_page_image, generate_pyramid_observed, is_blank_tile, pdf::render_page_pdfium,
-    CollectingObserver, EngineConfig, FsSink, GeoCoord, GeoTransform, Layout, PyramidPlanner,
-    Raster, TileFormat,
+    BlankTileStrategy, CollectingObserver, EngineConfig, FsSink, GeoCoord, GeoTransform, Layout,
+    PyramidPlanner, Raster, TileFormat, extract_page_image, generate_pyramid_observed,
+    pdf::render_page_pdfium,
 };
 
 #[derive(Parser)]
@@ -228,16 +228,17 @@ fn run_pyramid(args: PyramidArgs) {
         },
         FormatArg::Raw => TileFormat::Raw,
     };
-    let sink = if args.skip_blank {
-        BlankSkippingSink::new(FsSink::new(&args.output, plan.clone(), tile_format))
-    } else {
-        BlankSkippingSink::disabled(FsSink::new(&args.output, plan.clone(), tile_format))
-    };
+    let sink = FsSink::new(&args.output, plan.clone(), tile_format);
 
     // Engine config
     let config = EngineConfig::default()
         .with_concurrency(args.concurrency)
-        .with_buffer_size(args.buffer_size);
+        .with_buffer_size(args.buffer_size)
+        .with_blank_tile_strategy(if args.skip_blank {
+            BlankTileStrategy::Placeholder
+        } else {
+            BlankTileStrategy::Emit
+        });
 
     // Generate
     let observer = CollectingObserver::new();
@@ -250,7 +251,6 @@ fn run_pyramid(args: PyramidArgs) {
     };
 
     let elapsed = start.elapsed();
-    let skipped = sink.skipped_count();
     let mut summary = format!(
         "Done: {} tiles, {} levels, peak memory {:.1} MB, {:.2}s",
         result.tiles_produced,
@@ -258,8 +258,8 @@ fn run_pyramid(args: PyramidArgs) {
         result.peak_memory_bytes as f64 / (1024.0 * 1024.0),
         elapsed.as_secs_f64()
     );
-    if skipped > 0 {
-        summary.push_str(&format!(" ({skipped} blank tiles skipped)"));
+    if result.tiles_skipped > 0 {
+        summary.push_str(&format!(" ({} blank tiles skipped)", result.tiles_skipped));
     }
     eprintln!("{summary}");
     eprintln!("Output: {}", args.output.display());
@@ -290,11 +290,7 @@ fn run_info(args: InfoArgs) {
                         page.page_number,
                         page.width_pts,
                         page.height_pts,
-                        if page.has_images {
-                            " (has images)"
-                        } else {
-                            ""
-                        }
+                        if page.has_images { " (has images)" } else { "" }
                     );
                 }
             }
@@ -346,7 +342,10 @@ fn run_plan(args: PlanArgs) {
         plan.total_tile_count()
     );
     println!();
-    println!("{:<8} {:<14} {:<10} {:<8}", "Level", "Dimensions", "Grid", "Tiles");
+    println!(
+        "{:<8} {:<14} {:<10} {:<8}",
+        "Level", "Dimensions", "Grid", "Tiles"
+    );
     println!("{}", "-".repeat(42));
     for level in plan.levels.iter().rev() {
         println!(
@@ -403,10 +402,7 @@ fn resolve_plan_dimensions(args: &PlanArgs) -> (u32, u32) {
     // Otherwise treat as a file path
     let path = PathBuf::from(&args.width_or_input);
     if !path.exists() {
-        eprintln!(
-            "Not a number or file: {}",
-            args.width_or_input
-        );
+        eprintln!("Not a number or file: {}", args.width_or_input);
         process::exit(1);
     }
 
@@ -494,7 +490,9 @@ fn load_source(args: &PyramidArgs) -> Raster {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error rendering PDF with pdfium: {e}");
-                    eprintln!("Hint: ensure libpdfium is installed. Run without --render to extract embedded images instead.");
+                    eprintln!(
+                        "Hint: ensure libpdfium is installed. Run without --render to extract embedded images instead."
+                    );
                     process::exit(1);
                 }
             }
@@ -553,53 +551,4 @@ fn parse_coord_pair(s: &str, name: &str) -> (f64, f64) {
         process::exit(1);
     });
     (x, y)
-}
-
-// ---------------------------------------------------------------------------
-// BlankSkippingSink — wraps any TileSink to skip blank tiles
-// ---------------------------------------------------------------------------
-
-use libviprs::sink::{SinkError, Tile, TileSink};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-struct BlankSkippingSink<S> {
-    inner: S,
-    enabled: bool,
-    skipped: AtomicU64,
-}
-
-impl<S: TileSink> BlankSkippingSink<S> {
-    fn new(inner: S) -> Self {
-        Self {
-            inner,
-            enabled: true,
-            skipped: AtomicU64::new(0),
-        }
-    }
-
-    fn disabled(inner: S) -> Self {
-        Self {
-            inner,
-            enabled: false,
-            skipped: AtomicU64::new(0),
-        }
-    }
-
-    fn skipped_count(&self) -> u64 {
-        self.skipped.load(Ordering::Relaxed)
-    }
-}
-
-impl<S: TileSink> TileSink for BlankSkippingSink<S> {
-    fn write_tile(&self, tile: &Tile) -> Result<(), SinkError> {
-        if self.enabled && is_blank_tile(&tile.raster) {
-            self.skipped.fetch_add(1, Ordering::Relaxed);
-            return Ok(());
-        }
-        self.inner.write_tile(tile)
-    }
-
-    fn finish(&self) -> Result<(), SinkError> {
-        self.inner.finish()
-    }
 }
