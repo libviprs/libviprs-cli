@@ -89,6 +89,16 @@ The CLI supports two modes for PDF input:
 
 **`--render` (PDFium):** Renders the PDF page to a bitmap at the specified DPI. Required for vector PDFs (AutoCAD exports, text, paths). Needs libpdfium installed on the system.
 
+## Development
+
+### Git Hooks
+
+Install pre-commit (fmt + clippy) and pre-push (Docker test suite) hooks:
+
+```bash
+../libviprs-tests/tools/install-hooks.sh
+```
+
 ## Requirements
 
 - Rust 1.85+
