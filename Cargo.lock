@@ -638,6 +638,7 @@ dependencies = [
 name = "libviprs"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "image",
  "lopdf",
  "pdfium-render",
