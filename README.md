@@ -1,4 +1,13 @@
-# libviprs-cli
+<p align="center">
+  <img src="https://raw.githubusercontent.com/libviprs/libviprs/main/images/libviprs-logo-claws.svg" alt="libviprs" width="200">
+</p>
+
+<h1 align="center">libviprs-cli</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License">
+</p>
 
 Command-line interface for [libviprs](../libviprs), a pure-Rust image pyramiding engine.
 
@@ -79,6 +88,16 @@ The CLI supports two modes for PDF input:
 **Default (lopdf extraction):** Extracts embedded raster images directly from the PDF stream. Fast, no external dependencies. Best for scanned blueprints where the PDF is a wrapper around a JPEG.
 
 **`--render` (PDFium):** Renders the PDF page to a bitmap at the specified DPI. Required for vector PDFs (AutoCAD exports, text, paths). Needs libpdfium installed on the system.
+
+## Development
+
+### Git Hooks
+
+Install pre-commit (fmt + clippy) and pre-push (Docker test suite) hooks:
+
+```bash
+../libviprs-tests/tools/install-hooks.sh
+```
 
 ## Requirements
 
