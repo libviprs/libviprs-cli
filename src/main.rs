@@ -60,8 +60,8 @@ struct PyramidArgs {
     #[arg(long, default_value = "85")]
     quality: u8,
 
-    /// DPI for PDF rasterization (only used for PDF inputs).
-    #[arg(long, default_value = "150")]
+    /// DPI for PDF rendering/page-size scaling (default matches libvips).
+    #[arg(long, default_value = "72")]
     dpi: u32,
 
     /// PDF page number to extract (1-based, only used for PDF inputs).
@@ -89,9 +89,19 @@ struct PyramidArgs {
     #[arg(long)]
     render: bool,
 
+    /// After extracting a raster from a PDF, resize it to match the PDF page
+    /// dimensions at the specified --dpi. This produces output consistent with
+    /// libvips' default PDF handling. Has no effect with --render.
+    #[arg(long)]
+    match_page_size: bool,
+
     /// Skip writing tiles where all pixels are identical (blank tile optimization).
     #[arg(long)]
     skip_blank: bool,
+
+    /// Centre the image within the tile grid (even padding on all sides).
+    #[arg(long)]
+    centre: bool,
 }
 
 #[derive(Parser)]
@@ -122,12 +132,16 @@ struct PlanArgs {
     layout: LayoutArg,
 
     /// DPI for PDF dimensions (only used when input is a PDF).
-    #[arg(long, default_value = "150")]
+    #[arg(long, default_value = "72")]
     dpi: u32,
 
     /// PDF page number (1-based, only used when input is a PDF).
     #[arg(long, default_value = "1")]
     page: usize,
+
+    /// Centre the image within the tile grid (even padding on all sides).
+    #[arg(long)]
+    centre: bool,
 }
 
 #[derive(Parser)]
@@ -148,6 +162,7 @@ struct TestImageArgs {
 enum LayoutArg {
     DeepZoom,
     Xyz,
+    Google,
 }
 
 impl From<LayoutArg> for Layout {
@@ -155,6 +170,7 @@ impl From<LayoutArg> for Layout {
         match arg {
             LayoutArg::DeepZoom => Layout::DeepZoom,
             LayoutArg::Xyz => Layout::Xyz,
+            LayoutArg::Google => Layout::Google,
         }
     }
 }
@@ -205,7 +221,7 @@ fn run_pyramid(args: PyramidArgs) {
     // Plan
     let layout: Layout = args.layout.into();
     let planner = match PyramidPlanner::new(w, h, args.tile_size, args.overlap, layout) {
-        Ok(p) => p,
+        Ok(p) => p.with_centre(args.centre),
         Err(e) => {
             eprintln!("Error creating pyramid plan: {e}");
             process::exit(1);
@@ -323,7 +339,7 @@ fn run_plan(args: PlanArgs) {
 
     let layout: Layout = args.layout.into();
     let planner = match PyramidPlanner::new(w, h, args.tile_size, args.overlap, layout) {
-        Ok(p) => p,
+        Ok(p) => p.with_centre(args.centre),
         Err(e) => {
             eprintln!("Error creating pyramid plan: {e}");
             process::exit(1);
@@ -499,7 +515,7 @@ fn load_source(args: &PyramidArgs) -> Raster {
         } else {
             // Extract embedded raster image (scanned PDFs)
             eprintln!("Extracting image from PDF page {}...", args.page);
-            match extract_page_image(&path, args.page) {
+            let raster = match extract_page_image(&path, args.page) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error extracting image from PDF: {e}");
@@ -508,6 +524,53 @@ fn load_source(args: &PyramidArgs) -> Raster {
                     );
                     process::exit(1);
                 }
+            };
+
+            // Optionally resize to match PDF page dimensions at the given DPI
+            if args.match_page_size {
+                let page_dims = match libviprs::pdf_info(&path) {
+                    Ok(info) => {
+                        let page_info = info.pages.iter().find(|p| p.page_number == args.page);
+                        match page_info {
+                            Some(p) => {
+                                let scale = args.dpi as f64 / 72.0;
+                                let w = (p.width_pts * scale) as u32;
+                                let h = (p.height_pts * scale) as u32;
+                                (w, h)
+                            }
+                            None => {
+                                eprintln!("Page {} not found in PDF", args.page);
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error reading PDF info for page sizing: {e}");
+                        process::exit(1);
+                    }
+                };
+
+                if page_dims.0 != raster.width() || page_dims.1 != raster.height() {
+                    eprintln!(
+                        "Resizing {}x{} → {}x{} (matching page at {} DPI)",
+                        raster.width(),
+                        raster.height(),
+                        page_dims.0,
+                        page_dims.1,
+                        args.dpi
+                    );
+                    match libviprs::resize::downscale_to(&raster, page_dims.0, page_dims.1) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("Error resizing raster: {e}");
+                            process::exit(1);
+                        }
+                    }
+                } else {
+                    raster
+                }
+            } else {
+                raster
             }
         }
     } else {
