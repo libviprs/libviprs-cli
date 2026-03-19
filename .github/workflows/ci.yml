@@ -16,8 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Clone libviprs
-        run: git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
+      - name: Clone libviprs (matching branch or main)
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone --depth 1 --branch "$BRANCH" https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs 2>/dev/null \
+            || git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -30,8 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Clone libviprs
-        run: git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
+      - name: Clone libviprs (matching branch or main)
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone --depth 1 --branch "$BRANCH" https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs 2>/dev/null \
+            || git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
