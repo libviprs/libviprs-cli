@@ -6,8 +6,8 @@ use std::time::Instant;
 use clap::{Parser, ValueEnum};
 use libviprs::{
     BlankTileStrategy, CollectingObserver, EngineConfig, FsSink, GeoCoord, GeoTransform, Layout,
-    PyramidPlanner, Raster, TileFormat, extract_page_image, generate_pyramid_observed,
-    pdf::render_page_pdfium,
+    PyramidPlanner, Raster, StreamingConfig, TileFormat, extract_page_image, generate_pyramid_auto,
+    generate_pyramid_observed, pdf::render_page_pdfium,
 };
 
 #[derive(Parser)]
@@ -108,6 +108,21 @@ struct PyramidArgs {
     /// rendering. Use 0 to disable the check (default).
     #[arg(long, default_value = "0")]
     memory_limit: u64,
+
+    /// Memory budget in megabytes for streaming pyramid generation.
+    ///
+    /// When set, the engine processes the image in horizontal strips instead
+    /// of materialising the full canvas, reducing peak memory from O(canvas²)
+    /// to O(canvas_w × strip_h). The strip height is maximised within this
+    /// budget.
+    ///
+    /// When set to 0, the engine auto-selects: monolithic if the image fits
+    /// within a default budget (1/4 of estimated monolithic peak), streaming
+    /// otherwise.
+    ///
+    /// When omitted, the monolithic engine is used (original behavior).
+    #[arg(long, value_name = "MB")]
+    memory_budget: Option<u64>,
 }
 
 #[derive(Parser)]
@@ -279,7 +294,7 @@ fn run_pyramid(args: PyramidArgs) {
     let sink = FsSink::new(&args.output, plan.clone(), tile_format);
 
     // Engine config
-    let config = EngineConfig::default()
+    let engine_config = EngineConfig::default()
         .with_concurrency(args.concurrency)
         .with_buffer_size(args.buffer_size)
         .with_blank_tile_strategy(if args.skip_blank {
@@ -288,13 +303,62 @@ fn run_pyramid(args: PyramidArgs) {
             BlankTileStrategy::Emit
         });
 
-    // Generate
+    // Generate — select monolithic or streaming based on --memory-budget
     let observer = CollectingObserver::new();
-    let result = match generate_pyramid_observed(&raster, &plan, &sink, &config, &observer) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Error generating pyramid: {e}");
-            process::exit(1);
+    let result = match args.memory_budget {
+        None => {
+            // No budget specified — use the original monolithic engine
+            match generate_pyramid_observed(&raster, &plan, &sink, &engine_config, &observer) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Error generating pyramid: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        Some(budget_mb) => {
+            let budget_bytes = if budget_mb == 0 {
+                // Auto-select: use 1/4 of estimated monolithic peak as the
+                // budget. The auto engine will pick monolithic if the image
+                // fits, streaming otherwise.
+                let mono_est = plan.estimate_peak_memory_for_format(raster.format());
+                mono_est / 4
+            } else {
+                budget_mb * 1024 * 1024
+            };
+
+            let streaming_config = StreamingConfig {
+                memory_budget_bytes: budget_bytes,
+                engine: engine_config,
+            };
+
+            // Report which engine path will be used
+            let mono_est = plan.estimate_peak_memory_for_format(raster.format());
+            if mono_est <= budget_bytes {
+                eprintln!(
+                    "Streaming: budget {:.1} MB >= monolithic peak {:.1} MB, using monolithic engine",
+                    budget_bytes as f64 / (1024.0 * 1024.0),
+                    mono_est as f64 / (1024.0 * 1024.0),
+                );
+            } else {
+                let strip_h = libviprs::compute_strip_height(&plan, raster.format(), budget_bytes);
+                let est = strip_h
+                    .map(|sh| libviprs::estimate_streaming_memory(&plan, raster.format(), sh));
+                eprintln!(
+                    "Streaming: budget {:.1} MB, strip_height={}, estimated peak {:.1} MB",
+                    budget_bytes as f64 / (1024.0 * 1024.0),
+                    strip_h.map_or("min".to_string(), |h| format!("{h}")),
+                    est.unwrap_or(0) as f64 / (1024.0 * 1024.0),
+                );
+            }
+
+            match generate_pyramid_auto(&raster, &plan, &sink, &streaming_config, &observer) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Error generating pyramid: {e}");
+                    process::exit(1);
+                }
+            }
         }
     };
 
