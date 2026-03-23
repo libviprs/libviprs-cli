@@ -102,6 +102,12 @@ struct PyramidArgs {
     /// Centre the image within the tile grid (even padding on all sides).
     #[arg(long)]
     centre: bool,
+
+    /// Memory limit in MB for the raster pipeline. If the estimated peak
+    /// memory exceeds this limit, the command exits with an error before
+    /// rendering. Use 0 to disable the check (default).
+    #[arg(long, default_value = "0")]
+    memory_limit: u64,
 }
 
 #[derive(Parser)]
@@ -227,6 +233,32 @@ fn run_pyramid(args: PyramidArgs) {
             process::exit(1);
         }
     };
+
+    // Pre-render memory check
+    let peak_memory = planner.estimate_peak_memory();
+    let (canvas_w, canvas_h) = planner.canvas_dimensions();
+    eprintln!(
+        "Memory estimate: {:.1} MB peak (canvas: {}x{}, source: {}x{})",
+        peak_memory as f64 / (1024.0 * 1024.0),
+        canvas_w,
+        canvas_h,
+        w,
+        h
+    );
+
+    if args.memory_limit > 0 {
+        let limit_bytes = args.memory_limit * 1024 * 1024;
+        if peak_memory > limit_bytes {
+            eprintln!(
+                "Error: estimated peak memory ({:.1} MB) exceeds --memory-limit ({} MB)",
+                peak_memory as f64 / (1024.0 * 1024.0),
+                args.memory_limit
+            );
+            eprintln!("Hint: reduce --dpi or image dimensions to lower memory usage");
+            process::exit(1);
+        }
+    }
+
     let plan = planner.plan();
     eprintln!(
         "Plan: {} levels, {} tiles, tile_size={}, overlap={}",
@@ -347,7 +379,16 @@ fn run_plan(args: PlanArgs) {
     };
     let plan = planner.plan();
 
+    let peak_memory = planner.estimate_peak_memory();
+    let (canvas_w, canvas_h) = planner.canvas_dimensions();
+
     println!("Image: {}x{}", w, h);
+    println!(
+        "Canvas: {}x{} ({:.1} MB)",
+        canvas_w,
+        canvas_h,
+        canvas_w as f64 * canvas_h as f64 * 4.0 / (1024.0 * 1024.0)
+    );
     println!(
         "Tile size: {}, overlap: {}, layout: {:?}",
         args.tile_size, args.overlap, layout
@@ -356,6 +397,10 @@ fn run_plan(args: PlanArgs) {
         "Levels: {}, total tiles: {}",
         plan.level_count(),
         plan.total_tile_count()
+    );
+    println!(
+        "Estimated peak memory: {:.1} MB",
+        peak_memory as f64 / (1024.0 * 1024.0)
     );
     println!();
     println!(
