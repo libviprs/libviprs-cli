@@ -5,6 +5,12 @@ edition = "2024"
 authors = ["Roman Goldmann <roman@devshell.org>"]
 rust-version = "1.85"
 
+[lints.rust]
+deprecated = "deny"
+
+[lints.clippy]
+incompatible_msrv = "warn"
+
 [[bin]]
 name = "viprs"
 path = "src/main.rs"
