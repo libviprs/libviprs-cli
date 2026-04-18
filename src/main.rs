@@ -3,14 +3,16 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Instant;
 
-use clap::{Parser, ValueEnum};
+use clap::{ArgGroup, Parser, ValueEnum};
 use libviprs::{
     BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
     EngineConfig, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout, ManifestBuilder,
     MapReduceConfig, PyramidPlanner, Raster, ResumeMode, RetryPolicy, StreamingConfig, TileFormat,
-    compute_inflight_strips, estimate_mapreduce_peak_memory, extract_page_image,
-    generate_pyramid_auto, generate_pyramid_mapreduce_auto, generate_pyramid_observed,
-    generate_pyramid_resumable, pdf::render_page_pdfium,
+    extract_page_image, generate_pyramid_auto, generate_pyramid_mapreduce_auto,
+    generate_pyramid_observed, generate_pyramid_resumable,
+    pdf::render_page_pdfium,
+    streaming::{compute_strip_height, estimate_streaming_memory},
+    streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
 };
 
 #[derive(Parser)]
@@ -36,6 +38,13 @@ enum Command {
 }
 
 #[derive(Parser)]
+#[non_exhaustive]
+#[command(group(
+    ArgGroup::new("checksums")
+        .required(false)
+        .multiple(true)
+        .args(["manifest_emit_checksums", "dedupe_all"]),
+))]
 struct PyramidArgs {
     /// Input file (PDF, PNG, JPEG, or TIFF). Use "-" for stdin.
     input: String,
@@ -99,7 +108,8 @@ struct PyramidArgs {
     match_page_size: bool,
 
     /// Skip writing tiles where all pixels are identical (blank tile optimization).
-    #[arg(long)]
+    /// Mutually exclusive with --blank-tolerance (which is a strict superset).
+    #[arg(long, conflicts_with = "blank_tolerance")]
     skip_blank: bool,
 
     /// Centre the image within the tile grid (even padding on all sides).
@@ -140,68 +150,109 @@ struct PyramidArgs {
     // -------------------------------------------------------------------------
     /// Sink URI: fs://path, s3://bucket/prefix, or packfile://path.tar[.gz]/.zip.
     /// Defaults to the positional output directory as a filesystem sink.
-    #[arg(long, value_name = "URI")]
+    #[arg(long, value_name = "URI", help_heading = "Output")]
     sink: Option<String>,
 
-    /// Resume from checkpoint if present (mutually exclusive with --overwrite and --verify).
-    #[arg(long, conflicts_with_all = ["overwrite", "verify"])]
+    /// Resume from checkpoint if present.
+    #[arg(
+        long,
+        conflicts_with_all = ["overwrite", "verify"],
+        help_heading = "Resume",
+    )]
     resume: bool,
 
-    /// Overwrite existing output (default behaviour when no resume/verify flag is set).
-    #[arg(long, conflicts_with_all = ["resume", "verify"])]
+    /// Wipe the output directory and regenerate from scratch.
+    ///
+    /// This is the default behaviour when none of --resume, --overwrite, or
+    /// --verify is supplied — running `viprs pyramid IN OUT` twice wipes
+    /// `OUT` the second time and regenerates a clean pyramid.
+    #[arg(
+        long,
+        conflicts_with_all = ["resume", "verify"],
+        help_heading = "Resume",
+    )]
     overwrite: bool,
 
     /// Verify existing output against checksums rather than regenerate.
-    #[arg(long, conflicts_with_all = ["resume", "overwrite"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["resume", "overwrite"],
+        help_heading = "Resume",
+    )]
     verify: bool,
 
-    /// Manifest schema version to emit (only 1 is supported today).
-    #[arg(long, default_value = "1", value_name = "N")]
-    manifest_version: u32,
+    /// Manifest schema version to emit (only `1` is accepted today;
+    /// anything else is rejected at parse time).
+    #[arg(
+        long,
+        default_value = "1",
+        value_name = "N",
+        value_parser = clap::builder::PossibleValuesParser::new(["1"]),
+        help_heading = "Manifest",
+    )]
+    manifest_version: String,
 
     /// Emit per-tile checksums into the manifest.
-    #[arg(long)]
+    #[arg(long, help_heading = "Manifest")]
     manifest_emit_checksums: bool,
 
     /// Hash algorithm used for per-tile checksums (blake3 or sha256).
-    #[arg(long, default_value = "blake3", value_name = "ALGO")]
+    /// Only meaningful in combination with --manifest-emit-checksums or
+    /// --dedupe-all; clap rejects the flag otherwise.
+    #[arg(
+        long,
+        default_value = "blake3",
+        value_name = "ALGO",
+        requires = "checksums",
+        help_heading = "Manifest"
+    )]
     checksum_algo: ChecksumAlgoArg,
 
     /// If set, treat tiles within this channel delta of blank as blank
     /// (enables PlaceholderWithTolerance blank tile strategy).
-    #[arg(long, value_name = "DELTA")]
+    #[arg(long, value_name = "DELTA", help_heading = "Dedupe")]
     blank_tolerance: Option<u8>,
 
-    /// Maximum retries per tile on sink failure.
-    #[arg(long, default_value = "3", value_name = "N")]
-    retry_max: u32,
+    /// How to react when a sink write fails.
+    ///
+    /// Accepts one of:
+    /// - `fail-fast` — abort on the first error (default).
+    /// - `retry=N,DURATION` — retry up to N times with initial backoff
+    ///   DURATION, then abort.
+    /// - `retry-skip=N,DURATION` — retry up to N times with initial backoff
+    ///   DURATION, then skip the tile.
+    ///
+    /// DURATION is parsed with a simple ms/s/us suffix (e.g. `50ms`, `2s`).
+    #[arg(
+        long = "on-failure",
+        default_value = "fail-fast",
+        value_name = "SPEC",
+        value_parser = parse_failure_policy,
+        help_heading = "Reliability",
+    )]
+    on_failure: FailurePolicy,
 
-    /// Initial backoff in milliseconds before the first retry.
-    #[arg(long, default_value = "50", value_name = "MS")]
-    retry_backoff: u64,
-
-    /// How to react when sink writes fail after retries.
-    #[arg(long, default_value = "fail-fast", value_name = "POL")]
-    failure_policy: FailurePolicyArg,
-
-    /// If set, initialise tracing-subscriber at this log level (requires tracing feature).
+    /// If set, initialise tracing-subscriber at this log level.
+    /// Requires a build with `--features tracing`; otherwise the command
+    /// exits with an error when this flag is supplied.
     #[arg(long, value_name = "LVL")]
     trace_level: Option<String>,
 
-    /// Stub: accept an OpenTelemetry / metrics scrape endpoint URL; warns if unused in this build.
-    #[arg(long, value_name = "URL")]
-    metrics_endpoint: Option<String>,
-
     /// Shorthand for --sink packfile://<output>.tar (requires packfile feature).
-    #[arg(long)]
+    /// Conflicts with --sink, --dedupe-all, and --dedupe-blanks.
+    #[arg(
+        long,
+        conflicts_with_all = ["sink", "dedupe_all", "dedupe_blanks"],
+        help_heading = "Output",
+    )]
     packfile: bool,
 
     /// Deduplicate blank (uniform-colour) tiles only (DedupeStrategy::Blanks).
-    #[arg(long, conflicts_with = "dedupe_all")]
+    #[arg(long, conflicts_with = "dedupe_all", help_heading = "Dedupe")]
     dedupe_blanks: bool,
 
     /// Deduplicate all tiles by content hash, using --checksum-algo (mutually exclusive with --dedupe-blanks).
-    #[arg(long, conflicts_with = "dedupe_blanks")]
+    #[arg(long, conflicts_with = "dedupe_blanks", help_heading = "Dedupe")]
     dedupe_all: bool,
 }
 
@@ -299,15 +350,68 @@ impl From<ChecksumAlgoArg> for ChecksumAlgo {
     }
 }
 
-/// CLI representation of the failure policy (maps to [`FailurePolicy`]).
-#[derive(Clone, ValueEnum)]
-enum FailurePolicyArg {
-    /// Abort immediately on the first sink error; no retries.
-    FailFast,
-    /// Retry up to --retry-max times, then abort if all retries fail.
-    RetryThenFail,
-    /// Retry up to --retry-max times, then skip the tile and continue.
-    RetryThenSkip,
+/// Parse a short duration literal (e.g. `50ms`, `2s`, `500us`).
+fn parse_duration_literal(s: &str) -> Result<std::time::Duration, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty duration".to_string());
+    }
+    // Longest suffix first so `ms` wins over `s`.
+    let (num, mul_ns): (&str, u64) = if let Some(rest) = s.strip_suffix("ms") {
+        (rest, 1_000_000)
+    } else if let Some(rest) = s.strip_suffix("us") {
+        (rest, 1_000)
+    } else if let Some(rest) = s.strip_suffix("ns") {
+        (rest, 1)
+    } else if let Some(rest) = s.strip_suffix('s') {
+        (rest, 1_000_000_000)
+    } else {
+        // Bare number: assume milliseconds (matches old --retry-backoff semantics).
+        (s, 1_000_000)
+    };
+    let n: u64 = num
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid duration \"{s}\": {e}"))?;
+    Ok(std::time::Duration::from_nanos(n.saturating_mul(mul_ns)))
+}
+
+/// clap `value_parser` for `--on-failure`.
+///
+/// Accepts:
+/// - `fail-fast`
+/// - `retry=N,DURATION`
+/// - `retry-skip=N,DURATION`
+fn parse_failure_policy(s: &str) -> Result<FailurePolicy, String> {
+    if s == "fail-fast" {
+        return Ok(FailurePolicy::FailFast);
+    }
+
+    let (kind, rest) = s.split_once('=').ok_or_else(|| {
+        format!(
+            "invalid --on-failure value \"{s}\": expected `fail-fast`, `retry=N,DURATION`, or `retry-skip=N,DURATION`"
+        )
+    })?;
+
+    let (n_str, dur_str) = rest.split_once(',').ok_or_else(|| {
+        format!("invalid --on-failure value \"{s}\": expected `{kind}=N,DURATION`")
+    })?;
+
+    let n: u32 = n_str
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid retry count in --on-failure \"{s}\": {e}"))?;
+    let backoff = parse_duration_literal(dur_str)?;
+
+    let policy = RetryPolicy::new(n, backoff);
+
+    match kind {
+        "retry" => Ok(FailurePolicy::RetryThenFail(policy)),
+        "retry-skip" => Ok(FailurePolicy::RetryThenSkip(policy)),
+        other => Err(format!(
+            "unknown --on-failure kind \"{other}\": expected `fail-fast`, `retry`, or `retry-skip`"
+        )),
+    }
 }
 
 fn main() {
@@ -327,7 +431,15 @@ fn main() {
 /// 1. `--packfile` shorthand  → `packfile://<output>.tar`
 /// 2. `--sink <URI>`          → as-is
 /// 3. (none)                  → `fs://<output>`
+///
+/// `--packfile` and `--sink` are declared as `conflicts_with` at the clap
+/// layer, but we keep a defensive check here so `resolve_sink_uri` is safe
+/// to call from any caller regardless of how `PyramidArgs` was built.
 fn resolve_sink_uri(args: &PyramidArgs) -> String {
+    if args.packfile && args.sink.is_some() {
+        eprintln!("Error: --packfile and --sink are mutually exclusive");
+        process::exit(2);
+    }
     if args.packfile {
         return format!("packfile://{}.tar", args.output.display());
     }
@@ -338,33 +450,26 @@ fn resolve_sink_uri(args: &PyramidArgs) -> String {
 }
 
 /// Determine the [`ResumeMode`] from the three mutually-exclusive flags.
-fn resolve_resume_mode(args: &PyramidArgs) -> Option<ResumeMode> {
+///
+/// When none of `--resume`, `--overwrite`, or `--verify` is supplied the
+/// default is [`ResumeMode::Overwrite`] (wipe + regenerate), matching the
+/// semantics documented on `--overwrite`.
+fn resolve_resume_mode(args: &PyramidArgs) -> ResumeMode {
     if args.resume {
-        return Some(ResumeMode::Resume);
+        return ResumeMode::Resume;
     }
     if args.verify {
-        return Some(ResumeMode::Verify);
+        return ResumeMode::Verify;
     }
-    if args.overwrite {
-        return Some(ResumeMode::Overwrite);
-    }
-    None
+    // Explicit --overwrite or no flag at all: wipe & regenerate.
+    ResumeMode::Overwrite
 }
 
-/// Build the [`FailurePolicy`] from the CLI flags.
+/// Extract the [`FailurePolicy`] resolved by the `--on-failure` value parser.
+///
+/// Kept as a free function so the resolver surface stays `Args -> Config`.
 fn build_failure_policy(args: &PyramidArgs) -> FailurePolicy {
-    let retry_policy = RetryPolicy {
-        max_retries: args.retry_max,
-        initial_backoff: std::time::Duration::from_millis(args.retry_backoff),
-        multiplier: 2.0,
-        max_backoff: std::time::Duration::from_secs(5),
-        jitter: true,
-    };
-    match args.failure_policy {
-        FailurePolicyArg::FailFast => FailurePolicy::FailFast,
-        FailurePolicyArg::RetryThenFail => FailurePolicy::RetryThenFail(retry_policy),
-        FailurePolicyArg::RetryThenSkip => FailurePolicy::RetryThenSkip(retry_policy),
-    }
+    args.on_failure.clone()
 }
 
 /// Build the [`BlankTileStrategy`] from the CLI flags.
@@ -394,8 +499,8 @@ fn build_dedupe_strategy(args: &PyramidArgs) -> Option<DedupeStrategy> {
 
 /// Initialise the tracing subscriber if `--trace-level` was provided.
 ///
-/// This function is compiled unconditionally but the actual call to
-/// `tracing_subscriber` is gated on the `tracing` feature.
+/// If the CLI was compiled without the `tracing` feature, passing
+/// `--trace-level` is a hard error rather than a silent warning.
 fn maybe_init_tracing(level: &Option<String>) {
     let Some(_level) = level else { return };
 
@@ -409,23 +514,17 @@ fn maybe_init_tracing(level: &Option<String>) {
     #[cfg(not(feature = "tracing"))]
     {
         eprintln!(
-            "Warning: --trace-level ignored — rebuild with `--features tracing` to enable tracing."
+            "Error: --trace-level requires libviprs-cli built with the `tracing` feature (rebuild with `--features tracing`)."
         );
+        process::exit(2);
     }
 }
 
 fn run_pyramid(args: PyramidArgs) {
     let start = Instant::now();
 
-    // Initialise tracing if requested (no-op when feature is off).
+    // Initialise tracing if requested (exits with an error when the feature is off).
     maybe_init_tracing(&args.trace_level);
-
-    // Warn about --metrics-endpoint: this is a stub in all build configurations.
-    if let Some(ref url) = args.metrics_endpoint {
-        eprintln!(
-            "Warning: --metrics-endpoint {url} accepted but metrics push is not implemented in this build."
-        );
-    }
 
     // Load the source raster
     let raster = load_source(&args);
@@ -578,18 +677,26 @@ fn run_pyramid(args: PyramidArgs) {
             sink = sink.with_resume(true);
         }
 
-        let result = if let Some(mode) = resume_mode {
-            // Use the resumable entry point
-            match generate_pyramid_resumable(&raster, &plan, &sink, &engine_config, mode) {
+        // The resumable entry point honours `resume_mode` (Overwrite wipes
+        // the output, Resume continues from a checkpoint, Verify checks).
+        // The streaming / MapReduce paths do not yet understand resume modes,
+        // so we only route through `run_generate` when `--memory-budget` is
+        // supplied *and* the user has not explicitly asked for resume/verify.
+        let result = if args.memory_budget.is_some()
+            && !matches!(resume_mode, ResumeMode::Resume | ResumeMode::Verify)
+        {
+            // Budgeted streaming / MapReduce path. Default here is still
+            // overwrite-in-place (no wipe); that's acceptable because the
+            // user opted into a different engine.
+            run_generate(&args, &raster, &plan, &sink, engine_config, start)
+        } else {
+            match generate_pyramid_resumable(&raster, &plan, &sink, &engine_config, resume_mode) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error generating pyramid: {e}");
                     process::exit(1);
                 }
             }
-        } else {
-            // Original monolithic / streaming path
-            run_generate(&args, &raster, &plan, &sink, engine_config, start)
         };
 
         finish_run(result, &base_dir, start);
@@ -646,8 +753,7 @@ fn run_generate(
                         mono_est as f64 / (1024.0 * 1024.0),
                     );
                 } else {
-                    let strip_h =
-                        libviprs::compute_strip_height(plan, raster.format(), budget_bytes);
+                    let strip_h = compute_strip_height(plan, raster.format(), budget_bytes);
                     let sh = strip_h.unwrap_or(2 * args.tile_size);
                     let inflight = compute_inflight_strips(plan, raster.format(), sh, budget_bytes);
                     let est = estimate_mapreduce_peak_memory(plan, raster.format(), sh, inflight);
@@ -680,10 +786,9 @@ fn run_generate(
                         mono_est as f64 / (1024.0 * 1024.0),
                     );
                 } else {
-                    let strip_h =
-                        libviprs::compute_strip_height(plan, raster.format(), budget_bytes);
-                    let est = strip_h
-                        .map(|sh| libviprs::estimate_streaming_memory(plan, raster.format(), sh));
+                    let strip_h = compute_strip_height(plan, raster.format(), budget_bytes);
+                    let est =
+                        strip_h.map(|sh| estimate_streaming_memory(plan, raster.format(), sh));
                     eprintln!(
                         "Streaming: budget {:.1} MB, strip_height={}, estimated peak {:.1} MB",
                         budget_bytes as f64 / (1024.0 * 1024.0),
@@ -733,7 +838,7 @@ fn run_pyramid_s3(
     _plan: &libviprs::PyramidPlan,
     _tile_format: TileFormat,
     _engine_config: EngineConfig,
-    _resume_mode: Option<ResumeMode>,
+    _resume_mode: ResumeMode,
     _start: Instant,
 ) {
     #[cfg(feature = "s3")]
@@ -763,7 +868,7 @@ fn run_pyramid_packfile(
     _plan: &libviprs::PyramidPlan,
     _tile_format: TileFormat,
     _engine_config: EngineConfig,
-    _resume_mode: Option<ResumeMode>,
+    _resume_mode: ResumeMode,
     _start: Instant,
 ) {
     #[cfg(feature = "packfile")]
@@ -788,22 +893,17 @@ fn run_pyramid_packfile(
             }
         };
 
-        let observer = CollectingObserver::new();
-        let result = if let Some(mode) = _resume_mode {
-            match generate_pyramid_resumable(_raster, _plan, &sink, &_engine_config, mode) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("Error generating pyramid: {e}");
-                    process::exit(1);
-                }
-            }
-        } else {
-            match generate_pyramid_observed(_raster, _plan, &sink, &_engine_config, &observer) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("Error generating pyramid: {e}");
-                    process::exit(1);
-                }
+        let result = match generate_pyramid_resumable(
+            _raster,
+            _plan,
+            &sink,
+            &_engine_config,
+            _resume_mode,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Error generating pyramid: {e}");
+                process::exit(1);
             }
         };
 
