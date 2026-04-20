@@ -3,12 +3,16 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Instant;
 
-use clap::{Parser, ValueEnum};
+use clap::{ArgGroup, Parser, ValueEnum};
 use libviprs::{
-    BlankTileStrategy, CollectingObserver, EngineConfig, FsSink, GeoCoord, GeoTransform, Layout,
-    MapReduceConfig, PyramidPlanner, Raster, StreamingConfig, TileFormat, compute_inflight_strips,
-    estimate_mapreduce_peak_memory, extract_page_image, generate_pyramid_auto,
-    generate_pyramid_mapreduce_auto, generate_pyramid_observed, pdf::render_page_pdfium,
+    BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
+    EngineConfig, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout, ManifestBuilder,
+    MapReduceConfig, PyramidPlanner, Raster, ResumeMode, RetryPolicy, StreamingConfig, TileFormat,
+    extract_page_image, generate_pyramid_auto, generate_pyramid_mapreduce_auto,
+    generate_pyramid_observed, generate_pyramid_resumable,
+    pdf::render_page_pdfium,
+    streaming::{compute_strip_height, estimate_streaming_memory},
+    streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
 };
 
 #[derive(Parser)]
@@ -21,7 +25,7 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Command {
     /// Generate a tile pyramid from a PDF or image file.
-    Pyramid(PyramidArgs),
+    Pyramid(Box<PyramidArgs>),
 
     /// Show info about a PDF or image file.
     Info(InfoArgs),
@@ -34,6 +38,13 @@ enum Command {
 }
 
 #[derive(Parser)]
+#[non_exhaustive]
+#[command(group(
+    ArgGroup::new("checksums")
+        .required(false)
+        .multiple(true)
+        .args(["manifest_emit_checksums", "dedupe_all"]),
+))]
 struct PyramidArgs {
     /// Input file (PDF, PNG, JPEG, or TIFF). Use "-" for stdin.
     input: String,
@@ -97,7 +108,8 @@ struct PyramidArgs {
     match_page_size: bool,
 
     /// Skip writing tiles where all pixels are identical (blank tile optimization).
-    #[arg(long)]
+    /// Mutually exclusive with --blank-tolerance (which is a strict superset).
+    #[arg(long, conflicts_with = "blank_tolerance")]
     skip_blank: bool,
 
     /// Centre the image within the tile grid (even padding on all sides).
@@ -132,6 +144,116 @@ struct PyramidArgs {
     /// The --concurrency flag controls per-strip tile worker threads.
     #[arg(long)]
     parallel: bool,
+
+    // -------------------------------------------------------------------------
+    // Phase 3 hardening flags
+    // -------------------------------------------------------------------------
+    /// Sink URI: fs://path, s3://bucket/prefix, or packfile://path.tar[.gz]/.zip.
+    /// Defaults to the positional output directory as a filesystem sink.
+    #[arg(long, value_name = "URI", help_heading = "Output")]
+    sink: Option<String>,
+
+    /// Resume from checkpoint if present.
+    #[arg(
+        long,
+        conflicts_with_all = ["overwrite", "verify"],
+        help_heading = "Resume",
+    )]
+    resume: bool,
+
+    /// Wipe the output directory and regenerate from scratch.
+    ///
+    /// This is the default behaviour when none of --resume, --overwrite, or
+    /// --verify is supplied — running `viprs pyramid IN OUT` twice wipes
+    /// `OUT` the second time and regenerates a clean pyramid.
+    #[arg(
+        long,
+        conflicts_with_all = ["resume", "verify"],
+        help_heading = "Resume",
+    )]
+    overwrite: bool,
+
+    /// Verify existing output against checksums rather than regenerate.
+    #[arg(
+        long,
+        conflicts_with_all = ["resume", "overwrite"],
+        help_heading = "Resume",
+    )]
+    verify: bool,
+
+    /// Manifest schema version to emit (only `1` is accepted today;
+    /// anything else is rejected at parse time).
+    #[arg(
+        long,
+        default_value = "1",
+        value_name = "N",
+        value_parser = clap::builder::PossibleValuesParser::new(["1"]),
+        help_heading = "Manifest",
+    )]
+    manifest_version: String,
+
+    /// Emit per-tile checksums into the manifest.
+    #[arg(long, help_heading = "Manifest")]
+    manifest_emit_checksums: bool,
+
+    /// Hash algorithm used for per-tile checksums (blake3 or sha256).
+    /// Only meaningful in combination with --manifest-emit-checksums or
+    /// --dedupe-all; clap rejects the flag otherwise.
+    #[arg(
+        long,
+        default_value = "blake3",
+        value_name = "ALGO",
+        requires = "checksums",
+        help_heading = "Manifest"
+    )]
+    checksum_algo: ChecksumAlgoArg,
+
+    /// If set, treat tiles within this channel delta of blank as blank
+    /// (enables PlaceholderWithTolerance blank tile strategy).
+    #[arg(long, value_name = "DELTA", help_heading = "Dedupe")]
+    blank_tolerance: Option<u8>,
+
+    /// How to react when a sink write fails.
+    ///
+    /// Accepts one of:
+    /// - `fail-fast` — abort on the first error (default).
+    /// - `retry=N,DURATION` — retry up to N times with initial backoff
+    ///   DURATION, then abort.
+    /// - `retry-skip=N,DURATION` — retry up to N times with initial backoff
+    ///   DURATION, then skip the tile.
+    ///
+    /// DURATION is parsed with a simple ms/s/us suffix (e.g. `50ms`, `2s`).
+    #[arg(
+        long = "on-failure",
+        default_value = "fail-fast",
+        value_name = "SPEC",
+        value_parser = parse_failure_policy,
+        help_heading = "Reliability",
+    )]
+    on_failure: FailurePolicy,
+
+    /// If set, initialise tracing-subscriber at this log level.
+    /// Requires a build with `--features tracing`; otherwise the command
+    /// exits with an error when this flag is supplied.
+    #[arg(long, value_name = "LVL")]
+    trace_level: Option<String>,
+
+    /// Shorthand for --sink packfile://<output>.tar (requires packfile feature).
+    /// Conflicts with --sink, --dedupe-all, and --dedupe-blanks.
+    #[arg(
+        long,
+        conflicts_with_all = ["sink", "dedupe_all", "dedupe_blanks"],
+        help_heading = "Output",
+    )]
+    packfile: bool,
+
+    /// Deduplicate blank (uniform-colour) tiles only (DedupeStrategy::Blanks).
+    #[arg(long, conflicts_with = "dedupe_all", help_heading = "Dedupe")]
+    dedupe_blanks: bool,
+
+    /// Deduplicate all tiles by content hash, using --checksum-algo (mutually exclusive with --dedupe-blanks).
+    #[arg(long, conflicts_with = "dedupe_blanks", help_heading = "Dedupe")]
+    dedupe_all: bool,
 }
 
 #[derive(Parser)]
@@ -212,19 +334,197 @@ enum FormatArg {
     Raw,
 }
 
+/// CLI representation of the checksum algorithm (maps to [`ChecksumAlgo`]).
+#[derive(Clone, ValueEnum)]
+enum ChecksumAlgoArg {
+    Blake3,
+    Sha256,
+}
+
+impl From<ChecksumAlgoArg> for ChecksumAlgo {
+    fn from(arg: ChecksumAlgoArg) -> Self {
+        match arg {
+            ChecksumAlgoArg::Blake3 => ChecksumAlgo::Blake3,
+            ChecksumAlgoArg::Sha256 => ChecksumAlgo::Sha256,
+        }
+    }
+}
+
+/// Parse a short duration literal (e.g. `50ms`, `2s`, `500us`).
+fn parse_duration_literal(s: &str) -> Result<std::time::Duration, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty duration".to_string());
+    }
+    // Longest suffix first so `ms` wins over `s`.
+    let (num, mul_ns): (&str, u64) = if let Some(rest) = s.strip_suffix("ms") {
+        (rest, 1_000_000)
+    } else if let Some(rest) = s.strip_suffix("us") {
+        (rest, 1_000)
+    } else if let Some(rest) = s.strip_suffix("ns") {
+        (rest, 1)
+    } else if let Some(rest) = s.strip_suffix('s') {
+        (rest, 1_000_000_000)
+    } else {
+        // Bare number: assume milliseconds (matches old --retry-backoff semantics).
+        (s, 1_000_000)
+    };
+    let n: u64 = num
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid duration \"{s}\": {e}"))?;
+    Ok(std::time::Duration::from_nanos(n.saturating_mul(mul_ns)))
+}
+
+/// clap `value_parser` for `--on-failure`.
+///
+/// Accepts:
+/// - `fail-fast`
+/// - `retry=N,DURATION`
+/// - `retry-skip=N,DURATION`
+fn parse_failure_policy(s: &str) -> Result<FailurePolicy, String> {
+    if s == "fail-fast" {
+        return Ok(FailurePolicy::FailFast);
+    }
+
+    let (kind, rest) = s.split_once('=').ok_or_else(|| {
+        format!(
+            "invalid --on-failure value \"{s}\": expected `fail-fast`, `retry=N,DURATION`, or `retry-skip=N,DURATION`"
+        )
+    })?;
+
+    let (n_str, dur_str) = rest.split_once(',').ok_or_else(|| {
+        format!("invalid --on-failure value \"{s}\": expected `{kind}=N,DURATION`")
+    })?;
+
+    let n: u32 = n_str
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid retry count in --on-failure \"{s}\": {e}"))?;
+    let backoff = parse_duration_literal(dur_str)?;
+
+    let policy = RetryPolicy::new(n, backoff);
+
+    match kind {
+        "retry" => Ok(FailurePolicy::RetryThenFail(policy)),
+        "retry-skip" => Ok(FailurePolicy::RetryThenSkip(policy)),
+        other => Err(format!(
+            "unknown --on-failure kind \"{other}\": expected `fail-fast`, `retry`, or `retry-skip`"
+        )),
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Pyramid(args) => run_pyramid(args),
+        Command::Pyramid(args) => run_pyramid(*args),
         Command::Info(args) => run_info(args),
         Command::Plan(args) => run_plan(args),
         Command::TestImage(args) => run_test_image(args),
     }
 }
 
+/// Resolve the effective sink URI from flags.
+///
+/// Priority:
+/// 1. `--packfile` shorthand  → `packfile://<output>.tar`
+/// 2. `--sink <URI>`          → as-is
+/// 3. (none)                  → `fs://<output>`
+///
+/// `--packfile` and `--sink` are declared as `conflicts_with` at the clap
+/// layer, but we keep a defensive check here so `resolve_sink_uri` is safe
+/// to call from any caller regardless of how `PyramidArgs` was built.
+fn resolve_sink_uri(args: &PyramidArgs) -> String {
+    if args.packfile && args.sink.is_some() {
+        eprintln!("Error: --packfile and --sink are mutually exclusive");
+        process::exit(2);
+    }
+    if args.packfile {
+        return format!("packfile://{}.tar", args.output.display());
+    }
+    if let Some(ref uri) = args.sink {
+        return uri.clone();
+    }
+    format!("fs://{}", args.output.display())
+}
+
+/// Determine the [`ResumeMode`] from the three mutually-exclusive flags.
+///
+/// When none of `--resume`, `--overwrite`, or `--verify` is supplied the
+/// default is [`ResumeMode::Overwrite`] (wipe + regenerate), matching the
+/// semantics documented on `--overwrite`.
+fn resolve_resume_mode(args: &PyramidArgs) -> ResumeMode {
+    if args.resume {
+        return ResumeMode::Resume;
+    }
+    if args.verify {
+        return ResumeMode::Verify;
+    }
+    // Explicit --overwrite or no flag at all: wipe & regenerate.
+    ResumeMode::Overwrite
+}
+
+/// Extract the [`FailurePolicy`] resolved by the `--on-failure` value parser.
+///
+/// Kept as a free function so the resolver surface stays `Args -> Config`.
+fn build_failure_policy(args: &PyramidArgs) -> FailurePolicy {
+    args.on_failure.clone()
+}
+
+/// Build the [`BlankTileStrategy`] from the CLI flags.
+fn build_blank_tile_strategy(args: &PyramidArgs) -> BlankTileStrategy {
+    if let Some(delta) = args.blank_tolerance {
+        BlankTileStrategy::PlaceholderWithTolerance {
+            max_channel_delta: delta,
+        }
+    } else if args.skip_blank {
+        BlankTileStrategy::Placeholder
+    } else {
+        BlankTileStrategy::Emit
+    }
+}
+
+/// Build the optional [`DedupeStrategy`] from the CLI flags.
+fn build_dedupe_strategy(args: &PyramidArgs) -> Option<DedupeStrategy> {
+    if args.dedupe_all {
+        let algo: ChecksumAlgo = args.checksum_algo.clone().into();
+        Some(DedupeStrategy::All { algo })
+    } else if args.dedupe_blanks {
+        Some(DedupeStrategy::Blanks)
+    } else {
+        None
+    }
+}
+
+/// Initialise the tracing subscriber if `--trace-level` was provided.
+///
+/// If the CLI was compiled without the `tracing` feature, passing
+/// `--trace-level` is a hard error rather than a silent warning.
+fn maybe_init_tracing(level: &Option<String>) {
+    let Some(_level) = level else { return };
+
+    #[cfg(feature = "tracing")]
+    {
+        use tracing_subscriber::EnvFilter;
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new(_level))
+            .init();
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        eprintln!(
+            "Error: --trace-level requires libviprs-cli built with the `tracing` feature (rebuild with `--features tracing`)."
+        );
+        process::exit(2);
+    }
+}
+
 fn run_pyramid(args: PyramidArgs) {
     let start = Instant::now();
+
+    // Initialise tracing if requested (exits with an error when the feature is off).
+    maybe_init_tracing(&args.trace_level);
 
     // Load the source raster
     let raster = load_source(&args);
@@ -249,7 +549,7 @@ fn run_pyramid(args: PyramidArgs) {
     }
 
     // Plan
-    let layout: Layout = args.layout.into();
+    let layout: Layout = args.layout.clone().into();
     let planner = match PyramidPlanner::new(w, h, args.tile_size, args.overlap, layout) {
         Ok(p) => p.with_centre(args.centre),
         Err(e) => {
@@ -292,7 +592,7 @@ fn run_pyramid(args: PyramidArgs) {
         args.overlap
     );
 
-    // Sink
+    // Tile format
     let tile_format = match args.format {
         FormatArg::Png => TileFormat::Png,
         FormatArg::Jpeg => TileFormat::Jpeg {
@@ -300,24 +600,126 @@ fn run_pyramid(args: PyramidArgs) {
         },
         FormatArg::Raw => TileFormat::Raw,
     };
-    let sink = FsSink::new(&args.output, plan.clone(), tile_format);
+
+    // Resolve engine configuration
+    let blank_strategy = build_blank_tile_strategy(&args);
+    let failure_policy = build_failure_policy(&args);
+    let dedupe_strategy = build_dedupe_strategy(&args);
+    let checksum_algo: ChecksumAlgo = args.checksum_algo.clone().into();
+
+    // Manifest builder (attached to sinks that support it)
+    let manifest_builder = if args.manifest_emit_checksums {
+        Some(ManifestBuilder::new().with_checksums(checksum_algo))
+    } else {
+        None
+    };
 
     // Engine config
-    let engine_config = EngineConfig::default()
+    let mut engine_config = EngineConfig::default()
         .with_concurrency(args.concurrency)
         .with_buffer_size(args.buffer_size)
-        .with_blank_tile_strategy(if args.skip_blank {
-            BlankTileStrategy::Placeholder
-        } else {
-            BlankTileStrategy::Emit
-        });
+        .with_blank_tile_strategy(blank_strategy)
+        .with_failure_policy(failure_policy);
 
-    // Generate — select monolithic or streaming based on --memory-budget
+    if let Some(ds) = dedupe_strategy {
+        engine_config = engine_config.with_dedupe_strategy(ds);
+    }
+
+    // Resolve sink URI and build the appropriate sink.
+    let sink_uri = resolve_sink_uri(&args);
+    let resume_mode = resolve_resume_mode(&args);
+
+    // We dispatch on the URI scheme.  The code below builds the appropriate
+    // sink and then runs the engine.  Feature-gated variants fall back to a
+    // friendly error when the feature is not compiled in.
+    if let Some(rest) = sink_uri.strip_prefix("s3://") {
+        run_pyramid_s3(
+            rest,
+            &args,
+            &raster,
+            &plan,
+            tile_format,
+            engine_config,
+            resume_mode,
+            start,
+        );
+    } else if let Some(rest) = sink_uri.strip_prefix("packfile://") {
+        run_pyramid_packfile(
+            rest,
+            &args,
+            &raster,
+            &plan,
+            tile_format,
+            engine_config,
+            resume_mode,
+            start,
+        );
+    } else {
+        // fs:// (strip optional scheme prefix)
+        let base_dir = if let Some(p) = sink_uri.strip_prefix("fs://") {
+            PathBuf::from(p)
+        } else {
+            args.output.clone()
+        };
+
+        // Build FsSink with Phase 3 options
+        let mut sink = FsSink::new(&base_dir, plan.clone(), tile_format);
+        if let Some(mb) = manifest_builder {
+            sink = sink.with_manifest(mb);
+        }
+        if args.manifest_emit_checksums {
+            sink = sink.with_checksums(ChecksumMode::EmitOnly, checksum_algo);
+        }
+        if let Some(ds) = build_dedupe_strategy(&args) {
+            sink = sink.with_dedupe(ds);
+        }
+        if args.resume {
+            sink = sink.with_resume(true);
+        }
+
+        // The resumable entry point honours `resume_mode` (Overwrite wipes
+        // the output, Resume continues from a checkpoint, Verify checks).
+        // The streaming / MapReduce paths do not yet understand resume modes,
+        // so we only route through `run_generate` when `--memory-budget` is
+        // supplied *and* the user has not explicitly asked for resume/verify.
+        let result = if args.memory_budget.is_some()
+            && !matches!(resume_mode, ResumeMode::Resume | ResumeMode::Verify)
+        {
+            // Budgeted streaming / MapReduce path. Default here is still
+            // overwrite-in-place (no wipe); that's acceptable because the
+            // user opted into a different engine.
+            run_generate(&args, &raster, &plan, &sink, engine_config, start)
+        } else {
+            match generate_pyramid_resumable(&raster, &plan, &sink, &engine_config, resume_mode) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Error generating pyramid: {e}");
+                    process::exit(1);
+                }
+            }
+        };
+
+        finish_run(result, &base_dir, start);
+    }
+}
+
+/// Entry point for the monolithic / streaming / mapreduce generation paths
+/// (filesystem sink only).  Returns the [`libviprs::EngineResult`] for
+/// summary printing.
+fn run_generate(
+    args: &PyramidArgs,
+    raster: &Raster,
+    plan: &libviprs::PyramidPlan,
+    sink: &FsSink,
+    engine_config: EngineConfig,
+    _start: Instant,
+) -> libviprs::EngineResult {
     let observer = CollectingObserver::new();
-    let result = match args.memory_budget {
+
+    match args.memory_budget {
         None => {
             // No budget specified — use the original monolithic engine
-            match generate_pyramid_observed(&raster, &plan, &sink, &engine_config, &observer) {
+            match generate_pyramid_observed(raster, plan, sink, &engine_config, &observer) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error generating pyramid: {e}");
@@ -327,9 +729,6 @@ fn run_pyramid(args: PyramidArgs) {
         }
         Some(budget_mb) => {
             let budget_bytes = if budget_mb == 0 {
-                // Auto-select: use 1/4 of estimated monolithic peak as the
-                // budget. The auto engine will pick monolithic if the image
-                // fits, streaming otherwise.
                 let mono_est = plan.estimate_peak_memory_for_format(raster.format());
                 mono_est / 4
             } else {
@@ -339,17 +738,12 @@ fn run_pyramid(args: PyramidArgs) {
             let mono_est = plan.estimate_peak_memory_for_format(raster.format());
 
             if args.parallel {
-                // MapReduce engine: parallel strip rendering + per-strip tile workers
                 let mr_config = MapReduceConfig {
                     memory_budget_bytes: budget_bytes,
                     tile_concurrency: args.concurrency,
                     buffer_size: args.buffer_size,
                     background_rgb: [255, 255, 255],
-                    blank_tile_strategy: if args.skip_blank {
-                        BlankTileStrategy::Placeholder
-                    } else {
-                        BlankTileStrategy::Emit
-                    },
+                    blank_tile_strategy: engine_config.blank_tile_strategy,
                 };
 
                 if mono_est <= budget_bytes {
@@ -359,12 +753,10 @@ fn run_pyramid(args: PyramidArgs) {
                         mono_est as f64 / (1024.0 * 1024.0),
                     );
                 } else {
-                    let strip_h =
-                        libviprs::compute_strip_height(&plan, raster.format(), budget_bytes);
+                    let strip_h = compute_strip_height(plan, raster.format(), budget_bytes);
                     let sh = strip_h.unwrap_or(2 * args.tile_size);
-                    let inflight =
-                        compute_inflight_strips(&plan, raster.format(), sh, budget_bytes);
-                    let est = estimate_mapreduce_peak_memory(&plan, raster.format(), sh, inflight);
+                    let inflight = compute_inflight_strips(plan, raster.format(), sh, budget_bytes);
+                    let est = estimate_mapreduce_peak_memory(plan, raster.format(), sh, inflight);
                     eprintln!(
                         "MapReduce: budget {:.1} MB, strip_height={}, {} in-flight strips, estimated peak {:.1} MB",
                         budget_bytes as f64 / (1024.0 * 1024.0),
@@ -374,8 +766,7 @@ fn run_pyramid(args: PyramidArgs) {
                     );
                 }
 
-                match generate_pyramid_mapreduce_auto(&raster, &plan, &sink, &mr_config, &observer)
-                {
+                match generate_pyramid_mapreduce_auto(raster, plan, sink, &mr_config, &observer) {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("Error generating pyramid: {e}");
@@ -383,7 +774,6 @@ fn run_pyramid(args: PyramidArgs) {
                     }
                 }
             } else {
-                // Sequential streaming engine
                 let streaming_config = StreamingConfig {
                     memory_budget_bytes: budget_bytes,
                     engine: engine_config,
@@ -396,10 +786,9 @@ fn run_pyramid(args: PyramidArgs) {
                         mono_est as f64 / (1024.0 * 1024.0),
                     );
                 } else {
-                    let strip_h =
-                        libviprs::compute_strip_height(&plan, raster.format(), budget_bytes);
-                    let est = strip_h
-                        .map(|sh| libviprs::estimate_streaming_memory(&plan, raster.format(), sh));
+                    let strip_h = compute_strip_height(plan, raster.format(), budget_bytes);
+                    let est =
+                        strip_h.map(|sh| estimate_streaming_memory(plan, raster.format(), sh));
                     eprintln!(
                         "Streaming: budget {:.1} MB, strip_height={}, estimated peak {:.1} MB",
                         budget_bytes as f64 / (1024.0 * 1024.0),
@@ -408,7 +797,7 @@ fn run_pyramid(args: PyramidArgs) {
                     );
                 }
 
-                match generate_pyramid_auto(&raster, &plan, &sink, &streaming_config, &observer) {
+                match generate_pyramid_auto(raster, plan, sink, &streaming_config, &observer) {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("Error generating pyramid: {e}");
@@ -417,8 +806,11 @@ fn run_pyramid(args: PyramidArgs) {
                 }
             }
         }
-    };
+    }
+}
 
+/// Print the post-run summary line.
+fn finish_run(result: libviprs::EngineResult, output: &std::path::Path, start: Instant) {
     let elapsed = start.elapsed();
     let mut summary = format!(
         "Done: {} tiles, {} levels, peak memory {:.1} MB, {:.2}s",
@@ -431,7 +823,99 @@ fn run_pyramid(args: PyramidArgs) {
         summary.push_str(&format!(" ({} blank tiles skipped)", result.tiles_skipped));
     }
     eprintln!("{summary}");
-    eprintln!("Output: {}", args.output.display());
+    eprintln!("Output: {}", output.display());
+}
+
+// ---------------------------------------------------------------------------
+// S3 sink dispatch (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn run_pyramid_s3(
+    _rest: &str,
+    _args: &PyramidArgs,
+    _raster: &Raster,
+    _plan: &libviprs::PyramidPlan,
+    _tile_format: TileFormat,
+    _engine_config: EngineConfig,
+    _resume_mode: ResumeMode,
+    _start: Instant,
+) {
+    #[cfg(feature = "s3")]
+    {
+        // TODO Phase 3: parse bucket/prefix from _rest, build ObjectStoreConfig,
+        // construct ObjectStoreSink, run generate_pyramid_resumable or
+        // generate_pyramid_observed as appropriate.
+        eprintln!("Error: s3:// sink is not yet fully wired (Phase 3 TODO).");
+        process::exit(2);
+    }
+    #[cfg(not(feature = "s3"))]
+    {
+        eprintln!("Error: s3:// sink requires the `s3` feature — rebuild with `--features s3`.");
+        process::exit(2);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Packfile sink dispatch (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn run_pyramid_packfile(
+    _path: &str,
+    _args: &PyramidArgs,
+    _raster: &Raster,
+    _plan: &libviprs::PyramidPlan,
+    _tile_format: TileFormat,
+    _engine_config: EngineConfig,
+    _resume_mode: ResumeMode,
+    _start: Instant,
+) {
+    #[cfg(feature = "packfile")]
+    {
+        use libviprs::{PackfileFormat, PackfileSink};
+
+        // Infer archive format from path extension.
+        let path_lower = _path.to_lowercase();
+        let fmt = if path_lower.ends_with(".tar.gz") || path_lower.ends_with(".tgz") {
+            PackfileFormat::TarGz
+        } else if path_lower.ends_with(".zip") {
+            PackfileFormat::Zip
+        } else {
+            PackfileFormat::Tar
+        };
+
+        let sink = match PackfileSink::new(_path, fmt, _plan.clone(), _tile_format) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error creating packfile sink: {e}");
+                process::exit(1);
+            }
+        };
+
+        let result = match generate_pyramid_resumable(
+            _raster,
+            _plan,
+            &sink,
+            &_engine_config,
+            _resume_mode,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Error generating pyramid: {e}");
+                process::exit(1);
+            }
+        };
+
+        finish_run(result, sink.out_path(), _start);
+    }
+    #[cfg(not(feature = "packfile"))]
+    {
+        eprintln!(
+            "Error: packfile:// sink requires the `packfile` feature — rebuild with `--features packfile`."
+        );
+        process::exit(2);
+    }
 }
 
 fn run_info(args: InfoArgs) {

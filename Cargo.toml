@@ -15,6 +15,14 @@ incompatible_msrv = "warn"
 name = "viprs"
 path = "src/main.rs"
 
+[features]
+default = []
+s3 = ["libviprs/s3"]
+packfile = ["libviprs/packfile"]
+tracing = ["libviprs/tracing", "dep:tracing-subscriber", "dep:tracing"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 libviprs = { path = "../libviprs", features = ["pdfium"] }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
