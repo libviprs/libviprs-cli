@@ -11,7 +11,7 @@ use libviprs::{
     extract_page_image, generate_pyramid_auto, generate_pyramid_mapreduce_auto,
     generate_pyramid_observed, generate_pyramid_resumable,
     pdf::render_page_pdfium,
-    streaming::{compute_strip_height, estimate_streaming_memory},
+    streaming::{BudgetPolicy, compute_strip_height, estimate_streaming_memory},
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
 };
 
@@ -777,6 +777,7 @@ fn run_generate(
                 let streaming_config = StreamingConfig {
                     memory_budget_bytes: budget_bytes,
                     engine: engine_config,
+                    budget_policy: BudgetPolicy::Error,
                 };
 
                 if mono_est <= budget_bytes {
