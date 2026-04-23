@@ -6,10 +6,9 @@ use std::time::Instant;
 use clap::{ArgGroup, Parser, ValueEnum};
 use libviprs::{
     BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
-    EngineConfig, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout, ManifestBuilder,
-    MapReduceConfig, PyramidPlanner, Raster, ResumeMode, RetryPolicy, StreamingConfig, TileFormat,
-    extract_page_image, generate_pyramid_auto, generate_pyramid_mapreduce_auto,
-    generate_pyramid_observed, generate_pyramid_resumable,
+    EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout,
+    ManifestBuilder, PyramidPlanner, Raster, ResumeMode, RetryPolicy, TileFormat,
+    extract_page_image, generate_pyramid_resumable,
     pdf::render_page_pdfium,
     streaming::{BudgetPolicy, compute_strip_height, estimate_streaming_memory},
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
@@ -663,7 +662,7 @@ fn run_pyramid(args: PyramidArgs) {
         };
 
         // Build FsSink with Phase 3 options
-        let mut sink = FsSink::new(&base_dir, plan.clone(), tile_format);
+        let mut sink = FsSink::new(&base_dir, plan.clone()).with_format(tile_format);
         if let Some(mb) = manifest_builder {
             sink = sink.with_manifest(mb);
         }
@@ -706,6 +705,10 @@ fn run_pyramid(args: PyramidArgs) {
 /// Entry point for the monolithic / streaming / mapreduce generation paths
 /// (filesystem sink only).  Returns the [`libviprs::EngineResult`] for
 /// summary printing.
+///
+/// Routes through [`EngineBuilder`] so the CLI never constructs a
+/// `StreamingConfig` / `MapReduceConfig` / free-function call by hand —
+/// every knob flows through a single typed builder.
 fn run_generate(
     args: &PyramidArgs,
     raster: &Raster,
@@ -716,17 +719,10 @@ fn run_generate(
 ) -> libviprs::EngineResult {
     let observer = CollectingObserver::new();
 
-    match args.memory_budget {
-        None => {
-            // No budget specified — use the original monolithic engine
-            match generate_pyramid_observed(raster, plan, sink, &engine_config, &observer) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("Error generating pyramid: {e}");
-                    process::exit(1);
-                }
-            }
-        }
+    // Pick the engine kind + memory budget up-front so the diagnostic logging
+    // and the builder share a single decision point.
+    let (engine_kind, memory_budget) = match args.memory_budget {
+        None => (EngineKind::Monolithic, None),
         Some(budget_mb) => {
             let budget_bytes = if budget_mb == 0 {
                 let mono_est = plan.estimate_peak_memory_for_format(raster.format());
@@ -734,18 +730,9 @@ fn run_generate(
             } else {
                 budget_mb * 1024 * 1024
             };
-
             let mono_est = plan.estimate_peak_memory_for_format(raster.format());
 
             if args.parallel {
-                let mr_config = MapReduceConfig {
-                    memory_budget_bytes: budget_bytes,
-                    tile_concurrency: args.concurrency,
-                    buffer_size: args.buffer_size,
-                    background_rgb: [255, 255, 255],
-                    blank_tile_strategy: engine_config.blank_tile_strategy,
-                };
-
                 if mono_est <= budget_bytes {
                     eprintln!(
                         "MapReduce: budget {:.1} MB >= monolithic peak {:.1} MB, using monolithic engine",
@@ -765,21 +752,8 @@ fn run_generate(
                         est as f64 / (1024.0 * 1024.0),
                     );
                 }
-
-                match generate_pyramid_mapreduce_auto(raster, plan, sink, &mr_config, &observer) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("Error generating pyramid: {e}");
-                        process::exit(1);
-                    }
-                }
+                (EngineKind::MapReduce, Some(budget_bytes))
             } else {
-                let streaming_config = StreamingConfig {
-                    memory_budget_bytes: budget_bytes,
-                    engine: engine_config,
-                    budget_policy: BudgetPolicy::Error,
-                };
-
                 if mono_est <= budget_bytes {
                     eprintln!(
                         "Streaming: budget {:.1} MB >= monolithic peak {:.1} MB, using monolithic engine",
@@ -797,15 +771,34 @@ fn run_generate(
                         est.unwrap_or(0) as f64 / (1024.0 * 1024.0),
                     );
                 }
-
-                match generate_pyramid_auto(raster, plan, sink, &streaming_config, &observer) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("Error generating pyramid: {e}");
-                        process::exit(1);
-                    }
-                }
+                (EngineKind::Streaming, Some(budget_bytes))
             }
+        }
+    };
+
+    // Build once, run once. Every knob goes through typed setters.
+    let mut builder = EngineBuilder::new(raster, plan.clone(), sink)
+        .with_engine(engine_kind)
+        .with_observer(observer)
+        .with_concurrency(engine_config.concurrency)
+        .with_buffer_size(engine_config.buffer_size)
+        .with_background_rgb(engine_config.background_rgb)
+        .with_blank_strategy(engine_config.blank_tile_strategy)
+        .with_failure_policy(engine_config.failure_policy.clone());
+    if let Some(ds) = engine_config.dedupe_strategy {
+        builder = builder.with_dedupe(ds);
+    }
+    if let Some(bytes) = memory_budget {
+        builder = builder
+            .with_memory_budget(bytes)
+            .with_budget_policy(BudgetPolicy::Error);
+    }
+
+    match builder.run() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error generating pyramid: {e}");
+            process::exit(1);
         }
     }
 }
