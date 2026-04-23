@@ -7,8 +7,8 @@ use clap::{ArgGroup, Parser, ValueEnum};
 use libviprs::{
     BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
     EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout,
-    ManifestBuilder, PyramidPlanner, Raster, ResumeMode, RetryPolicy, TileFormat,
-    extract_page_image, generate_pyramid_resumable,
+    ManifestBuilder, PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy, TileFormat,
+    extract_page_image,
     pdf::render_page_pdfium,
     streaming::{BudgetPolicy, compute_strip_height, estimate_streaming_memory},
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
@@ -689,7 +689,16 @@ fn run_pyramid(args: PyramidArgs) {
             // user opted into a different engine.
             run_generate(&args, &raster, &plan, &sink, engine_config, start)
         } else {
-            match generate_pyramid_resumable(&raster, &plan, &sink, &engine_config, resume_mode) {
+            let policy = match resume_mode {
+                ResumeMode::Overwrite => ResumePolicy::overwrite(),
+                ResumeMode::Resume => ResumePolicy::resume(),
+                ResumeMode::Verify => ResumePolicy::verify(),
+            };
+            match EngineBuilder::new(&raster, plan.clone(), &sink)
+                .with_config(engine_config.clone())
+                .with_resume(policy)
+                .run()
+            {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error generating pyramid: {e}");
@@ -887,13 +896,16 @@ fn run_pyramid_packfile(
             }
         };
 
-        let result = match generate_pyramid_resumable(
-            _raster,
-            _plan,
-            &sink,
-            &_engine_config,
-            _resume_mode,
-        ) {
+        let policy = match _resume_mode {
+            ResumeMode::Overwrite => ResumePolicy::overwrite(),
+            ResumeMode::Resume => ResumePolicy::resume(),
+            ResumeMode::Verify => ResumePolicy::verify(),
+        };
+        let result = match EngineBuilder::new(_raster, _plan.clone(), &sink)
+            .with_config(_engine_config.clone())
+            .with_resume(policy)
+            .run()
+        {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Error generating pyramid: {e}");
