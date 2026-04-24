@@ -102,7 +102,28 @@ Install pre-commit (fmt + clippy) and pre-push (Docker test suite) hooks:
 ## Requirements
 
 - Rust 1.85+
-- libpdfium shared library (for `--render` flag)
+- libpdfium shared library (only for `--render` flag)
+
+### PDFium setup
+
+The `--render` flag requires `libpdfium.so` at runtime. Pre-compiled binaries are available from [libviprs-dep](https://github.com/libviprs/libviprs-dep/releases):
+
+```bash
+# x86_64
+curl -L -o pdfium.tgz \
+  https://github.com/libviprs/libviprs-dep/releases/download/pdfium-7725/pdfium-linux-x64.tgz
+
+# arm64
+curl -L -o pdfium.tgz \
+  https://github.com/libviprs/libviprs-dep/releases/download/pdfium-7725/pdfium-linux-arm64.tgz
+
+# Extract and install
+tar xzf pdfium.tgz
+sudo cp pdfium-linux-*/lib/libpdfium.so /usr/local/lib/
+sudo ldconfig
+```
+
+See the [libviprs-dep pdfium README](https://github.com/libviprs/libviprs-dep/tree/main/pdfium) for building from source or other versions.
 
 ## Related Crates
 
