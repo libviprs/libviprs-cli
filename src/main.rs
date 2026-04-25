@@ -1,3 +1,9 @@
+//! `viprs` command-line interface.
+//!
+//! See also: [interactive CLI reference](https://libviprs.org/cli/) for runnable
+//! examples and per-flag anchors used throughout the field-level documentation
+//! below.
+
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process;
@@ -52,22 +58,32 @@ struct PyramidArgs {
     output: PathBuf,
 
     /// Tile size in pixels.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-tile-size).
     #[arg(long, default_value = "256")]
     tile_size: u32,
 
     /// Tile overlap in pixels.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-overlap).
     #[arg(long, default_value = "0")]
     overlap: u32,
 
     /// Tile layout format.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-layout).
     #[arg(long, default_value = "deep-zoom")]
     layout: LayoutArg,
 
     /// Tile image format.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-format).
     #[arg(long, default_value = "png")]
     format: FormatArg,
 
     /// JPEG quality (1-100, only used with --format jpeg).
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-quality).
     #[arg(long, default_value = "85")]
     quality: u8,
 
@@ -80,6 +96,8 @@ struct PyramidArgs {
     page: usize,
 
     /// Number of worker threads (0 = single-threaded).
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-concurrency).
     #[arg(long, default_value = "0")]
     concurrency: usize,
 
@@ -133,6 +151,8 @@ struct PyramidArgs {
     /// otherwise.
     ///
     /// When omitted, the monolithic engine is used (original behavior).
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-memory-budget).
     #[arg(long, value_name = "MB")]
     memory_budget: Option<u64>,
 
@@ -141,6 +161,8 @@ struct PyramidArgs {
     /// When combined with --memory-budget, renders multiple strips concurrently
     /// (bounded by the budget) for higher throughput on multi-core systems.
     /// The --concurrency flag controls per-strip tile worker threads.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-parallel).
     #[arg(long)]
     parallel: bool,
 
@@ -149,10 +171,14 @@ struct PyramidArgs {
     // -------------------------------------------------------------------------
     /// Sink URI: fs://path, s3://bucket/prefix, or packfile://path.tar[.gz]/.zip.
     /// Defaults to the positional output directory as a filesystem sink.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-sink).
     #[arg(long, value_name = "URI", help_heading = "Output")]
     sink: Option<String>,
 
     /// Resume from checkpoint if present.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-resume).
     #[arg(
         long,
         conflicts_with_all = ["overwrite", "verify"],
@@ -165,6 +191,8 @@ struct PyramidArgs {
     /// This is the default behaviour when none of --resume, --overwrite, or
     /// --verify is supplied — running `viprs pyramid IN OUT` twice wipes
     /// `OUT` the second time and regenerates a clean pyramid.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-overwrite).
     #[arg(
         long,
         conflicts_with_all = ["resume", "verify"],
@@ -173,6 +201,8 @@ struct PyramidArgs {
     overwrite: bool,
 
     /// Verify existing output against checksums rather than regenerate.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-verify).
     #[arg(
         long,
         conflicts_with_all = ["resume", "overwrite"],
@@ -192,12 +222,16 @@ struct PyramidArgs {
     manifest_version: String,
 
     /// Emit per-tile checksums into the manifest.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-manifest-emit-checksums).
     #[arg(long, help_heading = "Manifest")]
     manifest_emit_checksums: bool,
 
     /// Hash algorithm used for per-tile checksums (blake3 or sha256).
     /// Only meaningful in combination with --manifest-emit-checksums or
     /// --dedupe-all; clap rejects the flag otherwise.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-checksum-algo).
     #[arg(
         long,
         default_value = "blake3",
@@ -234,6 +268,8 @@ struct PyramidArgs {
     /// If set, initialise tracing-subscriber at this log level.
     /// Requires a build with `--features tracing`; otherwise the command
     /// exits with an error when this flag is supplied.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-trace-level).
     #[arg(long, value_name = "LVL")]
     trace_level: Option<String>,
 
@@ -247,10 +283,14 @@ struct PyramidArgs {
     packfile: bool,
 
     /// Deduplicate blank (uniform-colour) tiles only (DedupeStrategy::Blanks).
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-dedupe-blanks).
     #[arg(long, conflicts_with = "dedupe_all", help_heading = "Dedupe")]
     dedupe_blanks: bool,
 
     /// Deduplicate all tiles by content hash, using --checksum-algo (mutually exclusive with --dedupe-blanks).
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-dedupe-all).
     #[arg(long, conflicts_with = "dedupe_blanks", help_heading = "Dedupe")]
     dedupe_all: bool,
 }
@@ -506,9 +546,12 @@ fn maybe_init_tracing(level: &Option<String>) {
     #[cfg(feature = "tracing")]
     {
         use tracing_subscriber::EnvFilter;
+        // @doc-snippet:begin slot=tracing-init imports=tracing_subscriber::EnvFilter
         tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new(_level))
+            // @doc-test: phase3_tracing.rs::emits_pipeline_span:371
+            .with_env_filter(EnvFilter::new(_level)) // @doc-flag: trace-level kind=param param_name=trace-level
             .init();
+        // @doc-snippet:end slot=tracing-init
     }
     #[cfg(not(feature = "tracing"))]
     {
@@ -549,13 +592,25 @@ fn run_pyramid(args: PyramidArgs) {
 
     // Plan
     let layout: Layout = args.layout.clone().into();
-    let planner = match PyramidPlanner::new(w, h, args.tile_size, args.overlap, layout) {
-        Ok(p) => p.with_centre(args.centre),
+    // @doc-snippet:begin slot=planner imports=PyramidPlanner,Layout
+    let planner = match PyramidPlanner::new(
+        w,
+        h,
+        // @doc-test: blank_tile_strategy.rs::emit_solid_white_matches_expected:138
+        args.tile_size, // @doc-flag: tile-size kind=param param_name=tile-size
+        // @doc-test: builder_sink_fs.rs::two_arg_new_defaults_to_png:47
+        args.overlap, // @doc-flag: overlap kind=param param_name=overlap
+        // @doc-test: google_centre_pyramid.rs::google_centre_portrait_plan_structure:107
+        layout, // @doc-flag: layout kind=param param_name=layout
+    ) {
+        // @doc-test: google_centre_pyramid.rs::google_centre_portrait_plan_structure:107
+        Ok(p) => p.with_centre(args.centre), // @doc-flag: centre kind=append
         Err(e) => {
             eprintln!("Error creating pyramid plan: {e}");
             process::exit(1);
         }
     };
+    // @doc-snippet:end slot=planner
 
     // Pre-render memory check
     let peak_memory = planner.estimate_peak_memory();
@@ -569,7 +624,10 @@ fn run_pyramid(args: PyramidArgs) {
         h
     );
 
+    // @doc-snippet:begin slot=memory-limit
+    // @doc-test: streaming_engine.rs::estimate_streaming_memory_reasonable:435
     if args.memory_limit > 0 {
+        // @doc-flag: memory-limit kind=param param_name=memory-limit
         let limit_bytes = args.memory_limit * 1024 * 1024;
         if peak_memory > limit_bytes {
             eprintln!(
@@ -581,6 +639,7 @@ fn run_pyramid(args: PyramidArgs) {
             process::exit(1);
         }
     }
+    // @doc-snippet:end slot=memory-limit
 
     let plan = planner.plan();
     eprintln!(
@@ -614,15 +673,30 @@ fn run_pyramid(args: PyramidArgs) {
     };
 
     // Engine config
+    // @doc-snippet:begin slot=engine-config imports=EngineConfig,BlankTileStrategy,FailurePolicy,DedupeStrategy,RetryPolicy
     let mut engine_config = EngineConfig::default()
-        .with_concurrency(args.concurrency)
-        .with_buffer_size(args.buffer_size)
-        .with_blank_tile_strategy(blank_strategy)
-        .with_failure_policy(failure_policy);
+        // @doc-test: builder_engine_surface.rs::builder_honours_with_concurrency:100
+        .with_concurrency(args.concurrency) // @doc-flag: concurrency kind=appendChain
+        // @doc-test: builder_engine_surface.rs::builder_honours_with_buffer_size:119
+        .with_buffer_size(args.buffer_size) // @doc-flag: buffer-size kind=appendChain
+        // @doc-test: blank_tile_strategy.rs::placeholder_solid_white_matches_expected:201
+        .with_blank_tile_strategy(blank_strategy) // @doc-flag: skip-blank kind=append
+        // @doc-test: phase3_blank_tolerance.rs::engine_with_tolerance_writes_placeholder_for_near_white_tiles:248
+        // @doc-flag: blank-tolerance kind=append
+        // @doc-test: phase3_retry.rs::retries_on_transient_errors:256
+        // @doc-flag: retry-max kind=param param_name=retry-max
+        // @doc-test: phase3_retry.rs::retries_on_transient_errors:256
+        // @doc-flag: retry-backoff kind=param param_name=retry-backoff
+        // @doc-test: builder_resume_retry.rs::builder_with_failure_policy_accepts_every_variant:145
+        .with_failure_policy(failure_policy); // @doc-flag: failure-policy kind=param param_name=failure-policy
 
     if let Some(ds) = dedupe_strategy {
-        engine_config = engine_config.with_dedupe_strategy(ds);
+        // @doc-test: phase3_dedupe_blanks.rs::blanks_dedupe_manifest_lists_references:364
+        // @doc-flag: dedupe-blanks kind=append
+        // @doc-test: phase3_dedupe_blanks.rs::all_mode_dedupes_identical_non_blank_tiles:467
+        engine_config = engine_config.with_dedupe_strategy(ds); // @doc-flag: dedupe-all kind=append
     }
+    // @doc-snippet:end slot=engine-config
 
     // Resolve sink URI and build the appropriate sink.
     let sink_uri = resolve_sink_uri(&args);
@@ -662,12 +736,19 @@ fn run_pyramid(args: PyramidArgs) {
         };
 
         // Build FsSink with Phase 3 options
-        let mut sink = FsSink::new(&base_dir, plan.clone()).with_format(tile_format);
+        // @doc-snippet:begin slot=sink-fs imports=FsSink,TileFormat,ChecksumMode,ChecksumAlgo,ManifestBuilder
+        let mut sink = FsSink::new(&base_dir, plan.clone())
+            // @doc-test: builder_sink_fs.rs::with_format_overrides_default:62
+            .with_format(tile_format); // @doc-flag: format kind=param param_name=format
+        // @doc-test: builder_sink_fs.rs::with_format_overrides_default:62
+        // @doc-flag: quality kind=param param_name=quality
         if let Some(mb) = manifest_builder {
-            sink = sink.with_manifest(mb);
+            // @doc-test: builder_sink_fs.rs::compose_format_checksums_manifest_resume:110
+            sink = sink.with_manifest(mb); // @doc-flag: manifest-emit-checksums kind=append
         }
         if args.manifest_emit_checksums {
-            sink = sink.with_checksums(ChecksumMode::EmitOnly, checksum_algo);
+            // @doc-test: phase3_checksum.rs::emit_only_populates_manifest_checksums:223
+            sink = sink.with_checksums(ChecksumMode::EmitOnly, checksum_algo); // @doc-flag: checksum-algo kind=param param_name=checksum-algo
         }
         if let Some(ds) = build_dedupe_strategy(&args) {
             sink = sink.with_dedupe(ds);
@@ -675,6 +756,7 @@ fn run_pyramid(args: PyramidArgs) {
         if args.resume {
             sink = sink.with_resume(true);
         }
+        // @doc-snippet:end slot=sink-fs
 
         // The resumable entry point honours `resume_mode` (Overwrite wipes
         // the output, Resume continues from a checkpoint, Verify checks).
@@ -786,8 +868,10 @@ fn run_generate(
     };
 
     // Build once, run once. Every knob goes through typed setters.
+    // @doc-snippet:begin slot=engine-builder imports=EngineBuilder,EngineKind,CollectingObserver,BudgetPolicy,ResumePolicy
     let mut builder = EngineBuilder::new(raster, plan.clone(), sink)
-        .with_engine(engine_kind)
+        // @doc-test: builder_match_composition.rs::engine_kind_through_match:100
+        .with_engine(engine_kind) // @doc-flag: parallel kind=appendChain
         .with_observer(observer)
         .with_concurrency(engine_config.concurrency)
         .with_buffer_size(engine_config.buffer_size)
@@ -799,9 +883,16 @@ fn run_generate(
     }
     if let Some(bytes) = memory_budget {
         builder = builder
-            .with_memory_budget(bytes)
+            // @doc-test: builder_engine_streaming.rs::with_memory_budget_drives_strip_height:92
+            .with_memory_budget(bytes) // @doc-flag: memory-budget kind=appendChain
             .with_budget_policy(BudgetPolicy::Error);
     }
+    // @doc-test: builder_resume_matrix.rs::monolithic_resume_with_raster_source:110
+    // @doc-flag: resume kind=appendChain
+    // @doc-test: builder_resume_matrix.rs::monolithic_overwrite_with_raster_source:94
+    // @doc-flag: overwrite kind=appendChain
+    // @doc-test: builder_resume_matrix.rs::monolithic_verify_with_raster_source:134
+    // @doc-flag: verify kind=appendChain
 
     match builder.run() {
         Ok(r) => r,
@@ -810,10 +901,12 @@ fn run_generate(
             process::exit(1);
         }
     }
+    // @doc-snippet:end slot=engine-builder
 }
 
 /// Print the post-run summary line.
 fn finish_run(result: libviprs::EngineResult, output: &std::path::Path, start: Instant) {
+    // @doc-snippet:begin slot=finish imports=libviprs::EngineResult
     let elapsed = start.elapsed();
     let mut summary = format!(
         "Done: {} tiles, {} levels, peak memory {:.1} MB, {:.2}s",
@@ -827,6 +920,7 @@ fn finish_run(result: libviprs::EngineResult, output: &std::path::Path, start: I
     }
     eprintln!("{summary}");
     eprintln!("Output: {}", output.display());
+    // @doc-snippet:end slot=finish
 }
 
 // ---------------------------------------------------------------------------
@@ -846,11 +940,15 @@ fn run_pyramid_s3(
 ) {
     #[cfg(feature = "s3")]
     {
+        // @doc-snippet:begin slot=sink-s3 imports=ObjectStoreSink
         // TODO Phase 3: parse bucket/prefix from _rest, build ObjectStoreConfig,
         // construct ObjectStoreSink, run generate_pyramid_resumable or
         // generate_pyramid_observed as appropriate.
+        // @doc-test: phase3_packfile.rs::tar_sink_produces_valid_archive:177
+        // @doc-flag: sink kind=override
         eprintln!("Error: s3:// sink is not yet fully wired (Phase 3 TODO).");
         process::exit(2);
+        // @doc-snippet:end slot=sink-s3
     }
     #[cfg(not(feature = "s3"))]
     {
@@ -888,6 +986,7 @@ fn run_pyramid_packfile(
             PackfileFormat::Tar
         };
 
+        // @doc-snippet:begin slot=sink-packfile imports=PackfileSink,PackfileFormat,TileFormat
         let sink = match PackfileSink::new(_path, fmt, _plan.clone(), _tile_format) {
             Ok(s) => s,
             Err(e) => {
@@ -895,6 +994,7 @@ fn run_pyramid_packfile(
                 process::exit(1);
             }
         };
+        // @doc-snippet:end slot=sink-packfile
 
         let policy = match _resume_mode {
             ResumeMode::Overwrite => ResumePolicy::overwrite(),
@@ -1151,14 +1251,19 @@ fn load_source(args: &PyramidArgs) -> Raster {
         .unwrap_or("")
         .to_lowercase();
 
+    // @doc-snippet:begin slot=load-source imports=Raster,extract_page_image,render_page_pdfium,decode_file
     if ext == "pdf" {
+        // @doc-test: pdfium_integration.rs::libviprs_pdfium_render_paths:34
         if args.render {
+            // @doc-flag: render kind=override
             // Use PDFium to render the page (vector PDFs)
             eprintln!(
                 "Rendering PDF page {} at {} DPI (pdfium)...",
                 args.page, args.dpi
             );
+            // @doc-test: pdfium_integration.rs::libviprs_pdfium_render_paths:34
             match render_page_pdfium(&path, args.page, args.dpi) {
+                // @doc-flag: dpi kind=param param_name=dpi
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error rendering PDF with pdfium: {e}");
@@ -1171,7 +1276,9 @@ fn load_source(args: &PyramidArgs) -> Raster {
         } else {
             // Extract embedded raster image (scanned PDFs)
             eprintln!("Extracting image from PDF page {}...", args.page);
+            // @doc-test: pdf_ops.rs::extract_page_image_from_blueprint:31
             let raster = match extract_page_image(&path, args.page) {
+                // @doc-flag: page kind=param param_name=page
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error extracting image from PDF: {e}");
@@ -1183,7 +1290,9 @@ fn load_source(args: &PyramidArgs) -> Raster {
             };
 
             // Optionally resize to match PDF page dimensions at the given DPI
+            // @doc-test: pdf_to_pyramid.rs::pdf_to_georeferenced_pyramid_memory:17
             if args.match_page_size {
+                // @doc-flag: match-page-size kind=append
                 let page_dims = match libviprs::pdf_info(&path) {
                     Ok(info) => {
                         let page_info = info.pages.iter().find(|p| p.page_number == args.page);
@@ -1239,9 +1348,11 @@ fn load_source(args: &PyramidArgs) -> Raster {
             }
         }
     }
+    // @doc-snippet:end slot=load-source
 }
 
 fn build_geo_transform(args: &PyramidArgs, _w: u32, _h: u32) -> Option<GeoTransform> {
+    // @doc-snippet:begin slot=geo imports=GeoTransform,GeoCoord
     let origin_str = args.geo_origin.as_ref()?;
     let scale_str = args.geo_scale.as_ref()?;
 
@@ -1249,10 +1360,13 @@ fn build_geo_transform(args: &PyramidArgs, _w: u32, _h: u32) -> Option<GeoTransf
     let scale = parse_coord_pair(scale_str, "geo-scale");
 
     Some(GeoTransform::from_origin_and_scale(
-        GeoCoord::new(origin.0, origin.1),
-        scale.0,
+        // @doc-test: pdf_to_pyramid.rs::pdf_to_georeferenced_pyramid_memory:17
+        GeoCoord::new(origin.0, origin.1), // @doc-flag: geo-origin kind=param param_name=geo-origin
+        // @doc-test: pdf_to_pyramid.rs::pdf_to_georeferenced_pyramid_memory:17
+        scale.0, // @doc-flag: geo-scale kind=param param_name=geo-scale
         scale.1,
     ))
+    // @doc-snippet:end slot=geo
 }
 
 fn parse_coord_pair(s: &str, name: &str) -> (f64, f64) {
