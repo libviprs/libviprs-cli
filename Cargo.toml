@@ -36,4 +36,4 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 # `Pdfium`. Keep this pin in lockstep with `../libviprs/Cargo.toml`;
 # drop both once the fork is upstreamed and released.
 [patch.crates-io]
-pdfium-render = { git = "https://github.com/libviprs/pdfium-render.git", branch = "libviprs/per-call-thread-safety" }
+pdfium-render = { git = "https://github.com/libviprs/pdfium-render.git", branch = "libviprs/integration" }

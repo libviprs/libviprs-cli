@@ -1033,8 +1033,8 @@ dependencies = [
 
 [[package]]
 name = "pdfium-render"
-version = "0.8.37"
-source = "git+https://github.com/libviprs/pdfium-render.git?branch=libviprs%2Fper-call-thread-safety#f0bda9f30be1be0eb7ac7373bad4d24c411f338a"
+version = "0.9.3"
+source = "git+https://github.com/libviprs/pdfium-render.git?branch=libviprs%2Fintegration#1000a1aff1888425004c11432b376d2c36a4d3f2"
 dependencies = [
  "bitflags",
  "bytemuck",
