@@ -20,6 +20,25 @@ use libviprs::{
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
 };
 
+/// Upper bound, in megabytes, accepted for `--memory-limit` and
+/// `--memory-budget`. Values above this are rejected at parse time. The cap is
+/// 16 Ti MB, so the byte conversion (`mb * 1024 * 1024`) tops out at 2^54,
+/// which stays well inside `u64` and can never wrap.
+const MEMORY_MB_CAP: u64 = 16 * 1024 * 1024;
+
+/// Convert a megabyte count into bytes.
+///
+/// Callers only pass values sourced from `--memory-limit` / `--memory-budget`,
+/// which clap caps at [`MEMORY_MB_CAP`] during parsing, so the `checked_mul`
+/// never returns `None`. The check is kept as a defensive guard: it turns any
+/// future gap in the parse-time cap into a controlled panic instead of a silent
+/// wraparound that would invert the memory guard's meaning.
+fn mb_to_bytes(mb: u64) -> u64 {
+    mb.checked_mul(1024 * 1024).expect(
+        "memory value in MB is capped at parse time, so the byte conversion cannot overflow",
+    )
+}
+
 #[derive(Parser)]
 #[command(name = "viprs", about = "Generate tile pyramids from images and PDFs")]
 struct Cli {
@@ -136,7 +155,11 @@ struct PyramidArgs {
     /// Memory limit in MB for the raster pipeline. If the estimated peak
     /// memory exceeds this limit, the command exits with an error before
     /// rendering. Use 0 to disable the check (default).
-    #[arg(long, default_value = "0")]
+    #[arg(
+        long,
+        default_value = "0",
+        value_parser = clap::value_parser!(u64).range(..=MEMORY_MB_CAP)
+    )]
     memory_limit: u64,
 
     /// Memory budget in megabytes for streaming pyramid generation.
@@ -153,7 +176,11 @@ struct PyramidArgs {
     /// When omitted, the monolithic engine is used (original behavior).
     ///
     /// See also: [interactive example](https://libviprs.org/cli/#flag-memory-budget).
-    #[arg(long, value_name = "MB")]
+    #[arg(
+        long,
+        value_name = "MB",
+        value_parser = clap::value_parser!(u64).range(..=MEMORY_MB_CAP)
+    )]
     memory_budget: Option<u64>,
 
     /// Use the parallel MapReduce engine for strip processing.
@@ -628,7 +655,7 @@ fn run_pyramid(args: PyramidArgs) {
     // @doc-test: streaming_engine.rs::estimate_streaming_memory_reasonable:435
     if args.memory_limit > 0 {
         // @doc-flag: memory-limit kind=param param_name=memory-limit
-        let limit_bytes = args.memory_limit * 1024 * 1024;
+        let limit_bytes = mb_to_bytes(args.memory_limit);
         if peak_memory > limit_bytes {
             eprintln!(
                 "Error: estimated peak memory ({:.1} MB) exceeds --memory-limit ({} MB)",
@@ -819,7 +846,7 @@ fn run_generate(
                 let mono_est = plan.estimate_peak_memory_for_format(raster.format());
                 mono_est / 4
             } else {
-                budget_mb * 1024 * 1024
+                mb_to_bytes(budget_mb)
             };
             let mono_est = plan.estimate_peak_memory_for_format(raster.format());
 
@@ -1412,4 +1439,59 @@ fn parse_coord_pair(s: &str, name: &str) -> (f64, f64) {
         process::exit(1);
     });
     (x, y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse a `viprs pyramid`-style invocation from just the flags under test,
+    /// filling in the two required positionals.
+    fn parse_pyramid(extra: &[&str]) -> Result<PyramidArgs, clap::Error> {
+        let mut argv = vec!["viprs", "in.pdf", "out"];
+        argv.extend_from_slice(extra);
+        PyramidArgs::try_parse_from(argv)
+    }
+
+    #[test]
+    fn mb_to_bytes_converts_within_u64() {
+        assert_eq!(mb_to_bytes(0), 0);
+        assert_eq!(mb_to_bytes(1), 1024 * 1024);
+        // The cap value still fits, proving the byte math never wraps.
+        assert_eq!(mb_to_bytes(MEMORY_MB_CAP), MEMORY_MB_CAP * 1024 * 1024);
+    }
+
+    #[test]
+    fn memory_limit_at_cap_is_accepted() {
+        let args = parse_pyramid(&["--memory-limit", &MEMORY_MB_CAP.to_string()])
+            .expect("the cap value must parse");
+        assert_eq!(args.memory_limit, MEMORY_MB_CAP);
+    }
+
+    #[test]
+    fn memory_limit_over_cap_is_rejected() {
+        let err = parse_pyramid(&["--memory-limit", &(MEMORY_MB_CAP + 1).to_string()])
+            .err()
+            .expect("an over-cap memory limit must be rejected at parse time");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn memory_budget_over_cap_is_rejected() {
+        let err = parse_pyramid(&["--memory-budget", &(MEMORY_MB_CAP + 1).to_string()])
+            .err()
+            .expect("an over-cap memory budget must be rejected at parse time");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn former_overflow_value_is_now_rejected() {
+        // Before the cap, `u64::MAX * 1024 * 1024` panicked in debug and wrapped
+        // to a tiny limit in release, inverting the guard. It must now be
+        // rejected up front rather than reaching the byte arithmetic.
+        let err = parse_pyramid(&["--memory-limit", &u64::MAX.to_string()])
+            .err()
+            .expect("u64::MAX must be rejected instead of wrapping");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
 }
