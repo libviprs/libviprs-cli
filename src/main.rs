@@ -1531,4 +1531,173 @@ mod tests {
             "help text must not advertise the unimplemented s3:// sink scheme, got:\n{help}"
         );
     }
+
+    // ----------------------------------------------------------------------
+    // parse_duration_literal
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn duration_ms_wins_over_s() {
+        // The regression the issue calls out: if the `s` suffix were stripped
+        // before `ms`, `"50ms"` would resolve to 50 seconds. Pin the correct
+        // millisecond reading so a reordered strip-suffix chain fails here.
+        assert_eq!(
+            parse_duration_literal("50ms").unwrap(),
+            std::time::Duration::from_millis(50)
+        );
+    }
+
+    #[test]
+    fn duration_bare_number_is_milliseconds() {
+        // A bare number means milliseconds, matching the old
+        // --retry-backoff semantics.
+        assert_eq!(
+            parse_duration_literal("250").unwrap(),
+            std::time::Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn duration_seconds_micros_nanos_units() {
+        assert_eq!(
+            parse_duration_literal("2s").unwrap(),
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(
+            parse_duration_literal("500us").unwrap(),
+            std::time::Duration::from_micros(500)
+        );
+        // The subtlety noted in the issue: `"50ns"` parses as nanoseconds
+        // rather than being mistaken for a bare `ns`-less number.
+        assert_eq!(
+            parse_duration_literal("50ns").unwrap(),
+            std::time::Duration::from_nanos(50)
+        );
+    }
+
+    #[test]
+    fn duration_trims_surrounding_whitespace() {
+        assert_eq!(
+            parse_duration_literal("  10ms  ").unwrap(),
+            std::time::Duration::from_millis(10)
+        );
+    }
+
+    #[test]
+    fn duration_empty_is_rejected() {
+        assert!(parse_duration_literal("").is_err());
+        assert!(parse_duration_literal("   ").is_err());
+    }
+
+    #[test]
+    fn duration_non_numeric_is_rejected() {
+        assert!(parse_duration_literal("abcms").is_err());
+        assert!(parse_duration_literal("ms").is_err());
+    }
+
+    #[test]
+    fn duration_large_value_saturates_without_panic() {
+        // A huge nanosecond count must saturate rather than overflow-panic.
+        let d = parse_duration_literal(&format!("{}s", u64::MAX)).unwrap();
+        assert_eq!(d, std::time::Duration::from_nanos(u64::MAX));
+    }
+
+    // ----------------------------------------------------------------------
+    // parse_failure_policy
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn failure_policy_fail_fast() {
+        assert!(matches!(
+            parse_failure_policy("fail-fast").unwrap(),
+            FailurePolicy::FailFast
+        ));
+    }
+
+    #[test]
+    fn failure_policy_retry_reads_count_and_backoff() {
+        // `retry=3,50ms` must yield RetryThenFail with 3 retries and a 50 ms
+        // (not 50 s) backoff, guarding the ms-over-s ordering end to end.
+        match parse_failure_policy("retry=3,50ms").unwrap() {
+            FailurePolicy::RetryThenFail(policy) => {
+                assert_eq!(policy.max_retries, 3);
+                assert_eq!(policy.initial_backoff, std::time::Duration::from_millis(50));
+            }
+            other => panic!("expected RetryThenFail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failure_policy_retry_skip_variant() {
+        match parse_failure_policy("retry-skip=5,2s").unwrap() {
+            FailurePolicy::RetryThenSkip(policy) => {
+                assert_eq!(policy.max_retries, 5);
+                assert_eq!(policy.initial_backoff, std::time::Duration::from_secs(2));
+            }
+            other => panic!("expected RetryThenSkip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failure_policy_rejects_missing_separators() {
+        // No `=`, no `,`, and an unknown kind must all be rejected.
+        assert!(parse_failure_policy("retry").is_err());
+        assert!(parse_failure_policy("retry=3").is_err());
+        assert!(parse_failure_policy("bogus=3,50ms").is_err());
+    }
+
+    #[test]
+    fn failure_policy_rejects_non_numeric_count() {
+        assert!(parse_failure_policy("retry=x,50ms").is_err());
+    }
+
+    // ----------------------------------------------------------------------
+    // resolve_sink_uri
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn sink_uri_defaults_to_fs() {
+        let args = parse_pyramid(&[]).expect("bare invocation must parse");
+        assert_eq!(resolve_sink_uri(&args), "fs://out");
+    }
+
+    #[test]
+    fn sink_uri_packfile_shorthand() {
+        let args = parse_pyramid(&["--packfile"]).expect("--packfile must parse");
+        assert_eq!(resolve_sink_uri(&args), "packfile://out.tar");
+    }
+
+    #[test]
+    fn sink_uri_explicit_sink_passthrough() {
+        let args = parse_pyramid(&["--sink", "s3://bucket/key"]).expect("--sink must parse");
+        assert_eq!(resolve_sink_uri(&args), "s3://bucket/key");
+    }
+
+    // ----------------------------------------------------------------------
+    // resolve_resume_mode
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn resume_mode_defaults_to_overwrite() {
+        let args = parse_pyramid(&[]).expect("bare invocation must parse");
+        assert_eq!(resolve_resume_mode(&args), ResumeMode::Overwrite);
+    }
+
+    #[test]
+    fn resume_mode_resume_flag() {
+        let args = parse_pyramid(&["--resume"]).expect("--resume must parse");
+        assert_eq!(resolve_resume_mode(&args), ResumeMode::Resume);
+    }
+
+    #[test]
+    fn resume_mode_verify_flag() {
+        let args = parse_pyramid(&["--verify"]).expect("--verify must parse");
+        assert_eq!(resolve_resume_mode(&args), ResumeMode::Verify);
+    }
+
+    #[test]
+    fn resume_mode_overwrite_flag_is_explicit() {
+        let args = parse_pyramid(&["--overwrite"]).expect("--overwrite must parse");
+        assert_eq!(resolve_resume_mode(&args), ResumeMode::Overwrite);
+    }
 }
