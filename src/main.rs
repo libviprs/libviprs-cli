@@ -833,8 +833,36 @@ fn run_generate(
                 } else {
                     let strip_h = compute_strip_height(plan, raster.format(), budget_bytes);
                     let sh = strip_h.unwrap_or(2 * args.tile_size);
-                    let inflight = compute_inflight_strips(plan, raster.format(), sh, budget_bytes);
-                    let est = estimate_mapreduce_peak_memory(plan, raster.format(), sh, inflight);
+                    // Mirror the engine's channel-backlog charge (issue #103 in
+                    // core): with tile workers enabled (--concurrency > 0), the
+                    // parallel emission path holds up to `buffer_size +
+                    // concurrency` decoded tiles in its bounded channel. Charge
+                    // the same backlog here so this diagnostic matches what
+                    // `generate_pyramid_mapreduce` will actually compute from
+                    // the --memory-budget the user supplied.
+                    let channel_bytes = if engine_config.concurrency > 0 {
+                        let tile_bytes = plan.tile_size as u64
+                            * plan.tile_size as u64
+                            * raster.format().bytes_per_pixel() as u64;
+                        (engine_config.buffer_size as u64 + engine_config.concurrency as u64)
+                            * tile_bytes
+                    } else {
+                        0
+                    };
+                    let inflight = compute_inflight_strips(
+                        plan,
+                        raster.format(),
+                        sh,
+                        channel_bytes,
+                        budget_bytes,
+                    );
+                    let est = estimate_mapreduce_peak_memory(
+                        plan,
+                        raster.format(),
+                        sh,
+                        inflight,
+                        channel_bytes,
+                    );
                     eprintln!(
                         "MapReduce: budget {:.1} MB, strip_height={}, {} in-flight strips, estimated peak {:.1} MB",
                         budget_bytes as f64 / (1024.0 * 1024.0),
