@@ -196,7 +196,7 @@ struct PyramidArgs {
     // -------------------------------------------------------------------------
     // Phase 3 hardening flags
     // -------------------------------------------------------------------------
-    /// Sink URI: fs://path, s3://bucket/prefix, or packfile://path.tar[.gz]/.zip.
+    /// Sink URI: fs://path or packfile://path.tar[.gz]/.zip.
     /// Defaults to the positional output directory as a filesystem sink.
     ///
     /// See also: [interactive example](https://libviprs.org/cli/#flag-sink).
@@ -301,10 +301,16 @@ struct PyramidArgs {
     trace_level: Option<String>,
 
     /// Shorthand for --sink packfile://<output>.tar (requires packfile feature).
-    /// Conflicts with --sink, --dedupe-all, and --dedupe-blanks.
+    /// Conflicts with --sink, --dedupe-all, --dedupe-blanks, and
+    /// --manifest-emit-checksums.
+    ///
+    /// The packfile sink writes a self-describing archive but does not carry
+    /// the versioned per-tile checksum manifest that FsSink emits, so pairing
+    /// it with --manifest-emit-checksums is rejected rather than silently
+    /// dropping the checksum request.
     #[arg(
         long,
-        conflicts_with_all = ["sink", "dedupe_all", "dedupe_blanks"],
+        conflicts_with_all = ["sink", "dedupe_all", "dedupe_blanks", "manifest_emit_checksums"],
         help_heading = "Output",
     )]
     packfile: bool,
@@ -1493,5 +1499,36 @@ mod tests {
             .err()
             .expect("u64::MAX must be rejected instead of wrapping");
         assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn packfile_with_manifest_checksums_is_rejected() {
+        // The packfile sink cannot carry per-tile checksums, so requesting them
+        // alongside --packfile must fail loudly at parse time rather than
+        // exiting 0 with the checksum request silently dropped.
+        let err = parse_pyramid(&["--packfile", "--manifest-emit-checksums"])
+            .err()
+            .expect("--packfile with --manifest-emit-checksums must be rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn packfile_alone_still_parses() {
+        // The new conflict must not regress the plain --packfile shorthand.
+        let args = parse_pyramid(&["--packfile"]).expect("--packfile alone must still parse");
+        assert!(args.packfile);
+        assert!(!args.manifest_emit_checksums);
+    }
+
+    #[test]
+    fn help_does_not_advertise_s3() {
+        // The s3:// sink is a compiled-in stub, so the help must not advertise
+        // an `s3://` scheme users cannot actually use.
+        use clap::CommandFactory;
+        let help = PyramidArgs::command().render_long_help().to_string();
+        assert!(
+            !help.contains("s3://"),
+            "help text must not advertise the unimplemented s3:// sink scheme, got:\n{help}"
+        );
     }
 }
