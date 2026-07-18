@@ -833,8 +833,31 @@ fn run_generate(
                 } else {
                     let strip_h = compute_strip_height(plan, raster.format(), budget_bytes);
                     let sh = strip_h.unwrap_or(2 * args.tile_size);
-                    let inflight = compute_inflight_strips(plan, raster.format(), sh, budget_bytes);
-                    let est = estimate_mapreduce_peak_memory(plan, raster.format(), sh, inflight);
+                    // Charge the parallel tile-emission channel backlog against the
+                    // budget exactly as the core MapReduce path does, so the printed
+                    // estimate stays honest under `--concurrency` (libviprs#327/#103).
+                    let bpp = raster.format().bytes_per_pixel() as u64;
+                    let channel_bytes = if engine_config.concurrency > 0 {
+                        let tile_bytes = plan.tile_size as u64 * plan.tile_size as u64 * bpp;
+                        (engine_config.buffer_size as u64 + engine_config.concurrency as u64)
+                            * tile_bytes
+                    } else {
+                        0
+                    };
+                    let inflight = compute_inflight_strips(
+                        plan,
+                        raster.format(),
+                        sh,
+                        channel_bytes,
+                        budget_bytes,
+                    );
+                    let est = estimate_mapreduce_peak_memory(
+                        plan,
+                        raster.format(),
+                        sh,
+                        inflight,
+                        channel_bytes,
+                    );
                     eprintln!(
                         "MapReduce: budget {:.1} MB, strip_height={}, {} in-flight strips, estimated peak {:.1} MB",
                         budget_bytes as f64 / (1024.0 * 1024.0),
