@@ -13,7 +13,7 @@
 //! input becomes a typed error (exit 1) rather than a process abort
 //! (`CLI_CONTRACT.md` §8).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Arg, ArgMatches, Command, value_parser};
@@ -102,6 +102,48 @@ pub fn decode_limits(m: &ArgMatches) -> DecodeLimits {
         limits = limits.with_max_alloc_bytes(v);
     }
     limits
+}
+
+/// **THE S2 idiom** (`CLI_CONTRACT.md` §3.2, the N-image→image / variadic
+/// shape): split a single trailing multi-value positional into its inputs and
+/// its output path.
+///
+/// clap 4.5 makes the naive two-positional encoding (`A B [C…]` variadic
+/// *followed by* a separate `OUT`) illegal: a `num_args(1..)`/`num_args(2..)`
+/// positional is greedy and there is no unambiguous place for a second trailing
+/// positional to begin, so clap rejects the command at build time. The legal —
+/// and canonical — encoding is therefore **one** trailing positional declared
+/// `num_args(2..)` (at least two values: one or more inputs plus the output).
+/// This helper reproduces the vips `<op> A B [C…] OUT` order by peeling the
+/// **last** collected value off as `OUT` and returning the rest, in order, as
+/// the inputs.
+///
+/// Every variadic family reuses this: `bands` (`bandjoin`, `bandrank`) is the
+/// first; later N-image→image commands (`arithmetic add`, `conversion
+/// arrayjoin`, …) declare the identical positional and call this rather than
+/// re-deriving the split.
+///
+/// # Errors
+///
+/// Errors if fewer than two values are present. `num_args(2..)` already enforces
+/// this at parse time, so this only guards a caller that wired a looser
+/// positional (and keeps the split total, never panicking on an empty slice).
+pub fn inputs_and_out(m: &ArgMatches, id: &str) -> Result<(Vec<PathBuf>, PathBuf)> {
+    let mut vals: Vec<PathBuf> = m
+        .get_many::<String>(id)
+        .into_iter()
+        .flatten()
+        .map(PathBuf::from)
+        .collect();
+    if vals.len() < 2 {
+        bail!(
+            "the {id} argument needs at least two values (one or more inputs \
+             followed by the output path), got {}",
+            vals.len()
+        );
+    }
+    let out = vals.pop().expect("length checked to be >= 2 above");
+    Ok((vals, out))
 }
 
 /// Decode an image file under the supplied per-decode limits.
@@ -335,6 +377,43 @@ mod tests {
         let cast = cast_float_to_uchar_round_even(&r).unwrap();
         assert_eq!(cast.format(), PixelFormat::Gray8);
         assert_eq!(cast.data(), &[0, 2, 2, 4]);
+    }
+
+    #[test]
+    fn inputs_and_out_splits_last_positional_as_out() {
+        // The S2 idiom: one trailing `num_args(2..)` positional, split into
+        // (inputs, out) with the LAST value peeled off as the output.
+        let m = Command::new("bandjoin")
+            .arg(
+                Arg::new("INPUTS")
+                    .required(true)
+                    .num_args(2..)
+                    .value_name("A B [C…] OUT"),
+            )
+            .try_get_matches_from(["bandjoin", "a.png", "b.png", "c.png", "out.png"])
+            .unwrap();
+        let (inputs, out) = inputs_and_out(&m, "INPUTS").unwrap();
+        assert_eq!(
+            inputs,
+            vec![
+                PathBuf::from("a.png"),
+                PathBuf::from("b.png"),
+                PathBuf::from("c.png"),
+            ]
+        );
+        assert_eq!(out, PathBuf::from("out.png"));
+    }
+
+    #[test]
+    fn inputs_and_out_minimum_two_values() {
+        // The minimum legal S2 invocation: one input + the output.
+        let m = Command::new("bandjoin")
+            .arg(Arg::new("INPUTS").required(true).num_args(2..))
+            .try_get_matches_from(["bandjoin", "in.png", "out.png"])
+            .unwrap();
+        let (inputs, out) = inputs_and_out(&m, "INPUTS").unwrap();
+        assert_eq!(inputs, vec![PathBuf::from("in.png")]);
+        assert_eq!(out, PathBuf::from("out.png"));
     }
 
     #[test]

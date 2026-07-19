@@ -439,20 +439,20 @@ mod tests {
 
     #[test]
     fn stub_families_contribute_nothing_yet() {
-        // Every pre-declared family other than morphology is an empty stub in
-        // Wave 1: no commands, no metas, and its run() bails.
+        // A pre-declared *stub* family (its `metas()` still empty) must also
+        // contribute no commands — no half-wired module. An *implemented*
+        // family (non-empty `metas()`, e.g. the morphology reference and the
+        // Wave-2 `bands` lane) is exercised by its own module's tests instead.
+        // Keying off metas-emptiness (rather than a hard-coded family name
+        // list) keeps this check wave-agnostic: each family wave fills in its
+        // module without editing this file.
         for fam in FAMILIES {
-            if fam.name == "morphology" {
+            if !(fam.metas)().is_empty() {
                 continue;
             }
             assert!(
                 (fam.commands)().is_empty(),
                 "stub family {} unexpectedly has commands",
-                fam.name
-            );
-            assert!(
-                (fam.metas)().is_empty(),
-                "stub family {} unexpectedly has metas",
                 fam.name
             );
         }
