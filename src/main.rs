@@ -20,6 +20,11 @@ use libviprs::{
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
 };
 
+/// Per-family op registry (`CLI_CONTRACT.md` §6). The pyramid/info/plan/
+/// test-image commands below stay in `main.rs` untouched; every op family is
+/// additive under `src/ops/`.
+mod ops;
+
 /// Upper bound, in megabytes, accepted for `--memory-limit` and
 /// `--memory-budget`. Values above this are rejected at parse time. The cap is
 /// 16 Ti MB, so the byte conversion (`mb * 1024 * 1024`) tops out at 2^54,
@@ -486,14 +491,51 @@ fn parse_failure_policy(s: &str) -> Result<FailurePolicy, String> {
     }
 }
 
-fn main() {
-    let cli = Cli::parse();
+/// The derived `viprs` command (pyramid/info/plan/test-image only), before the
+/// op families and `__dump-commands` are unioned in by [`ops::assembled_cli`].
+///
+/// Kept as a tiny seam so the op registry can rebuild the same base without
+/// depending on the private [`Cli`] type directly.
+pub(crate) fn base_cli() -> clap::Command {
+    use clap::CommandFactory;
+    Cli::command()
+}
 
-    match cli.command {
-        Command::Pyramid(args) => run_pyramid(*args),
-        Command::Info(args) => run_info(args),
-        Command::Plan(args) => run_plan(args),
-        Command::TestImage(args) => run_test_image(args),
+fn main() {
+    use clap::FromArgMatches;
+
+    // Assemble the full CLI: frozen derived commands ∪ every family's commands
+    // ∪ hidden `__dump-commands` (`CLI_CONTRACT.md` §6). Dispatch on the matched
+    // subcommand: built-ins deserialize through the derive `Cli`; op families
+    // route to their `run()`.
+    let matches = ops::assembled_cli().get_matches();
+
+    match matches.subcommand() {
+        Some(("pyramid" | "info" | "plan" | "test-image", _)) => {
+            let cli = Cli::from_arg_matches(&matches)
+                .expect("a built-in subcommand deserializes through the derive Cli");
+            match cli.command {
+                Command::Pyramid(args) => run_pyramid(*args),
+                Command::Info(args) => run_info(args),
+                Command::Plan(args) => run_plan(args),
+                Command::TestImage(args) => run_test_image(args),
+            }
+        }
+        Some(("__dump-commands", sub)) => ops::run_dump(sub),
+        Some((name, sub)) => {
+            // Op failure → exit 1 (`CLI_CONTRACT.md` §8); usage errors already
+            // exited 2 inside clap parsing above.
+            if let Err(e) = ops::dispatch(name, sub) {
+                eprintln!("Error: {e:#}");
+                process::exit(1);
+            }
+        }
+        None => {
+            // clap enforces the required subcommand and exits 2 before we get
+            // here; this stays as a defensive usage-error path.
+            let _ = ops::assembled_cli().print_help();
+            process::exit(2);
+        }
     }
 }
 
