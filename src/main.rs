@@ -15,10 +15,14 @@ use libviprs::{
     EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout,
     ManifestBuilder, PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy, TileFormat,
     extract_page_image,
-    pdf::render_page_pdfium,
     streaming::{BudgetPolicy, compute_strip_height, estimate_streaming_memory},
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
 };
+// PDFium vector rasterisation is gated behind the `pdfium` feature (on by
+// default). Without it the `--render` path is compiled out and `render_page_pdfium`
+// does not exist in the core crate, so the import is feature-gated too.
+#[cfg(feature = "pdfium")]
+use libviprs::pdf::render_page_pdfium;
 
 /// Per-family op registry (`CLI_CONTRACT.md` §6). The pyramid/info/plan/
 /// test-image commands below stay in `main.rs` untouched; every op family is
@@ -1368,21 +1372,37 @@ fn load_source(args: &PyramidArgs) -> Raster {
         // @doc-test: pdfium_integration.rs::libviprs_pdfium_render_paths:34
         if args.render {
             // @doc-flag: render kind=override
+            // `--render` requires the `pdfium` feature. When the binary is built
+            // `--no-default-features` (pdfium-free), `render_page_pdfium` is absent,
+            // so this path is compiled out and the flag fails loudly instead.
+            #[cfg(not(feature = "pdfium"))]
+            {
+                eprintln!(
+                    "Error: --render needs the `pdfium` feature, which was not compiled into this binary."
+                );
+                eprintln!(
+                    "Hint: use a default-features build (pdfium enabled), or omit --render to extract embedded images instead."
+                );
+                process::exit(1);
+            }
             // Use PDFium to render the page (vector PDFs)
-            eprintln!(
-                "Rendering PDF page {} at {} DPI (pdfium)...",
-                args.page, args.dpi
-            );
-            // @doc-test: pdfium_integration.rs::libviprs_pdfium_render_paths:34
-            match render_page_pdfium(&path, args.page, args.dpi) {
-                // @doc-flag: dpi kind=param param_name=dpi
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("Error rendering PDF with pdfium: {e}");
-                    eprintln!(
-                        "Hint: ensure libpdfium is installed. Run without --render to extract embedded images instead."
-                    );
-                    process::exit(1);
+            #[cfg(feature = "pdfium")]
+            {
+                eprintln!(
+                    "Rendering PDF page {} at {} DPI (pdfium)...",
+                    args.page, args.dpi
+                );
+                // @doc-test: pdfium_integration.rs::libviprs_pdfium_render_paths:34
+                match render_page_pdfium(&path, args.page, args.dpi) {
+                    // @doc-flag: dpi kind=param param_name=dpi
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("Error rendering PDF with pdfium: {e}");
+                        eprintln!(
+                            "Hint: ensure libpdfium is installed. Run without --render to extract embedded images instead."
+                        );
+                        process::exit(1);
+                    }
                 }
             }
         } else {
