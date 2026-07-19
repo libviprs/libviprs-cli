@@ -42,9 +42,28 @@
 //! Every handler keeps the §3 `load → try_op → save` shape and calls only the
 //! panic-free `try_*` core APIs, so a bad input becomes exit 1 rather than an
 //! abort (`CLI_CONTRACT.md` §8). Positional orders, flag names, enum spellings,
-//! and value bounds mirror vips 8.18.4 exactly; the CLI deliberately does NOT
-//! expose vips's `intent auto` (the core `Intent` has no auto path) — a
-//! documented subset, not a hidden extension.
+//! and value bounds mirror vips 8.18.4 **for the exposed surface** — the CLI is
+//! a deliberate SUBSET of vips's ICC flag surface, not an exact byte-for-byte
+//! mirror of every flag.
+//!
+//! # §9 documented subset — vips flags this CLI deliberately drops
+//!
+//! Verified against `vips <op> --help` (8.18.4). None of the dropped flags has a
+//! core-op backing, so exposing them would be a no-op knob or require core work:
+//!
+//! | vips flag | on ops | why dropped |
+//! |---|---|---|
+//! | `intent auto` | icc_import / icc_export / icc_transform | the core [`Intent`] has no `auto` path (no CMS heuristic) |
+//! | `--embedded` | icc_import / icc_transform | vips defaults `embedded=false` and errors without `--input-profile`; this CLI instead falls back to the embedded profile when `--input-profile` is absent (a behavioural choice — the embedded profile is always used as the fallback, never gated behind a flag) |
+//! | `--black-point-compensation` | icc_import / icc_export / icc_transform | the moxcms core transform path exposes no BPC toggle |
+//! | `--pcs {lab,xyz}` | icc_export / icc_transform | the core reads the PCS from the input raster's own interpretation tag (icc_export) / fixes Lab as the internal hop (icc_transform); only `icc_import`, whose OUTPUT PCS the caller must choose, exposes `--pcs` |
+//!
+//! The one intentional EXTENSION-shaped divergence is the embedded-profile
+//! fallback above: unlike vips (which requires `--embedded`), this CLI treats an
+//! absent `--input-profile` as "use the embedded profile", erroring `NoProfile`
+//! only when neither is present. This mirrors the core `try_icc_import_with`
+//! contract and is called out here so the surface is not mistaken for an exact
+//! vips mirror.
 //
 // @doc-command:begin name=colourspace about="Convert an image to a new colour space." \
 //     slot-order=load,apply,save imports-base=decode_file,save_file
@@ -469,13 +488,17 @@ fn run_icc_export(m: &ArgMatches) -> Result<()> {
 /// `icc_transform IN OUT OUTPUT_PROFILE --input-profile --intent --depth` — S1
 /// device → device.
 ///
-/// vips's `icc_transform` accepts an `--input-profile` (import through it, then
-/// export through the positional output profile). The core `try_icc_transform`
-/// only reads the *embedded* input profile, so the `--input-profile` path is
-/// realised by composing the two core `try_*` steps (`try_icc_import_with` →
-/// `try_icc_export_with`) — still only panic-free core APIs. Without
-/// `--input-profile` it delegates to `try_icc_transform` (embedded profile, the
-/// input's own bit depth).
+/// vips's `icc_transform` imports through `--input-profile` (or, absent it, the
+/// image's embedded profile) and exports through the positional output profile,
+/// honouring `--intent` and `--depth` on both stages. The core
+/// `try_icc_transform` convenience wrapper HARDCODES perceptual intent and
+/// derives the depth from the input's byte width, so it cannot carry the parsed
+/// flags. We therefore compose the two panic-free core steps
+/// (`try_icc_import_with` → `try_icc_export_with`) UNIFORMLY in both cases:
+/// `try_icc_import_with` with `input_profile = None` already reads the embedded
+/// profile, so the no-`--input-profile` path is preserved while `--intent` and
+/// `--depth` are honoured (matching vips's `--depth` default of 8 and `--intent`
+/// default of `relative`, neither of which the core wrapper would apply).
 fn run_icc_transform(m: &ArgMatches) -> Result<()> {
     let limits = io::decode_limits(m);
     let in_path = PathBuf::from(pos(m, "IN"));
@@ -491,12 +514,13 @@ fn run_icc_transform(m: &ArgMatches) -> Result<()> {
 
     // @doc-snippet:begin command=icc_transform slot=apply
     // @doc-test: colour.rs::ported_icc_transform:372 repo=libviprs
-    let out = match input_profile.as_deref() {
-        Some(profile) => raster
-            .try_icc_import_with(intent, Some(profile), None)?
-            .try_icc_export_with(depth, intent, Some(&output_profile))?,
-        None => raster.try_icc_transform(&output_profile)?,
-    };
+    // Compose import→export uniformly so `--intent`/`--depth` are honoured on
+    // both the `--input-profile` and the embedded-profile (input_profile=None)
+    // paths — the core `try_icc_transform` wrapper would silently substitute
+    // perceptual intent and the input's own depth.
+    let out = raster
+        .try_icc_import_with(intent, input_profile.as_deref(), None)?
+        .try_icc_export_with(depth, intent, Some(&output_profile))?;
     // @doc-snippet:end command=icc_transform slot=apply
 
     // @doc-snippet:begin command=icc_transform slot=save imports=save_file
