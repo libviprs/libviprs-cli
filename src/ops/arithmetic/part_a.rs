@@ -27,10 +27,29 @@
 //! | `math2_const IN OUT pow "c"`     | `math2_const`     | S1 | EXACT-AFTER-CAST | power, scalar exponent |
 //! | `abs IN OUT`                     | `abs`             | S1 | EXACT | \|v\| (meaningful on float `.v`) |
 //! | `sign IN OUT`                    | `sign`            | S1 | EXACT-AFTER-CAST | −1/0/1 (float in → signed out) |
-//! | `clamp IN OUT [--min] [--max]`   | `clamp`           | S1 | EXACT | clip to [min,max] |
-//! | `round IN OUT rint\|ceil\|floor` | `round`           | S1 | EXACT | rounding mode enum |
+//! | `clamp IN OUT [--min] [--max]`   | `clamp`           | S1 | EXACT | clip to [min,max]; NaN/inverted bounds → typed exit 1 |
+//! | `round IN OUT rint\|ceil\|floor` | `round`           | S1 | EXACT (ceil/floor); GOLDEN-ONLY (rint) | rounding mode enum — rint's half-rule diverges from vips (see below) |
 //! | `hough_line IN OUT`              | `hough_line`      | S1 | GOLDEN-ONLY | 256×256 accumulator; core binning diverges from vips (see below) |
-//! | `hough_circle IN OUT MIN MAX`    | `hough_circle`    | S1 | GOLDEN-ONLY | scale-1 accumulator; core vote model diverges from vips |
+//! | `hough_circle IN OUT MIN MAX`    | `hough_circle`    | S1 | GOLDEN-ONLY | scale-1 accumulator; core vote model diverges from vips. MIN/MAX are REQUIRED positionals (an intentional deviation — vips exposes them as optional `--min-radius`/`--max-radius`) |
+//!
+//! **`round rint` divergence (honest).** `OP_MAP.md` provisionally rated all three
+//! `round` modes EXACT, but the differential (on an afloat input that actually
+//! reaches the half-integer domain) measured a genuine, deterministic divergence
+//! from vips 8.18.4 at exact half-integers: the core maps `f64::round` (round
+//! half **away from zero**: 0.5→1, 2.5→3, −2.5→−3), while vips's C `rint` rounds
+//! half **to even** (0.5→0, 2.5→2, −2.5→−2). `ceil`/`floor` have no tie-break and
+//! stay EXACT. So `round rint` is carried GOLDEN-ONLY (a committed viprs-generated
+//! regression pin, no vips parity oracle) and a core issue is filed to reconcile
+//! `rint` with vips's round-half-to-even (and to correct the core doc comment at
+//! `arithmetic.rs` that wrongly states vips `rint` "rounds halves away from zero").
+//!
+//! **`hough_circle` surface (honest).** vips 8.18.4 exposes the radii as OPTIONAL
+//! flags (`--min-radius`/`--max-radius`, defaults 10/20), so `vips hough_circle in
+//! out` is valid on its own; this CLI instead takes MIN_RADIUS/MAX_RADIUS as
+//! REQUIRED positionals (no vips-default fallback). This is an intentional,
+//! documented surface deviation — the op is GOLDEN-ONLY, so there is no
+//! cross-oracle affected, and the core computes vips's `--scale 1` parameter
+//! space (vips 8.18.4's own `--scale` default is 1, not 3).
 //!
 //! **Hough divergence (honest).** `OP_MAP.md` provisionally lists both Hough ops
 //! EXACT, but the differential measured a genuine, non-tolerance divergence from
@@ -129,6 +148,12 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: OracleClass::Exact,
         },
         CommandMeta {
+            // Mixed-mode (as `smartcrop`): `ceil`/`floor` are EXACT against vips,
+            // but `rint` diverges at exact half-integers — the core uses
+            // `f64::round` (half away from zero) while vips's C `rint` rounds half
+            // to even, so `round rint` is GOLDEN-ONLY (viprs regression pin, core
+            // issue filed). The dominant modes are EXACT; the per-mode oracle is
+            // authoritative in the differential suite + OP_MAP + PROVENANCE.
             name: "round",
             shape: Shape::ImageToImage,
             oracle_class: OracleClass::Exact,
@@ -735,11 +760,22 @@ fn run_clamp(m: &ArgMatches) -> Result<()> {
     let max = m.get_one::<f64>("max").copied();
     // The core `clamp` asserts `min <= max` and would PANIC (abort) on a bad
     // pair. Resolve the effective bounds with vips's defaults (0, 1) and reject
-    // an inverted range as a typed exit-1 error first (CLI_CONTRACT.md §8).
+    // any pair that is not ordered `lo <= hi` as a typed exit-1 error first
+    // (CLI_CONTRACT.md §8). The guard is written as `!(lo <= hi)` rather than
+    // `lo > hi` so a NaN bound is ALSO rejected: clap's f64 value_parser accepts
+    // "nan"/"NaN", and `NaN > hi` is false (so a bare `>` would let NaN slip
+    // past into the core assert and abort with exit 101), whereas `NaN <= hi` is
+    // false, so `!(lo <= hi)` catches it while still admitting ordered ±inf.
     let lo = min.unwrap_or(0.0);
     let hi = max.unwrap_or(1.0);
-    if lo > hi {
-        bail!("clamp: --min {lo} exceeds --max {hi}");
+    // Reject any pair that is not ordered `lo <= hi`. This MUST test `lo <= hi`
+    // (then negate the bool), NOT `lo > hi`: for a NaN bound `NaN > hi` is false
+    // (a bare `>` would let NaN slip into the core assert and abort with exit
+    // 101) while `NaN <= hi` is false, so negating the `<=` result catches NaN
+    // while still admitting an ordered ±inf pair.
+    let ordered = lo <= hi;
+    if !ordered {
+        bail!("clamp: --min {lo} is not <= --max {hi}");
     }
     io::save(&raster.clamp(min, max), &out_path)
 }
@@ -940,7 +976,33 @@ mod tests {
             ])
             .unwrap();
         let err = run_clamp(&m).unwrap_err();
-        assert!(err.to_string().contains("exceeds"), "got: {err}");
+        assert!(err.to_string().contains("is not <="), "got: {err}");
+    }
+
+    #[test]
+    fn clamp_rejects_nan_bound() {
+        // clap's f64 value_parser accepts "nan"; a NaN bound must be a typed
+        // exit-1 error, NOT the core clamp's `assert!(lo <= hi)` abort. `NaN > hi`
+        // is false, so the old `lo > hi` guard let NaN through to the panic — the
+        // `!(lo <= hi)` guard catches it. Cover both bounds.
+        for (min_v, max_v) in [("nan", "200"), ("0", "nan")] {
+            let m = cmd("clamp")
+                .try_get_matches_from([
+                    "clamp",
+                    &tmp_gray(),
+                    &out_tmp("cl_nan.png"),
+                    "--min",
+                    min_v,
+                    "--max",
+                    max_v,
+                ])
+                .unwrap();
+            let err = run_clamp(&m).unwrap_err();
+            assert!(
+                err.to_string().contains("is not <="),
+                "NaN bound (--min {min_v} --max {max_v}) must be a typed error, got: {err}"
+            );
+        }
     }
 
     // --- tiny on-disk fixtures for the handler-level tests above ---
