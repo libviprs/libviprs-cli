@@ -17,6 +17,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Arg, ArgMatches, Command, value_parser};
+use libviprs::Interpretation;
 use libviprs::PixelFormat;
 use libviprs::Raster;
 use libviprs::source::{DecodeLimits, decode_file_with_limits};
@@ -128,11 +129,18 @@ pub fn load(path: &Path, limits: &DecodeLimits) -> Result<Raster> {
 /// * `.png` — integer sink. A float raster is cast to 8-bit with
 ///   **round-half-to-even then clip** to `0..=255`; 8-/16-bit integer rasters
 ///   pass straight through (16-bit passthrough preserved).
+/// * `.tif` / `.tiff` — integer sink via core `tiff_save`, same
+///   float-cast-then-encode path as `.png` (later waves — byteswap/autorot/
+///   16-bit — need it, `CLI_CONTRACT.md` §2).
+/// * `.ppm` — **deferred**: core ships no PPM/PNM encoder yet, so a clear
+///   typed error points at `.png` / `.tif` (`CLI_CONTRACT.md` §2 names `.ppm`
+///   but there is nothing to call).
 ///
 /// # Errors
 ///
-/// Returns an error for a banned or unsupported extension, for a multiband /
-/// float raster PNG cannot carry, or on encode / write failure.
+/// Returns an error for a banned, deferred, or unsupported extension, for a
+/// multiband / float raster the integer sinks cannot carry, or on encode /
+/// write failure.
 pub fn save(raster: &Raster, path: &Path) -> Result<()> {
     let ext = path
         .extension()
@@ -170,14 +178,42 @@ pub fn save(raster: &Raster, path: &Path) -> Result<()> {
                 .with_context(|| format!("failed to write {}", path.display()))?;
             Ok(())
         }
+        "tif" | "tiff" => {
+            let cast;
+            let to_encode = if raster.format().is_float() {
+                cast = cast_float_to_uchar_round_even(raster)?;
+                &cast
+            } else {
+                raster
+            };
+            // `Raster::tiff_save` is infallible and returns an EMPTY buffer for
+            // a raster with no TIFF form (float / multiband); surface that as a
+            // typed error pointing at `.v` rather than writing a 0-byte file.
+            let bytes = to_encode.tiff_save();
+            if bytes.is_empty() {
+                bail!(
+                    "failed to TIFF-encode a {:?} raster; float / multiband / Fourier rasters \
+                     must be written to a .v sink",
+                    to_encode.format()
+                );
+            }
+            std::fs::write(path, bytes)
+                .with_context(|| format!("failed to write {}", path.display()))?;
+            Ok(())
+        }
+        "ppm" => bail!(
+            "PPM/PNM output is not implemented yet (deferred: the core crate ships no PPM \
+             encoder). Use .png or .tif for integer rasters, or .v for float / multiband / \
+             Fourier rasters."
+        ),
         "" => bail!(
-            "output path {} has no extension; use .png (integer) or .v \
+            "output path {} has no extension; use .png / .tif (integer) or .v \
              (float / multiband / Fourier)",
             path.display()
         ),
         other => bail!(
-            "unsupported output extension .{other}; differential sinks are .png (integer) \
-             and .v (float / multiband / Fourier)"
+            "unsupported output extension .{other}; differential sinks are .png / .tif \
+             (integer) and .v (float / multiband / Fourier)"
         ),
     }
 }
@@ -191,6 +227,22 @@ pub fn save(raster: &Raster, path: &Path) -> Result<()> {
 fn cast_float_to_uchar_round_even(raster: &Raster) -> Result<Raster> {
     let fmt = raster.format();
     debug_assert!(fmt.is_float(), "caller guarantees a float raster");
+    // A Fourier / complex raster is non-displayable: casting its float bands to
+    // 8-bit produces garbage, so refuse it (it belongs in a `.v` sink) rather
+    // than silently emitting an 8-bit approximation (`CLI_CONTRACT.md` §2/§8).
+    if raster.interpretation() == Interpretation::Fourier {
+        bail!(
+            "a Fourier / complex raster is not displayable and must be written to a .v sink, \
+             not cast to an 8-bit integer image"
+        );
+    }
+    // Float samples are 4-byte native-endian f32; the per-channel reader below
+    // depends on that width.
+    debug_assert_eq!(
+        fmt.bytes_per_channel(),
+        4,
+        "float rasters must carry 4-byte f32 samples"
+    );
     let channels = fmt.channels();
     let target = PixelFormat::with_channels(channels, 1)
         .ok_or_else(|| anyhow!("cannot build an 8-bit format for {channels} channels"))?;
@@ -236,6 +288,42 @@ mod tests {
                 .to_string()
                 .contains("no extension")
         );
+    }
+
+    #[test]
+    fn tif_sink_writes_an_integer_raster() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("viprs_io_tif_{}.tif", std::process::id()));
+        let r = Raster::zeroed(3, 2, PixelFormat::Gray8).unwrap();
+        save(&r, &path).expect("a Gray8 raster must TIFF-encode");
+        let meta = std::fs::metadata(&path).expect("the .tif file must exist");
+        assert!(meta.len() > 0, "the .tif file must be non-empty");
+        let _ = std::fs::remove_file(&path);
+
+        // .tiff is the same integer sink.
+        let path2 = dir.join(format!("viprs_io_tiff_{}.tiff", std::process::id()));
+        save(&r, &path2).expect(".tiff must also encode");
+        let _ = std::fs::remove_file(&path2);
+    }
+
+    #[test]
+    fn ppm_sink_is_deferred() {
+        let r = Raster::zeroed(2, 2, PixelFormat::Gray8).unwrap();
+        let err = save(&r, Path::new("out.ppm")).unwrap_err().to_string();
+        assert!(err.contains("deferred"), "got: {err}");
+    }
+
+    #[test]
+    fn fourier_raster_is_rejected_by_the_caster() {
+        // A float raster tagged Fourier must refuse the 8-bit cast.
+        let fmt = PixelFormat::with_channels(1, 4).unwrap();
+        let r = Raster::from_f32_samples(2, 1, fmt, &[0.0, 1.0])
+            .unwrap()
+            .copy()
+            .interpretation(Interpretation::Fourier)
+            .build();
+        let err = cast_float_to_uchar_round_even(&r).unwrap_err().to_string();
+        assert!(err.contains("Fourier"), "got: {err}");
     }
 
     #[test]
