@@ -447,7 +447,9 @@ Non-op public API (no rows): `Kernel` accessors `width/height/max`.
 ## freqfilt (src/freqfilt.rs — 12 pub fns → 6 base ops)
 
 Complex = float-pair bands stamped `Interpretation::Fourier`; all IO via `.v`;
-compare as f64 band-pairs, eps 1e-6 relative (contract §5 FOURIER).
+compare as f64 band-pairs at a per-op MEASURED absolute epsilon (see
+`cli_freqfilt_diff.rs` / PROVENANCE.md), each sized above the op's
+f32-quantisation floor — NOT a fixed 1e-6 relative (contract §5 FOURIER).
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
