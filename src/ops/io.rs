@@ -123,14 +123,31 @@ pub fn decode_limits(m: &ArgMatches) -> DecodeLimits {
 /// arrayjoin`, …) declare the identical positional and call this rather than
 /// re-deriving the split.
 ///
+/// # Precondition
+///
+/// `id` must name a positional that was registered on the command as a
+/// **`String`-typed `num_args(2..)`** argument (the S2 encoding above). A caller
+/// that passes an unregistered id — or one registered with a different value
+/// type — gets a typed error (via [`ArgMatches::try_get_many`]) rather than the
+/// clap downcast **panic** `get_many` would raise, so a wiring mistake in one of
+/// the 14 families that reuse this idiom surfaces as exit 1, not an abort
+/// (`CLI_CONTRACT.md` §8).
+///
 /// # Errors
 ///
-/// Errors if fewer than two values are present. `num_args(2..)` already enforces
-/// this at parse time, so this only guards a caller that wired a looser
-/// positional (and keeps the split total, never panicking on an empty slice).
+/// Errors if `id` is not a registered `String` positional, or if fewer than two
+/// values are present. `num_args(2..)` already enforces the count at parse time,
+/// so the count guard only catches a caller that wired a looser positional (and
+/// keeps the split total, never panicking on an empty slice).
 pub fn inputs_and_out(m: &ArgMatches, id: &str) -> Result<(Vec<PathBuf>, PathBuf)> {
     let mut vals: Vec<PathBuf> = m
-        .get_many::<String>(id)
+        .try_get_many::<String>(id)
+        .map_err(|e| {
+            anyhow!(
+                "internal error: {id:?} is not a registered String num_args(2..) \
+                 positional ({e})"
+            )
+        })?
         .into_iter()
         .flatten()
         .map(PathBuf::from)

@@ -6,22 +6,28 @@
 //! those become **eight** `viprs` subcommands here (the `*_const` / `band{and,
 //! or,eor}` / `extract_bands` twins collapse into a single command with a vector
 //! arg or an enum selector, exactly as `OP_MAP.md` prescribes). Every command is
-//! oracle class **EXACT** (integer-in / integer-out, decode-compare tol 0):
+//! oracle class **EXACT** (integer-in / integer-out, decode-compare tol 0)
+//! **except `bandmean`**, which is **BOUNDED-TOL** (≤1 LSB): the core floors the
+//! per-pixel integer mean (truncating division) while vips rounds to nearest, so
+//! a non-divisible band sum diverges by at most one least-significant bit (a
+//! documented core-vs-vips rounding difference, not a CLI bug):
 //!
-//! | command | vips | shape | notes |
-//! |---|---|---|---|
-//! | `bandjoin A B [C…] OUT`        | `bandjoin`       | S2 variadic | pairwise concat fold |
-//! | `bandjoin_const IN OUT "c…"`   | `bandjoin_const` | S1 | append one band per constant |
-//! | `bandfold IN OUT --factor`     | `bandfold`       | S1 | fold width into bands |
-//! | `bandunfold IN OUT --factor`   | `bandunfold`     | S1 | unfold bands into width |
-//! | `bandmean IN OUT`              | `bandmean`       | S1 | per-pixel mean across bands |
-//! | `bandrank A B [C…] OUT --index`| `bandrank`       | S2 variadic | per-sample rank statistic |
-//! | `bandbool IN OUT and\|or\|eor`  | `bandbool`       | S1 | fold bands with a bitwise op |
-//! | `extract_band IN OUT BAND --n` | `extract_band`   | S1 | one band (or `--n` consecutive) |
+//! | command | vips | shape | oracle | notes |
+//! |---|---|---|---|---|
+//! | `bandjoin A B [C…] OUT`        | `bandjoin`       | S2 variadic | EXACT | pairwise concat fold |
+//! | `bandjoin_const IN OUT "c…"`   | `bandjoin_const` | S1 | EXACT | append one band per constant |
+//! | `bandfold IN OUT --factor`     | `bandfold`       | S1 | EXACT | fold width into bands |
+//! | `bandunfold IN OUT --factor`   | `bandunfold`     | S1 | EXACT | unfold bands into width |
+//! | `bandmean IN OUT`              | `bandmean`       | S1 | BOUNDED-TOL ≤1 LSB | mean; core floors vs vips round-to-nearest |
+//! | `bandrank A B [C…] OUT --index`| `bandrank`       | S2 variadic | EXACT | per-sample rank statistic |
+//! | `bandbool IN OUT and\|or\|eor`  | `bandbool`       | S1 | EXACT | fold bands with a bitwise op |
+//! | `extract_band IN OUT BAND --n` | `extract_band`   | S1 | EXACT | one band (or `--n` consecutive) |
 //!
-//! Positional orders, flag names, and enum spellings mirror vips 8.18.4 exactly
-//! (verified against `vips <op>` usage). Handlers keep the §3 `load → try_op →
-//! save` shape and call only the panic-free `try_*` core APIs, so a bad input
+//! Positional orders, flag names, enum spellings, and input value bounds mirror
+//! vips 8.18.4 exactly (verified against `vips <op>` usage): `extract_band`'s
+//! `BAND` is `>= 0` and `bandrank`'s `--index` is `>= -1`, matching vips's own
+//! minima (no negative-from-end / sub-`-1` extensions). Handlers keep the §3
+//! `load → try_op → save` shape and call only the panic-free `try_*` core APIs, so a bad input
 //! becomes exit 1 rather than an abort (`CLI_CONTRACT.md` §8). The two variadic
 //! commands (`bandjoin`, `bandrank`) go through [`io::inputs_and_out`], THE
 //! shared S2 idiom this lane establishes for every later variadic family.
@@ -84,9 +90,13 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: OracleClass::Exact,
         },
         CommandMeta {
+            // BOUNDED-TOL (≤1 LSB), NOT EXACT: the core floors the per-pixel
+            // integer mean (truncating division) while vips rounds to nearest,
+            // so a non-divisible band sum diverges by at most one LSB. See the
+            // module header and OP_MAP.md.
             name: "bandmean",
             shape: Shape::ImageToImage,
-            oracle_class: OracleClass::Exact,
+            oracle_class: OracleClass::BoundedTol,
         },
         CommandMeta {
             name: "bandrank",
@@ -186,9 +196,12 @@ pub fn commands() -> Vec<Command> {
                         .long("index")
                         .value_name("I")
                         .default_value("-1")
-                        .value_parser(value_parser!(i64))
+                        // vips's own minimum is -1 (= median); reject anything
+                        // below it rather than silently folding sub-`-1` values
+                        // into the median (B5 strict parity).
+                        .value_parser(value_parser!(i64).range(-1..))
                         .help(
-                            "Sorted-list index to select (0 = min, count-1 = max, \
+                            "Sorted-list index to select (>= -1: 0 = min, count-1 = max, \
                              -1 = median, the default)",
                         ),
                 ),
@@ -203,7 +216,11 @@ pub fn commands() -> Vec<Command> {
                         .required(true)
                         .value_name("and|or|eor")
                         .value_parser(["and", "or", "eor"])
-                        .help("Bitwise operation to fold the bands with"),
+                        .help(
+                            "Bitwise operation to fold the bands with \
+                             (and|or|eor; vips's lshift/rshift are intentionally \
+                             excluded — not core-backed)",
+                        ),
                 ),
         ),
         io::with_decode_limit_args(
@@ -214,8 +231,11 @@ pub fn commands() -> Vec<Command> {
                 .arg(
                     Arg::new("BAND")
                         .required(true)
-                        .value_parser(value_parser!(i64))
-                        .help("First band to extract (negative counts from the last band)"),
+                        // vips's minimum is 0; reject negatives rather than
+                        // offering a negative-from-end extension vips lacks
+                        // (B5 strict parity).
+                        .value_parser(value_parser!(i64).range(0..))
+                        .help("First band to extract (>= 0)"),
                 )
                 .arg(
                     Arg::new("n")
@@ -380,13 +400,19 @@ fn run_bandmean(m: &ArgMatches) -> Result<()> {
 fn run_bandrank(m: &ArgMatches) -> Result<()> {
     let limits = io::decode_limits(m);
     let (inputs, out_path) = io::inputs_and_out(m, "INPUTS")?;
-    // vips default index is -1 (= median); any negative maps to the core's
-    // `None` (median), a non-negative index selects that sorted position.
+    // vips default index is -1 (= median). With the `-1..` value_parser the only
+    // negative clap admits is -1, which maps to the core's `None` (median); a
+    // non-negative index selects that sorted position. A positive index beyond
+    // `u32::MAX` is a typed exit-1 error — NOT a `u32::try_from` panic/abort
+    // (exit 101), per CLI_CONTRACT.md §8.
     let index_raw = *m.get_one::<i64>("index").expect("clap default -1");
     let index: Option<u32> = if index_raw < 0 {
         None
     } else {
-        Some(u32::try_from(index_raw).expect("non-negative i64 that fits: guarded above"))
+        Some(
+            u32::try_from(index_raw)
+                .map_err(|_| anyhow!("--index {index_raw} out of range (max {})", u32::MAX))?,
+        )
     };
 
     // @doc-snippet:begin command=bandrank slot=load imports=decode_file
@@ -549,6 +575,53 @@ mod tests {
             .unwrap();
         // Default -1 maps to the core's median (None).
         assert_eq!(*m.get_one::<i64>("index").unwrap(), -1);
+    }
+
+    #[test]
+    fn bandrank_huge_index_is_error_not_panic() {
+        // A positive --index beyond u32::MAX parses (the `-1..` bound only floors
+        // the value) but must convert to a typed exit-1 error, NEVER a
+        // u32::try_from panic/abort (exit 101) — CLI_CONTRACT.md §8. The index is
+        // range-checked before any image is loaded, so dummy paths are fine.
+        let m = cmd("bandrank")
+            .try_get_matches_from([
+                "bandrank",
+                "a.png",
+                "b.png",
+                "out.png",
+                "--index",
+                "4294967296", // u32::MAX + 1
+            ])
+            .unwrap();
+        let err = run_bandrank(&m).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range"),
+            "expected a typed 'out of range' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn bandrank_index_below_minus_one_is_rejected() {
+        // vips's minimum index is -1; the `-1..` value_parser rejects anything
+        // lower at parse time (B5 strict parity — no sub-`-1` extension).
+        assert!(
+            cmd("bandrank")
+                .try_get_matches_from(["bandrank", "a.png", "out.png", "--index", "-2"])
+                .is_err(),
+            "an --index below -1 must be rejected"
+        );
+    }
+
+    #[test]
+    fn extract_band_rejects_a_negative_band() {
+        // vips's minimum band is 0; the `0..` value_parser rejects negatives at
+        // parse time (B5 strict parity — no negative-from-end extension).
+        assert!(
+            cmd("extract_band")
+                .try_get_matches_from(["extract_band", "in.png", "out.png", "-1"])
+                .is_err(),
+            "a negative BAND must be rejected"
+        );
     }
 
     #[test]
