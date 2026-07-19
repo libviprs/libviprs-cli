@@ -90,6 +90,19 @@ const MODES: &[&str] = &[
 
 /// Static command metadata for the family (name → shape + oracle class), used
 /// by `__dump-commands` and by the dispatcher (`CLI_CONTRACT.md` §6).
+///
+/// **Shape caveat.** [`Shape`] is a COARSE classifier and its closest fit here is
+/// [`Shape::NImageToImage`] (`§3.2`, "n-image->image"), which both commands
+/// declare. Strictly, composite is neither variadic nor OUT-last: it is the
+/// vips-array op RESTRICTED to a fixed two-input subset carrying a trailing
+/// `MODE` enum positional — `BASE OVERLAY OUT MODE` (the core blends exactly two
+/// images with one mode, so a third input is a usage exit 2, see [`commands`]).
+/// There is no finer `Shape` variant for "fixed-arity multi-input with a trailing
+/// enum", so `NImageToImage` is the intended catch-all: it advertises the
+/// multi-input nature to a `__dump-commands` consumer, at the cost of the
+/// (documented) inaccuracy that `MODE` follows `OUT` rather than inputs preceding
+/// a lone `OUT`. `composite2` (the vips pair form) shares the identical positional
+/// shape, hence the identical `Shape`.
 pub fn metas() -> Vec<CommandMeta> {
     vec![
         CommandMeta {
