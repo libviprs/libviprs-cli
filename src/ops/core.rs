@@ -8,8 +8,26 @@
 //!
 //! | command | vips | shape | oracle | notes |
 //! |---|---|---|---|---|
-//! | `add LEFT RIGHT OUT`  | `add`      | S2 (fixed 2-image → OUT) | EXACT-AFTER-CAST | uchar+uchar → ushort widening; int fixtures only (float rejected) |
-//! | `getpoint IN X Y`     | `getpoint` | S3 image→stdout-scalar   | EXACT | prints the per-band pixel vector in vips numeric format |
+//! | `add LEFT RIGHT OUT`  | `add`      | S2 (fixed 2-image → OUT) | EXACT-AFTER-CAST | **uchar-only, equal-bands** surface: uchar+uchar → ushort widening compares tol 0. 16-bit and float inputs are REJECTED (exit 1), not silently saturated/computed — see the band/depth boundary notes below |
+//! | `getpoint IN X Y`     | `getpoint` | S3 image→stdout-scalar   | EXACT | prints the per-band pixel vector in vips numeric format (numeric compare; stdout text formatting is out of §9 scope — see [`fmt_vips_vec`]) |
+//!
+//! # Accepted `add` surface = the set where core == vips (`OP_MAP.md` core `add`)
+//!
+//! Core `Raster::add` matches vips `add` ONLY on 8-bit (uchar), equal-band
+//! inputs, so the CLI restricts the accepted surface to exactly that set — every
+//! rejected input is one where core would diverge from vips:
+//!
+//! * **16-bit / float depth** — vips `add` PROMOTES `ushort → uint` (and float
+//!   stays float), returning the true sum, whereas core keeps a 16-bit input at
+//!   16-bit and SATURATES the sum at `65535` (`raster_ops.rs`), and panics on
+//!   float. Both are rejected here as typed exit-1 errors (a later arithmetic
+//!   wave owns wide/float addition), so `add` never emits a silently-saturated
+//!   16-bit result. Filed as a core-side follow-up (16-bit promotion parity).
+//! * **Unequal band counts** — vips `add` BAND-BROADCASTS a 1-band operand
+//!   across a multi-band one (`add rgb gray → per-band rgb+gray`), whereas core
+//!   asserts equal band counts. This is a documented SUBSET limitation, not
+//!   parity: core cannot broadcast without a core change. The CLI keeps the
+//!   exit-1 rejection; band-broadcast parity is a core-side follow-up.
 //!
 //! Positional orders, flag names, and input value bounds mirror vips 8.18.4
 //! exactly (verified against `vips add` = `add left right out` and
@@ -27,7 +45,9 @@
 //!
 //! * `add` panics on a dimension mismatch, a channel-count mismatch, or a float
 //!   input — all three are checked before the call (float inputs land with a
-//!   later arithmetic batch; `OP_MAP.md` core `add` note), and
+//!   later arithmetic batch; `OP_MAP.md` core `add` note). A 16-bit input is
+//!   also rejected here (core silently saturates it at `65535` instead of
+//!   promoting like vips — see the surface notes above), and
 //! * `getpoint` panics when `(x, y)` is outside the raster — the coordinate is
 //!   bounds-checked against the decoded dimensions before the call.
 //
@@ -52,8 +72,10 @@ pub fn metas() -> Vec<CommandMeta> {
         CommandMeta {
             // EXACT-AFTER-CAST (`OP_MAP.md`): `add` widens like vips promotion
             // (uchar+uchar → ushort). The output is integer, so the §2 save-cast
-            // is a no-op and the differential compares at tol 0; float inputs are
-            // rejected (a later arithmetic batch owns them).
+            // is a no-op and the differential compares at tol 0. The accepted
+            // surface is uchar-only, equal-bands (the set where core == vips):
+            // 16-bit and float inputs are rejected (core would saturate/panic
+            // where vips promotes; a later arithmetic batch owns them).
             name: "add",
             shape: Shape::NImageToImage,
             oracle_class: OracleClass::ExactAfterCast,
@@ -153,7 +175,20 @@ fn run_add(m: &ArgMatches) -> Result<()> {
     if left.format().is_float() || right.format().is_float() {
         bail!(
             "add: float inputs are not supported yet (a later arithmetic batch adds float \
-             addition); cast to an unsigned 8/16-bit format first"
+             addition); cast to an unsigned 8-bit format first"
+        );
+    }
+    // Reject 16-bit (and any non-uchar) inputs: vips `add` promotes ushort→uint
+    // and returns the true sum, but core keeps 16-bit at 16-bit and SATURATES at
+    // 65535 (raster_ops.rs). Accepting them would emit a silently-wrong result,
+    // so the accepted surface is restricted to 8-bit (uchar), where core == vips.
+    // Wide-input addition lands with a later arithmetic batch (see the module
+    // docs / OP_MAP `add` note).
+    if left.format().bytes_per_channel() != 1 || right.format().bytes_per_channel() != 1 {
+        bail!(
+            "add: 16-bit inputs are not supported yet (a later arithmetic batch adds \
+             ushort→uint promotion; core would saturate the sum at 65535 instead of \
+             promoting like vips); cast to an unsigned 8-bit format first"
         );
     }
     if (left.width(), left.height()) != (right.width(), right.height()) {
@@ -217,9 +252,19 @@ fn run_getpoint(m: &ArgMatches) -> Result<()> {
 /// Format a per-band pixel vector in the vips `getpoint` print format:
 /// space-separated values on one line. Integer-valued samples print without a
 /// decimal point (`10 20 30`), floats print their natural decimal form
-/// (`0.5 1.25 2.5`), matching vips 8.18.4. The differential harness float-parses
-/// each value with an epsilon rather than comparing text (`CLI_CONTRACT.md` §3);
-/// per-op numeric-format parity is a §9 missing-scope item.
+/// (`0.5 1.25 2.5`), matching vips 8.18.4 for dyadic values.
+///
+/// **stdout text formatting is NOT a pinned parity surface (§9 missing-scope);
+/// the real oracle is the numeric compare, not the text.** Each f32 sample is
+/// widened to f64 and printed via `f64::to_string` (e.g. f32 `0.1` prints
+/// `0.10000000149011612`). vips's own `getpoint` text format for a non-dyadic
+/// float is NOT contracted here and can differ by value class or vips build, so
+/// the differential never text-compares: it float-PARSES each value and compares
+/// with an epsilon (`CLI_CONTRACT.md` §3), so the numeric value (within tol),
+/// never the exact text, carries the case. The `getpoint_float_nd` differential
+/// case (a non-dyadic `[0.1 0.2 0.3]` float) pins exactly this — it de-rigs the
+/// deliberately-dyadic `getpoint_float` fixture by proving the numeric-eps
+/// compare, not a dyadic text match, is what carries a float getpoint case.
 fn fmt_vips_vec(vals: &[f64]) -> String {
     vals.iter()
         .map(|v| v.to_string())
