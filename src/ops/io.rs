@@ -9,6 +9,13 @@
 //! while integer rasters go to `.png`. `.jpg` is banned as a differential
 //! sink.
 //!
+//! **Interpretation-aware save (libviprs-cli #36).** An integer sink whose
+//! raster carries a non-RGB colour space (`lab`, `xyz`, `scrgb`, …) is
+//! converted to sRGB via the core colourspace route before encoding — exactly
+//! as vips's foreign savers do — rather than casting the raw colour channels to
+//! garbage; see [`to_integer_encodable`]. Non-displayable rasters that must be
+//! kept losslessly go to a `.v` sink instead.
+//!
 //! Only the panic-free `try_*` / fallible core APIs are called here so a bad
 //! input becomes a typed error (exit 1) rather than a process abort
 //! (`CLI_CONTRACT.md` §8).
@@ -219,13 +226,8 @@ pub fn save(raster: &Raster, path: &Path) -> Result<()> {
             Ok(())
         }
         "png" => {
-            let cast;
-            let to_encode = if raster.format().is_float() {
-                cast = cast_float_to_uchar_round_even(raster)?;
-                &cast
-            } else {
-                raster
-            };
+            let prepared = to_integer_encodable(raster)?;
+            let to_encode = prepared.as_ref();
             let bytes = libviprs::sink::encode_png(to_encode).with_context(|| {
                 format!(
                     "failed to PNG-encode a {:?} raster; float / multiband / Fourier rasters \
@@ -238,13 +240,8 @@ pub fn save(raster: &Raster, path: &Path) -> Result<()> {
             Ok(())
         }
         "tif" | "tiff" => {
-            let cast;
-            let to_encode = if raster.format().is_float() {
-                cast = cast_float_to_uchar_round_even(raster)?;
-                &cast
-            } else {
-                raster
-            };
+            let prepared = to_integer_encodable(raster)?;
+            let to_encode = prepared.as_ref();
             // `Raster::tiff_save` is infallible and returns an EMPTY buffer for
             // a raster with no TIFF form (float / multiband); surface that as a
             // typed error pointing at `.v` rather than writing a 0-byte file.
@@ -323,6 +320,72 @@ fn cast_float_to_uchar_round_even(raster: &Raster) -> Result<Raster> {
         }
     }
     Ok(out)
+}
+
+/// Whether an interpretation is a **non-displayable colour space** that must be
+/// converted to sRGB before an integer sink can carry it (`CLI_CONTRACT.md` §2,
+/// libviprs-cli #36).
+///
+/// The device / already-integer interpretations — `srgb`, plain `rgb`, `rgb16`,
+/// `b-w`, `grey16`, plus the tag-only `multiband` / `matrix` / `histogram` /
+/// `labq` — encode straight to PNG/TIFF the way vips writes them. Every real
+/// colour space (`lab`, `xyz`, `scrgb`, `lch`, `cmc`, `labs`, `yxy`, `oklab`,
+/// `oklch`, `cmyk`, `hsv`) is not directly displayable: vips's foreign savers
+/// run `vips_colourspace(…, sRGB)` before an integer encode, and so must we, or
+/// the raw channels (Lab's signed `a`/`b`, XYZ's 0..100 range, …) would be
+/// cast to garbage.
+fn needs_srgb_conversion(interp: Interpretation) -> bool {
+    matches!(
+        interp,
+        Interpretation::Lab
+            | Interpretation::Xyz
+            | Interpretation::ScRgb
+            | Interpretation::Lch
+            | Interpretation::Cmc
+            | Interpretation::Labs
+            | Interpretation::Yxy
+            | Interpretation::OkLab
+            | Interpretation::OkLch
+            | Interpretation::Cmyk
+            | Interpretation::Hsv
+    )
+}
+
+/// Prepare a raster for an **integer sink** (`.png` / `.tif`), applying the
+/// `CLI_CONTRACT.md` §2 cast-on-save parity rules (libviprs-cli #36):
+///
+/// 1. A **non-RGB colour space** (Lab/XYZ/scRGB/…) is converted to sRGB via the
+///    core colourspace route exactly as vips would before an integer encode —
+///    NOT cast channel-for-channel — so `viprs colourspace in.png out.png lab`
+///    writes the same PNG pixels vips does (a round trip back through sRGB).
+/// 2. Any other **float** raster (e.g. a plain `b-w` ΔE float, or an
+///    already-sRGB-tagged float) is cast to 8-bit with round-half-to-even then
+///    clip.
+/// 3. An **integer** raster with a device interpretation passes straight
+///    through (16-bit passthrough preserved).
+///
+/// Float / non-displayable rasters the caller would rather keep losslessly
+/// belong in a `.v` sink; this path is only reached once an integer sink was
+/// explicitly requested.
+fn to_integer_encodable(raster: &Raster) -> Result<std::borrow::Cow<'_, Raster>> {
+    use std::borrow::Cow;
+    if needs_srgb_conversion(raster.interpretation()) {
+        // Interpretation-aware conversion (#36): a Fourier / complex raster is
+        // still refused by the float caster below, but a genuine colour space
+        // converts to sRGB the way vips's savers do.
+        let srgb = raster.try_colourspace(Interpretation::Srgb).map_err(|e| {
+            anyhow!(
+                "interpretation-aware save: cannot convert a {:?} raster to sRGB for an \
+                 integer sink ({e}); write it to a .v sink to keep the raw colour data",
+                raster.interpretation()
+            )
+        })?;
+        Ok(Cow::Owned(srgb))
+    } else if raster.format().is_float() {
+        Ok(Cow::Owned(cast_float_to_uchar_round_even(raster)?))
+    } else {
+        Ok(Cow::Borrowed(raster))
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +494,37 @@ mod tests {
         let (inputs, out) = inputs_and_out(&m, "INPUTS").unwrap();
         assert_eq!(inputs, vec![PathBuf::from("in.png")]);
         assert_eq!(out, PathBuf::from("out.png"));
+    }
+
+    #[test]
+    fn integer_sink_converts_a_non_rgb_colour_space_to_srgb() {
+        // #36: a Lab float raster written to an integer sink is colourspace
+        // -converted to 8-bit sRGB (3-band uchar) the way vips would, NOT cast
+        // channel-for-channel (which would garble Lab's 0..100 L and signed a/b).
+        let fmt = PixelFormat::with_channels(3, 4).unwrap();
+        let lab = Raster::from_f32_samples(1, 1, fmt, &[50.0, 20.0, -30.0])
+            .unwrap()
+            .copy()
+            .interpretation(Interpretation::Lab)
+            .build();
+        let prepared = to_integer_encodable(&lab).unwrap();
+        assert!(
+            !prepared.format().is_float(),
+            "the prepared raster must be integer, got {:?}",
+            prepared.format()
+        );
+        assert_eq!(prepared.format().bytes_per_channel(), 1, "8-bit sRGB");
+        assert_eq!(prepared.format().channels(), 3, "3-band sRGB");
+        assert_eq!(prepared.interpretation(), Interpretation::Srgb);
+    }
+
+    #[test]
+    fn integer_sink_passes_a_device_raster_through_unchanged() {
+        // A plain Gray8 (device interpretation) borrows through with no cast.
+        let r = Raster::zeroed(2, 2, PixelFormat::Gray8).unwrap();
+        let prepared = to_integer_encodable(&r).unwrap();
+        assert!(matches!(prepared, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(prepared.format(), PixelFormat::Gray8);
     }
 
     #[test]
