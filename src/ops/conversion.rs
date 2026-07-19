@@ -257,11 +257,24 @@ pub fn commands() -> Vec<Command> {
                         .help("Vertical offset of the image origin"),
                 )
                 .arg(
+                    // `--orientation` is a DELIBERATE viprs-only extension, NOT a
+                    // vips `copy` flag (vips 8.18.4 `copy` exposes only width/
+                    // height/bands/format/coding/interpretation/xres/yres/xoffset/
+                    // yoffset). It is hidden from the help/parity surface via
+                    // `.hide(true)` so it is not counted as vips parity, and exists
+                    // solely to mint the `autorot` oriented `.v` fixture (the only
+                    // orientation channel the libviprs decoder reads back). The
+                    // deviation is recorded in OP_MAP.md and CLI_CONTRACT.md
+                    // (adversarial-review conversion finding 4).
                     Arg::new("orientation")
                         .long("orientation")
                         .value_name("N")
+                        .hide(true)
                         .value_parser(value_parser!(u8))
-                        .help("Set the EXIF-style orientation tag (1..=8)"),
+                        .help(
+                            "viprs-only (hidden, non-vips): set the EXIF-style \
+                             orientation tag (1..=8)",
+                        ),
                 ),
         ),
         io::with_decode_limit_args(
@@ -445,7 +458,10 @@ pub fn commands() -> Vec<Command> {
                         .long("exponent")
                         .value_name("E")
                         .value_parser(value_parser!(f64))
-                        .help("Gamma factor (finite, > 0; vips default 0.416667 = 1/2.4)"),
+                        .help(
+                            "Gamma factor (finite, in 1e-6..=1000; vips default \
+                             0.416667 = 1/2.4)",
+                        ),
                 ),
         ),
         io::with_decode_limit_args(
@@ -586,6 +602,17 @@ fn parse_f64_vec(s: &str) -> Result<Vec<f64>> {
         bail!("expected at least one value (a space-separated vector like \"255 0 0\")");
     }
     Ok(v)
+}
+
+/// vips clamps `gamma`'s exponent to `[1e-6, 1000]` and REJECTS anything outside
+/// it (a GObject property range). Mirror that surface: an out-of-range or
+/// non-finite exponent is a typed usage error (exit 1), never silently accepted
+/// (adversarial-review conversion finding 6).
+fn check_gamma_exponent(e: f64) -> Result<()> {
+    if !e.is_finite() || !(1e-6..=1000.0).contains(&e) {
+        bail!("--exponent {e} out of range (vips accepts a finite value in 1e-6..=1000)");
+    }
+    Ok(())
 }
 
 /// `copy IN OUT [--interpretation … --xres … --xoffset … --orientation …]` — S1
@@ -914,9 +941,15 @@ fn run_gamma(m: &ArgMatches) -> Result<()> {
     let limits = io::decode_limits(m);
     let in_path = PathBuf::from(pos(m, "IN"));
     let out_path = PathBuf::from(pos(m, "OUT"));
-    // A missing flag maps to the core default (1/2.4); the core rejects a
-    // non-finite / non-positive exponent with a typed exit-1 error.
+    // A missing flag maps to the core default (1/2.4). vips clamps gamma's
+    // exponent to [1e-6, 1000] and REJECTS anything outside that (a GObject
+    // property range); mirror that surface exactly so an out-of-range or
+    // non-finite exponent is a typed usage error (exit 1) rather than silently
+    // accepted (adversarial-review conversion finding 6). The core independently
+    // rejects the non-positive / non-finite end too, but catching it here keeps
+    // the whole admissible range in lock-step with vips.
     let exponent = m.get_one::<f64>("exponent").copied();
+    exponent.map(check_gamma_exponent).transpose()?;
 
     // @doc-snippet:begin command=gamma slot=load imports=decode_file
     let raster = io::load(&in_path, &limits)?;
@@ -1184,6 +1217,40 @@ mod tests {
             err.to_string().contains("out of range"),
             "expected a typed 'out of range' error, got: {err}"
         );
+    }
+
+    #[test]
+    fn gamma_exponent_out_of_range_is_typed_error_not_silent() {
+        // vips REJECTS a gamma exponent outside [1e-6, 1000] (and non-finite);
+        // viprs must match with a typed exit-1 error rather than silently
+        // accepting it (adversarial-review conversion finding 6). The range is
+        // checked before any load, so a dummy path is fine.
+        // The `--exponent=<v>` form lets a negative value through clap (a bare
+        // `-1` would look like a flag); the range guard is what must reject it.
+        for bad in ["5000", "1001", "0", "-1", "-0.5"] {
+            let m = cmd("gamma")
+                .clone()
+                .try_get_matches_from(["gamma", "in.png", "out.png", &format!("--exponent={bad}")])
+                .unwrap();
+            let err = run_gamma(&m).unwrap_err();
+            assert!(
+                err.to_string().contains("out of range"),
+                "gamma --exponent {bad} must be a typed range error, got: {err}"
+            );
+        }
+        // In-range values (incl. the vips endpoints) pass the guard and fail
+        // later on the missing input path — NOT on the range check.
+        for good in ["0.000001", "1000", "2.0"] {
+            let m = cmd("gamma")
+                .clone()
+                .try_get_matches_from(["gamma", "in.png", "out.png", "--exponent", good])
+                .unwrap();
+            let err = run_gamma(&m).unwrap_err();
+            assert!(
+                !err.to_string().contains("out of range"),
+                "gamma --exponent {good} is in range; must not be a range error, got: {err}"
+            );
+        }
     }
 
     #[test]
