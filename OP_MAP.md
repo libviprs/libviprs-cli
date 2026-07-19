@@ -538,8 +538,8 @@ implements them.
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
-| `add` | `add` | S2 | EXACT-AFTER-CAST | core widens exactly like vips promotion (u8+u8→u16 saturating; 16-bit PNG passthrough compares tol 0) but **rejects float inputs** ("float addition lands with a later arithmetic batch") — int fixtures only until then; float combos logged as skipped per §7. |
-| `getpoint` | `getpoint` | S3 | EXACT | `getpoint in x y` prints the band vector in vips numeric format. |
+| `add` | `add` | S2 | EXACT-AFTER-CAST | **Accepted surface = uchar-only, equal-bands** (the exact set where core == vips). u8+u8→u16 widening compares tol 0. `add` **rejects float AND 16-bit inputs** (exit 1): core keeps a 16-bit input at 16-bit and SATURATES the sum at 65535 (`raster_ops.rs`), whereas vips promotes ushort→uint and returns the true sum — so 16-bit is rejected, NOT silently saturated (wide/float addition lands with a later arithmetic batch; core-side follow-up filed). Also a documented SUBSET of vips on bands: vips `add` BAND-BROADCASTS a 1-band operand across a multi-band one; core requires EQUAL band counts and the CLI keeps the exit-1 rejection (band-broadcast parity = core-side follow-up, not a regression). uchar int fixtures only; float/16-bit combos logged as skipped per §7. |
+| `getpoint` | `getpoint` | S3 | EXACT | `getpoint in x y` prints the band vector in vips numeric format. Oracle is the NUMERIC compare (float-parse + eps, §3); stdout TEXT formatting is NOT a pinned parity surface (§9) — non-dyadic float pixels print `f64::to_string` of the widened f32 (e.g. f32 0.1 → `0.10000000149011612`), which the numeric-eps compare carries regardless of vips's text form (pinned by the `getpoint_float_nd` non-dyadic case; the deliberately-dyadic `getpoint_float` fixture only sidesteps text, not the numeric oracle). |
 
 ---
 
