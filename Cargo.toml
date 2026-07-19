@@ -22,8 +22,10 @@ packfile = ["libviprs/packfile"]
 tracing = ["libviprs/tracing", "dep:tracing-subscriber", "dep:tracing"]
 
 [dependencies]
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 libviprs = { path = "../libviprs", features = ["pdfium"] }
+serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
 # Mirror the core crate's `pdfium-render` thread-safety fork. `[patch]`
