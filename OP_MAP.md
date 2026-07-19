@@ -416,21 +416,21 @@ Non-op public API (no rows): `Kernel` accessors `width/height/max`.
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
-| `hist_find` | `hist_find` | S1 | EXACT | ushort/uint counts; out via `.v`/`.mat` (1×256 image). |
-| `hist_find_band` | `hist_find` *(fold)* | S1 | EXACT | IS `hist_find --band N`. |
-| `hist_find_indexed` | `hist_find_indexed` | S2 | EXACT | `hist_find_indexed in index out` (2 inputs). |
+| `hist_find` | `hist_find` | S1 | EXACT | ushort/uint counts; out via `.v`/`.mat` (1×256 image). `--band` -1..=100000 (vips gint bounds). |
+| `hist_find_band` | `hist_find` *(fold)* | S1 | EXACT | IS `hist_find --band N` (band -1..=100000). |
+| `hist_find_indexed` | `hist_find_indexed` | S2 | EXACT | `hist_find_indexed in index out` (2 inputs). Bins combine by SUM only (vips `--combine` max/min not in core; red-flagged in --help). |
 | `hist_find_ndim` | `hist_find_ndim` | S1 | EXACT | `--bins`; N-dim output may exceed 4 bands → `.v`. |
 | `hist_cum` | `hist_cum` | S1 | EXACT | integer cumulative. |
 | `hist_norm` | `hist_norm` | S1 | EXACT | integer renormalisation. |
-| `hist_match` | `hist_match` | S2 | BOUNDED-TOL | `hist_match in ref out`; float LUT build then int map — ≤1 LSB. |
-| `hist_plot` | `hist_plot` | S1 | EXACT | deterministic plot raster. |
+| `hist_match` | `hist_match` | S2 | GOLDEN-ONLY | `hist_match in ref out`; core emits a `uchar` index LUT, vips a `uint` LUT — mappings diverge wholesale (measured max-abs-diff 254). No vips cross-oracle; pinned to a viprs-generated reference. |
+| `hist_plot` | `hist_plot` | S1 | GOLDEN-ONLY | core plots `max+1` rows, vips `max` — raster heights never match. No vips cross-oracle; viprs regression pin. |
 | `hist_entropy` | `hist_entropy` | S3 | BOUNDED-TOL | float scalar (log2); printed-value eps 1e-9. |
 | `hist_ismonotonic` | `hist_ismonotonic` | S3 | EXACT | boolean output arg (`monotonic`); harness parses vips's printed bool/int form. |
 | `hist_equal` | `hist_equal` | S1 | BOUNDED-TOL | vips `--band` not in core (all-bands only). Equalisation LUT rounding ≤1 LSB (expected 0). |
-| `hist_local` | `hist_local` | S1 | BOUNDED-TOL | `width height --max-slope` (CLAHE); ≤1 LSB. |
+| `hist_local` | `hist_local` | S1 | GOLDEN-ONLY | `width height --max-slope` (CLAHE); `width`/`height` 1..=100000000 (vips gint bounds). Window/border algo matches vips only at 3×3 (5×5 diff 51, CLAHE diff 60). No vips cross-oracle; viprs regression pin. |
 | `maplut` | `maplut` | S2 | EXACT | `maplut in out lut` — LUT is 2nd input (image or matrix file); `--band` (vips) not in core. |
 | `case` | — | — | EXCLUDED | core takes CONST cases (`&[f64]`); vips `case` requires an image array (`case index cases… out`) — no CLI mirror without N-image case support. Revisit if core grows image-cases. |
-| `percent` | `percent` | S3 | EXACT | `percent in percent` prints int threshold. |
+| `percent` | `percent` | S3 | GOLDEN-ONLY | `percent in percent` prints int threshold. Core = smallest value whose cumulative reaches P% (at-or-below); vips = threshold above which P% lie (measured core = vips−2 on a dense ramp). No vips cross-oracle; viprs regression pin. |
 
 ---
 
