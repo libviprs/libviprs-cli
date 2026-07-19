@@ -351,7 +351,7 @@ Non-op public API (no rows): `DrawOp` constructors `Circle::outline/filled`,
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
-| `copy` | `copy` | S1 | EXACT | `RasterCopyBuilder` options → `--interpretation --xres --yres --xoffset --yoffset --orientation` flags (vips `copy` header-tweak op). |
+| `copy` | `copy` | S1 | EXACT | vips `copy` header-tweak flags: `--interpretation --xres --yres --xoffset --yoffset` (vips 8.18.4 `copy` exposes only width/height/bands/format/coding/interpretation/xres/yres/xoffset/yoffset). `--orientation` is a DELIBERATE viprs-only extension (NOT a vips `copy` flag), kept **hidden** (`.hide(true)`) off the parity surface solely to mint the `autorot` oriented `.v` fixture; recorded here + in CLI_CONTRACT §3-deviations, NOT counted as vips parity (adversarial-review conversion finding 4). |
 | `cast` | `cast` | S1 | EXACT | `cast in out format`; core formats: `uchar ushort float` (+gray/multi widths) ONLY — `char short int uint complex double dpcomplex` targets rejected exit 2 with a #283/#285 pointer; vips `--shift` not in core. float→int path uses §2 round-half-even. |
 | `fliphor` | `flip` *(fold)* | S1 | EXACT | `flip in out horizontal` — one command, enum `horizontal|vertical`. |
 | `flipver` | `flip` *(fold)* | S1 | EXACT | `vertical`. |
