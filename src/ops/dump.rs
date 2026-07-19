@@ -49,7 +49,11 @@ pub fn dump_commands_json(cli: &Command) -> Value {
         let name = sub.get_name();
         let about = sub.get_about().map(|s| s.to_string());
         let (family, shape, oracle_class): (&str, Value, Value) = match meta.get(name) {
-            Some((fam, cm)) => (fam, json!(cm.shape), json!(cm.oracle_class)),
+            Some((fam, cm)) => (
+                fam,
+                json!(cm.shape.as_str()),
+                json!(cm.oracle_class.as_str()),
+            ),
             None => ("builtin", Value::Null, Value::Null),
         };
 
@@ -78,14 +82,40 @@ pub fn dump_commands_json(cli: &Command) -> Value {
 /// `Arg::get_index` is only populated once clap *builds* the command; the
 /// assembled tree here is unbuilt, so the 1-based `index` is derived from the
 /// declaration order that `get_positionals` preserves.
+///
+/// vips op-selectors are POSITIONALS (`morph`'s `erode|dilate`, `countlines`'
+/// `horizontal|vertical`, and later `round`/`boolean`/`relational`/…), so the
+/// `value_name` and `possible_values` (enum choices) are emitted here exactly
+/// as they are for flags — otherwise the enum choices vanish from the docs
+/// (`libviprs-org/cli/SCHEMA_V2.md` §3.1).
 fn positionals(cmd: &Command) -> Vec<Value> {
     cmd.get_positionals()
         .enumerate()
         .map(|(i, a)| {
+            let id = a.get_id().as_str();
+            let value_name = a
+                .get_value_names()
+                .and_then(|names| names.first())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| id.to_ascii_uppercase());
+
+            let possible: Vec<String> = a
+                .get_possible_values()
+                .iter()
+                .map(|p| p.get_name().to_string())
+                .collect();
+            let possible_values = if possible.is_empty() {
+                Value::Null
+            } else {
+                json!(possible)
+            };
+
             json!({
-                "name": a.get_id().as_str(),
+                "name": id,
                 "index": i + 1,
                 "required": a.is_required_set(),
+                "value_name": value_name,
+                "possible_values": possible_values,
                 "help": a.get_help().map(|s| s.to_string()),
             })
         })
@@ -204,6 +234,17 @@ mod tests {
         let pos = morph["positionals"].as_array().unwrap();
         assert_eq!(pos[0]["name"], "IN");
         assert_eq!(pos[0]["index"], 1);
+        // The op-selector positional (erode|dilate) must carry its enum
+        // choices and value_name, mirroring flags (A4 / SCHEMA_V2 §3.1).
+        let op = pos.iter().find(|p| p["name"] == "OP").unwrap();
+        assert_eq!(op["value_name"], "erode|dilate");
+        assert_eq!(
+            op["possible_values"],
+            serde_json::json!(["erode", "dilate"])
+        );
+        // A plain positional without choices reports null possible_values.
+        assert!(pos[0]["possible_values"].is_null());
+        assert_eq!(pos[0]["value_name"], "IN");
         // The decode-limit flags appear like any other flag.
         let flags = morph["flags"].as_array().unwrap();
         assert!(flags.iter().any(|f| f["long"] == "max-width"));

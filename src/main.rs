@@ -504,6 +504,15 @@ pub(crate) fn base_cli() -> clap::Command {
 fn main() {
     use clap::FromArgMatches;
 
+    // In debug builds, fail loud at startup if the command registry is
+    // inconsistent — a duplicate command name across families/built-ins, or a
+    // command with no meta (or vice-versa) would otherwise mis-route silently
+    // (`CLI_CONTRACT.md` §6).
+    debug_assert!(
+        ops::registry_is_consistent(),
+        "CLI command registry is inconsistent (duplicate command name or command/meta mismatch)"
+    );
+
     // Assemble the full CLI: frozen derived commands ∪ every family's commands
     // ∪ hidden `__dump-commands` (`CLI_CONTRACT.md` §6). Dispatch on the matched
     // subcommand: built-ins deserialize through the derive `Cli`; op families

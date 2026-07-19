@@ -20,16 +20,16 @@
 //! The four `@doc-command` blocks declare each command's slot order and import
 //! base once; the handlers open the matching snippets inline.
 //
-// @doc-command:begin name=morph about="Erode or dilate a binary image with a morphological mask" \
+// @doc-command:begin name=morph about="Erode or dilate a binary image with a morphological mask." \
 //     slot-order=load,apply,save imports-base=decode_file,save_file
 // @doc-command:end name=morph
-// @doc-command:begin name=rank about="Rank (order-statistic) filter over a sliding window" \
+// @doc-command:begin name=rank about="Rank (order-statistic) filter over a sliding window." \
 //     slot-order=load,apply,save imports-base=decode_file,save_file
 // @doc-command:end name=rank
-// @doc-command:begin name=countlines about="Count the average number of lines and print it" \
+// @doc-command:begin name=countlines about="Count the average number of lines in a one-band image and print it." \
 //     slot-order=load,apply imports-base=decode_file
 // @doc-command:end name=countlines
-// @doc-command:begin name=labelregions about="Label 4-connected regions; write the mask and print the count" \
+// @doc-command:begin name=labelregions about="Label 4-connected regions; write the label mask and print the segment count." \
 //     slot-order=load,apply,save imports-base=decode_file,save_file
 // @doc-command:end name=labelregions
 
@@ -40,7 +40,7 @@ use clap::{Arg, ArgMatches, Command};
 use libviprs::Direction;
 
 use super::matfile::MatFile;
-use super::{CommandMeta, io};
+use super::{CommandMeta, OracleClass, Shape, io};
 
 /// Static command metadata for the family (name → shape + oracle class), used
 /// by `__dump-commands` and by the dispatcher (`CLI_CONTRACT.md` §6).
@@ -48,23 +48,23 @@ pub fn metas() -> Vec<CommandMeta> {
     vec![
         CommandMeta {
             name: "morph",
-            shape: "image->image",
-            oracle_class: "EXACT",
+            shape: Shape::ImageToImage,
+            oracle_class: OracleClass::Exact,
         },
         CommandMeta {
             name: "rank",
-            shape: "image->image",
-            oracle_class: "EXACT",
+            shape: Shape::ImageToImage,
+            oracle_class: OracleClass::Exact,
         },
         CommandMeta {
             name: "countlines",
-            shape: "image->stdout-scalar",
-            oracle_class: "EXACT",
+            shape: Shape::StdoutScalar,
+            oracle_class: OracleClass::Exact,
         },
         CommandMeta {
             name: "labelregions",
-            shape: "image->two-outputs",
-            oracle_class: "EXACT",
+            shape: Shape::TwoOutputs,
+            oracle_class: OracleClass::Exact,
         },
     ]
 }
@@ -186,7 +186,7 @@ fn run_morph(m: &ArgMatches) -> Result<()> {
     // @doc-snippet:end command=morph slot=load
 
     let mask = MatFile::load(&mask_path)?;
-    let mask_rows = mask.as_u8_mask();
+    let mask_rows = mask.as_u8_mask()?;
     let mask_refs: Vec<&[u8]> = mask_rows.iter().map(|r| r.as_slice()).collect();
 
     // @doc-snippet:begin command=morph slot=apply
