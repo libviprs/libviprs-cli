@@ -30,6 +30,24 @@
 //! `draw_image`'s `--mode` is intentionally NOT exposed (the core does a plain
 //! "set"-mode paste, `OP_MAP.md`).
 //!
+//! **Known limitation — unbounded compute on large in-range extents (core, not
+//! this lane).** To keep vips parity the parser accepts vips's full range
+//! (`±1e9` coords, `0..1e9` radius), but the core shape ops iterate the *whole*
+//! shape bbox and clip only per-pixel inside `put_pixel`: `Rectangle::apply`
+//! (fill) is `O(width*height)`, `fill_circle`/`outline_circle` are `O(radius^2)`
+//! / `O(radius)`, and `Line::apply` is `O(extent)` — so a single valid argument
+//! like `draw_circle IN OUT 16 16 1000000000 --ink … --fill` does not terminate
+//! in reasonable time even though almost none of the shape lands on a small
+//! canvas. vips clips each scanline to the image first (`O(radius)`). The fix is
+//! to clip the iterated ranges to the canvas ∩ shape bbox before the `put_pixel`
+//! loops in `libviprs/src/draw.rs` (the pattern `Smudge::apply` / `Paste::apply`
+//! already use). That is a **core** change, out of scope for this CLI lane
+//! (which only touches `src/ops/draw.rs`); filed as a core issue (see the lane
+//! report). The CLI deliberately does NOT clamp the extent itself: clamping a
+//! `radius`/`width` would change *which* pixels are painted (an off-canvas arc
+//! still crosses the canvas), breaking the golden pins — the honest fix is the
+//! core clip-first, which is output-preserving.
+//!
 //! Handlers keep the §3 `load → mutate → save` shape and call only the
 //! panic-free `try_draw_*` core APIs where one exists (`draw_circle`,
 //! `draw_rect`, `draw_line`, `draw_mask`) or the inherently-fallible
@@ -494,12 +512,28 @@ fn run_draw_mask(m: &ArgMatches) -> Result<()> {
     let mask = io::load(&mask_path, &limits)?;
     // @doc-snippet:end command=draw_mask slot=load
 
+    // The core `Mask::apply` paints NOTHING for any mask that is not a
+    // single-band 8-bit stencil (`channels()!=1 || bytes_per_channel()!=1` is a
+    // documented no-op — libviprs/src/draw.rs). Left unchecked, a 3-band or
+    // 16-bit mask would write an UNCHANGED image and exit 0, a silent
+    // wrong-output that also diverges from vips (`draw_mask_direct: image must
+    // one band`). Reject it up front with a typed exit-1 error, mirroring
+    // `run_draw_image`'s format-mismatch guard rather than silently no-op'ing.
+    let mfmt = mask.format();
+    if mfmt.channels() != 1 || mfmt.bytes_per_channel() != 1 {
+        bail!(
+            "draw_mask MASK must be a single-band 8-bit stencil but has format {:?}; the core \
+             paints nothing for any other mask format — convert MASK to Gray8 first",
+            mfmt
+        );
+    }
+
     let ink = build_ink(&raster, pos(m, "ink"))?;
 
     // @doc-snippet:begin command=draw_mask slot=apply
     // `try_draw_mask` rejects a float target with a typed error (the blend
-    // decodes unsigned 8/16-bit samples); a mask that is not single-band 8-bit
-    // is a documented no-op in the core.
+    // decodes unsigned 8/16-bit samples); the single-band 8-bit stencil is
+    // validated above (a non-conforming mask is a documented core no-op).
     raster.try_draw_mask(&ink, &mask, x, y)?;
     // @doc-snippet:end command=draw_mask slot=apply
 
