@@ -251,7 +251,7 @@ Non-op public API in this file (no rows): none — all 131 fns dedup to the 94 b
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
-| `composite` | `composite` | S2 | BOUNDED-TOL | vips takes image ARRAY + mode ARRAY; core supports exactly 2 images / 1 mode → `viprs composite BASE OVERLAY OUT "mode"` (subset; reject >2 inputs with exit 2). ≤1 LSB (premultiplied f32 blend). 25 `CompositeMode`s = vips BlendMode names. |
+| `composite` | `composite` | S2 | BOUNDED-TOL | vips takes image ARRAY + mode ARRAY; core supports exactly 2 images / 1 mode → `viprs composite BASE OVERLAY OUT "mode"` (subset; reject >2 inputs with exit 2). ≤1 LSB (premultiplied f64 blend). 25 `CompositeMode`s = vips BlendMode names. |
 | `composite2` | `composite2` | S2 | BOUNDED-TOL | `composite2 base overlay out mode`; vips `--x --y --compositing-space --premultiplied` not in core (defaults). ≤1 LSB. |
 
 ---
