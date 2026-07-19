@@ -70,7 +70,7 @@ pub fn metas() -> Vec<CommandMeta> {
             // and OP_MAP.md).
             name: "matrixinvert",
             shape: Shape::ImageToImage,
-            oracle_class: OracleClass::BoundedTol,
+            oracle_class: OracleClass::ExactAfterCast,
         },
         CommandMeta {
             name: "invertlut",
