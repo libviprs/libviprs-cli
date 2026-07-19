@@ -28,8 +28,19 @@
 //!
 //! The two mask creators (`gaussmat`, `logmat`) produce a matrix, not an image:
 //! the coefficient grid is written as a single-band float raster to the native
-//! `.v` container ([`io::save`]), the carrier the differential decode-compares
-//! (the header `scale` is mask metadata the raster harness does not compare).
+//! `.v` container ([`io::save`]), the carrier the differential decode-compares.
+//!
+//! The emitted matrix `.v` **intentionally carries no `scale`/`offset` header**
+//! ([`save_matrix`] writes only the coefficient grid as a plain float raster).
+//! vips's `gaussmat`/`logmat` `.v` carries a `scale` (and `offset`) header entry
+//! that a vips consumer would read; viprs's raster carrier drops it. The raster
+//! differential samples only the coefficient grid, never the header, so **the
+//! `Kernel.scale` computed by these creators is NOT pinned by the differential**.
+//! `gaussmat`'s scale is exercised indirectly (the pinned `gaussblur` builds a
+//! `gaussmat` internally and divides by its scale), but `logmat`'s scale feeds no
+//! downstream op in the suite and so is unverified — a wrong `logmat` scale would
+//! be invisible here. This is a deliberate carrier limitation, not an oversight.
+//!
 //! `spcor` / `fastcor` output 32-bit float surfaces (the core returns a float
 //! image for both correlations), also carried as `.v`.
 //!
