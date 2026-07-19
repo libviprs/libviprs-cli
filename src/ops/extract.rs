@@ -28,9 +28,11 @@
 //!   (`-100000000..=100000000`) at parse but the core geometry is `u32`-only, so
 //!   a negative coordinate becomes a **typed exit-1 error** rather than a
 //!   `u32::try_from` abort (the bands B2 lesson); `WIDTH`/`HEIGHT` carry vips's
-//!   `1..` minimum.
-//! * `embed`/`insert`'s `X`/`Y` are signed (`i32`, vips's `±1e9`/`±1e8` ranges
-//!   fit) and passed straight through; canvas `WIDTH`/`HEIGHT` carry vips's `1..`.
+//!   `extract_area` bounds `1..=100000000` (the smaller crop-dim cap, NOT the
+//!   `1e9` canvas cap embed/gravity use).
+//! * `embed`'s `X`/`Y` are signed (`i32`, vips's `±1e9`) and `insert`'s `X`/`Y`
+//!   are signed (`i32`, vips's tighter `±1e8`), each passed straight through;
+//!   embed/gravity canvas `WIDTH`/`HEIGHT` carry vips's `1..=1000000000`.
 //! * `replicate`/`zoom`/`subsample` factors carry vips's `1..` minima.
 //! * `gravity`'s `DIRECTION` enum is vips's exact nine `VipsCompassDirection`
 //!   nicknames; `--extend` is the six `VipsExtend` nicknames.
@@ -230,8 +232,8 @@ pub fn commands() -> Vec<Command> {
                 .arg(Arg::new("MAIN").required(true).help("Main (background) image"))
                 .arg(Arg::new("SUB").required(true).help("Sub-image to insert"))
                 .arg(Arg::new("OUT").required(true).help("Output image"))
-                .arg(coord_arg("X", "Left edge of the sub-image in the main image"))
-                .arg(coord_arg("Y", "Top edge of the sub-image in the main image"))
+                .arg(insert_coord_arg("X", "Left edge of the sub-image in the main image"))
+                .arg(insert_coord_arg("Y", "Top edge of the sub-image in the main image"))
                 .arg(
                     Arg::new("expand")
                         .long("expand")
@@ -247,8 +249,8 @@ pub fn commands() -> Vec<Command> {
                 .about("Crop to the most interesting area of an image.")
                 .arg(Arg::new("IN").required(true).help("Input image"))
                 .arg(Arg::new("OUT").required(true).help("Output image"))
-                .arg(dim_arg("WIDTH", "Width of the crop area"))
-                .arg(dim_arg("HEIGHT", "Height of the crop area"))
+                .arg(crop_dim_arg("WIDTH", "Width of the crop area"))
+                .arg(crop_dim_arg("HEIGHT", "Height of the crop area"))
                 .arg(
                     Arg::new("interesting")
                         .long("interesting")
@@ -290,8 +292,8 @@ fn extract_area_command(name: &'static str) -> Command {
         // conversion, not a u32::try_from abort (bands B2 lesson).
         .arg(area_coord_arg("LEFT", "Left edge of the extract area"))
         .arg(area_coord_arg("TOP", "Top edge of the extract area"))
-        .arg(dim_arg("WIDTH", "Width of the extract area"))
-        .arg(dim_arg("HEIGHT", "Height of the extract area"))
+        .arg(crop_dim_arg("WIDTH", "Width of the extract area"))
+        .arg(crop_dim_arg("HEIGHT", "Height of the extract area"))
 }
 
 /// A signed `extract_area`-style coordinate (vips gint `-1e8..=1e8`), read as
@@ -303,8 +305,8 @@ fn area_coord_arg(id: &'static str, help: &'static str) -> Arg {
         .help(help)
 }
 
-/// A signed `embed`/`insert` position (`i32`; vips's `±1e9`/`±1e8` gint ranges
-/// both fit), passed straight to the core.
+/// A signed `embed` position (`i32`; vips's `embed` `x`/`y` gint range is
+/// `±1e9`), passed straight to the core.
 fn coord_arg(id: &'static str, help: &'static str) -> Arg {
     Arg::new(id)
         .required(true)
@@ -312,11 +314,31 @@ fn coord_arg(id: &'static str, help: &'static str) -> Arg {
         .help(help)
 }
 
-/// A canvas / crop dimension (`u32`, vips minimum `1`).
+/// A signed `insert` position (`i32`; vips's `insert` `x`/`y` gint range is the
+/// tighter `±1e8`, NOT embed's `±1e9`), passed straight to the core.
+fn insert_coord_arg(id: &'static str, help: &'static str) -> Arg {
+    Arg::new(id)
+        .required(true)
+        .value_parser(value_parser!(i32).range(-100_000_000..=100_000_000))
+        .help(help)
+}
+
+/// An `embed`/`gravity` canvas dimension (`u32`, vips's canvas bounds
+/// `1..=1e9`).
 fn dim_arg(id: &'static str, help: &'static str) -> Arg {
     Arg::new(id)
         .required(true)
         .value_parser(value_parser!(u32).range(1..=1_000_000_000))
+        .help(help)
+}
+
+/// An `extract_area`/`crop`/`smartcrop` crop dimension (`u32`, vips's
+/// `extract_area`/`smartcrop` bounds `1..=1e8` — the smaller crop-dim cap, NOT
+/// the `1e9` canvas cap [`dim_arg`] uses for embed/gravity).
+fn crop_dim_arg(id: &'static str, help: &'static str) -> Arg {
+    Arg::new(id)
+        .required(true)
+        .value_parser(value_parser!(u32).range(1..=100_000_000))
         .help(help)
 }
 
@@ -725,6 +747,73 @@ mod tests {
                 ])
                 .is_err(),
             "a LEFT below -1e8 must be rejected at parse"
+        );
+    }
+
+    #[test]
+    fn crop_dims_reject_above_vips_maximum() {
+        // vips caps extract_area/crop/smartcrop WIDTH/HEIGHT at 1e8 (NOT the 1e9
+        // canvas cap embed/gravity use); the value_parser rejects 1e8+1 at parse
+        // (strict parity — no 10x over-permissive leak).
+        for (name, args) in [
+            (
+                "extract_area",
+                [
+                    "extract_area",
+                    "in.png",
+                    "out.png",
+                    "0",
+                    "0",
+                    "100000001",
+                    "2",
+                ],
+            ),
+            (
+                "smartcrop",
+                ["smartcrop", "in.png", "out.png", "100000001", "8", "x", "y"],
+            ),
+        ] {
+            // smartcrop takes only WIDTH HEIGHT (4 tokens); truncate its args.
+            let argv: Vec<&str> = if name == "smartcrop" {
+                vec!["smartcrop", "in.png", "out.png", "100000001", "8"]
+            } else {
+                args.to_vec()
+            };
+            assert!(
+                cmd(name).try_get_matches_from(argv).is_err(),
+                "{name}: a WIDTH above 1e8 must be rejected at parse"
+            );
+        }
+    }
+
+    #[test]
+    fn embed_canvas_dim_allows_above_extract_maximum() {
+        // The 1e9 canvas cap is embed/gravity-only: a WIDTH of 1e8+1 that
+        // extract_area/smartcrop reject is still valid for embed's canvas.
+        let m = cmd("embed")
+            .try_get_matches_from(["embed", "in.png", "out.png", "0", "0", "100000001", "24"])
+            .unwrap();
+        assert_eq!(*m.get_one::<u32>("WIDTH").unwrap(), 100_000_001);
+    }
+
+    #[test]
+    fn insert_position_rejects_beyond_vips_bounds() {
+        // vips's insert x/y are the tighter ±1e8 (NOT embed's ±1e9); the
+        // value_parser rejects anything outside at parse.
+        for x in ["-100000001", "100000001", "500000000"] {
+            assert!(
+                cmd("insert")
+                    .try_get_matches_from(["insert", "main.png", "sub.png", "out.png", x, "0",])
+                    .is_err(),
+                "insert X of {x} must be rejected (outside vips's ±1e8)"
+            );
+        }
+        // embed's ±1e9 must still accept the same magnitude that insert rejects.
+        assert!(
+            cmd("embed")
+                .try_get_matches_from(["embed", "in.png", "out.png", "500000000", "0", "4", "4",])
+                .is_ok(),
+            "embed X of 5e8 is inside embed's ±1e9 and must be accepted"
         );
     }
 
