@@ -337,7 +337,7 @@ Non-op public API (no rows): `DrawOp` constructors `Circle::outline/filled`,
 | `bandjoin_vec` | `bandjoin_const` | S1 | EXACT | `bandjoin_const in out "c…"` — the general vector form is THE command; `bandjoin_const` fn is its 1-element case. |
 | `bandfold` | `bandfold` | S1 | EXACT | `--factor`. |
 | `bandunfold` | `bandunfold` | S1 | EXACT | `--factor`. |
-| `bandmean` | `bandmean` | S1 | EXACT | integer rounding pinned by ported tests. |
+| `bandmean` | `bandmean` | S1 | BOUNDED-TOL | ≤1 LSB: core FLOORS the per-pixel integer mean (truncating division) vs vips ROUND-to-nearest; a non-divisible band sum diverges by at most one LSB (core-vs-vips rounding, not a CLI bug). |
 | `bandrank` | `bandrank` | S2 | EXACT | variadic inputs + `--index` (default median). |
 | `bandand` | `bandbool` *(fold)* | S1 | EXACT | `bandbool in out and` — one command, enum `and|or|eor`. |
 | `bandor` | `bandbool` *(fold)* | S1 | EXACT | `or`. |
