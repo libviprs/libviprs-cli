@@ -15,14 +15,14 @@
 //! | `hist_find_ndim IN OUT --bins`   | `hist_find_ndim`    | S1 | EXACT | up-to-3-D histogram cube |
 //! | `hist_cum IN OUT`                | `hist_cum`          | S1 | EXACT | running sum along the histogram |
 //! | `hist_norm IN OUT`               | `hist_norm`         | S1 | BOUNDED-TOL | band maxima scaled to the max index (cumulative-norm rounding ≤1 LSB vs vips) |
-//! | `hist_match IN REF OUT`          | `hist_match`        | S2 | BOUNDED-TOL | float CDF match then int map |
-//! | `hist_plot IN OUT`               | `hist_plot`         | S1 | EXACT | deterministic bar-graph raster |
+//! | `hist_match IN REF OUT`          | `hist_match`        | S2 | GOLDEN-ONLY | core emits a uchar index LUT, vips a uint LUT — mappings diverge wholesale (measured max-abs-diff 254); no vips cross-oracle |
+//! | `hist_plot IN OUT`               | `hist_plot`         | S1 | GOLDEN-ONLY | core plots `max+1` rows, vips `max` — heights never match; no vips cross-oracle |
 //! | `hist_entropy IN`                | `hist_entropy`      | S3 | BOUNDED-TOL | Shannon entropy (bits), vips numeric print |
 //! | `hist_ismonotonic IN`            | `hist_ismonotonic`  | S3 | EXACT | boolean (`TRUE`/`FALSE`, vips print form) |
 //! | `hist_equal IN OUT`             | `hist_equal`        | S1 | BOUNDED-TOL | global equalisation (vips `--band` not in core) |
-//! | `hist_local IN OUT W H --max-slope` | `hist_local`    | S1 | BOUNDED-TOL | local (CLAHE) equalisation |
+//! | `hist_local IN OUT W H --max-slope` | `hist_local`    | S1 | GOLDEN-ONLY | window/border algo matches vips only at 3×3 (5×5 diff 51, CLAHE diff 60); no vips cross-oracle |
 //! | `maplut IN OUT LUT`             | `maplut`            | S2 | EXACT | map samples through a LUT (2nd input) |
-//! | `percent IN PERCENT`            | `percent`           | S3 | EXACT | percentile threshold (int) |
+//! | `percent IN PERCENT`            | `percent`           | S3 | GOLDEN-ONLY | core = smallest value whose cumulative reaches P%; vips = threshold above which P% lie (core = vips−2); no vips cross-oracle |
 //!
 //! **Panic-safety (bands B2 lesson).** The core histogram ops read samples with
 //! an internal `read_flat` that **panics** on a float raster (it predates the
@@ -118,16 +118,20 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: OracleClass::BoundedTol,
         },
         CommandMeta {
-            // BOUNDED-TOL (≤1 LSB): the float CDF match then integer map can
-            // diverge from vips by at most one least-significant bit.
+            // GOLDEN-ONLY: the core emits a `uchar` index LUT where vips emits a
+            // `uint` LUT; the mappings diverge wholesale (measured max-abs-diff
+            // 254 — see cli_histogram_diff.rs). No vips cross-oracle exists; the
+            // differential pins the core against a viprs-generated reference.
             name: "hist_match",
             shape: Shape::NImageToImage,
-            oracle_class: OracleClass::BoundedTol,
+            oracle_class: OracleClass::GoldenOnly,
         },
         CommandMeta {
+            // GOLDEN-ONLY: the core plots `max+1` graph rows where vips plots
+            // `max`, so the raster dimensions never match. No vips cross-oracle.
             name: "hist_plot",
             shape: Shape::ImageToImage,
-            oracle_class: OracleClass::Exact,
+            oracle_class: OracleClass::GoldenOnly,
         },
         CommandMeta {
             // BOUNDED-TOL: a floating log2 scalar, compared with a relative eps.
@@ -147,11 +151,13 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: OracleClass::BoundedTol,
         },
         CommandMeta {
-            // BOUNDED-TOL: CLAHE window arithmetic differs from vips at the tol
-            // measured in the differential (see cli_histogram_diff.rs).
+            // GOLDEN-ONLY: the core's sliding-window / border algorithm matches
+            // vips only for a 3×3 window; larger windows diverge (measured
+            // max-abs-diff 51 at 5×5) and the CLAHE `--max-slope` path diverges
+            // further (60 — see cli_histogram_diff.rs). No vips cross-oracle.
             name: "hist_local",
             shape: Shape::ImageToImage,
-            oracle_class: OracleClass::BoundedTol,
+            oracle_class: OracleClass::GoldenOnly,
         },
         CommandMeta {
             name: "maplut",
@@ -159,9 +165,13 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: OracleClass::Exact,
         },
         CommandMeta {
+            // GOLDEN-ONLY: the core returns the smallest value whose cumulative
+            // count reaches P% (at-or-below); vips returns the threshold above
+            // which P% of pixels lie. The definitions differ (measured core =
+            // vips − 2 on a dense ramp). No vips cross-oracle.
             name: "percent",
             shape: Shape::StdoutScalar,
-            oracle_class: OracleClass::Exact,
+            oracle_class: OracleClass::GoldenOnly,
         },
     ]
 }
@@ -182,16 +192,21 @@ pub fn commands() -> Vec<Command> {
                         .long("band")
                         .value_name("N")
                         .default_value("-1")
-                        // vips's own minimum is -1 (= all bands); reject anything
-                        // below it at parse time rather than silently folding it
-                        // into the all-bands default (B5 strict parity).
-                        .value_parser(value_parser!(i64).range(-1..))
-                        .help("Find the histogram of this band only (>= -1; -1 = all bands, the default)"),
+                        // vips's band range is -1..=100000 (min -1 = all bands,
+                        // max 100000). Reject anything outside it at parse time
+                        // for strict parity — vips rejects both a sub-`-1` band
+                        // and a band above 100000 at parse (B5 strict parity).
+                        .value_parser(value_parser!(i64).range(-1..=100000))
+                        .help("Find the histogram of this band only (-1..=100000; -1 = all bands, the default)"),
                 ),
         ),
         io::with_decode_limit_args(
             Command::new("hist_find_indexed")
-                .about("Sum image samples into bins selected by an index image.")
+                .about(
+                    "Sum image samples into bins selected by an index image. \
+                     Bins combine by SUM only (vips's max/min combine modes are \
+                     not supported by the core).",
+                )
                 .arg(Arg::new("IN").required(true).help("Input image (unsigned 8/16-bit)"))
                 .arg(
                     Arg::new("INDEX")
@@ -264,15 +279,19 @@ pub fn commands() -> Vec<Command> {
                 .arg(
                     Arg::new("WIDTH")
                         .required(true)
-                        // vips's minimum is 1; 0 is rejected at parse time.
-                        .value_parser(value_parser!(u32).range(1..))
-                        .help("Window width in pixels (>= 1)"),
+                        // vips's window range is 1..=100000000 (a `gint`). Cap
+                        // both bounds for strict parity AND to remove an overflow
+                        // / effectively-infinite-loop vector: an unbounded window
+                        // (e.g. u32::MAX) makes the core's `ww * wh` window area
+                        // overflow i64 and its per-pixel window loop never return.
+                        .value_parser(value_parser!(u32).range(1..=100_000_000))
+                        .help("Window width in pixels (1..=100000000)"),
                 )
                 .arg(
                     Arg::new("HEIGHT")
                         .required(true)
-                        .value_parser(value_parser!(u32).range(1..))
-                        .help("Window height in pixels (>= 1)"),
+                        .value_parser(value_parser!(u32).range(1..=100_000_000))
+                        .help("Window height in pixels (1..=100000000)"),
                 )
                 .arg(
                     Arg::new("max-slope")
@@ -286,7 +305,11 @@ pub fn commands() -> Vec<Command> {
         ),
         io::with_decode_limit_args(
             Command::new("maplut")
-                .about("Map every sample of an image through a look-up table.")
+                .about(
+                    "Map every sample of an image through a look-up table. \
+                     The LUT applies to ALL bands (vips's per-band `--band` \
+                     selection is not supported by the core).",
+                )
                 .arg(Arg::new("IN").required(true).help("Input image (unsigned 8/16-bit)"))
                 .arg(Arg::new("OUT").required(true).help("Output mapped image"))
                 .arg(
@@ -741,18 +764,16 @@ mod tests {
     }
 
     #[test]
-    fn hist_find_huge_band_is_error_not_panic() {
-        // A positive --band beyond u32::MAX parses (the `-1..` bound only floors
-        // the value) but must convert to a typed exit-1 error, NEVER a
-        // u32::try_from panic/abort — CLI_CONTRACT.md §8. The band is range-checked
-        // before any image is loaded, so a dummy path is fine.
-        let m = cmd("hist_find")
-            .try_get_matches_from(["hist_find", "in.png", "out.v", "--band", "4294967296"])
-            .unwrap();
-        let err = run_hist_find(&m).unwrap_err();
+    fn hist_find_band_above_max_is_rejected() {
+        // vips's band maximum is 100000; the `-1..=100000` value_parser rejects
+        // anything above it at parse time (strict parity — no core-only extension
+        // of the upper bound leaks into the CLI surface). 100001 exceeds any real
+        // band count, so no legitimate case is lost.
         assert!(
-            err.to_string().contains("out of range"),
-            "expected a typed 'out of range' error, got: {err}"
+            cmd("hist_find")
+                .try_get_matches_from(["hist_find", "in.png", "out.v", "--band", "100001"])
+                .is_err(),
+            "a --band above 100000 must be rejected"
         );
     }
 
@@ -814,6 +835,15 @@ mod tests {
                 .try_get_matches_from(["hist_local", "in.png", "out.png", "0", "5"])
                 .is_err(),
             "a zero window width must be rejected"
+        );
+        // vips's window maximum is 100000000; anything above it is rejected at
+        // parse time — this also removes the i64 window-area overflow / infinite
+        // window-loop vector (a single u32::MAX arg would otherwise hang).
+        assert!(
+            cmd("hist_local")
+                .try_get_matches_from(["hist_local", "in.png", "out.png", "200000000", "5"])
+                .is_err(),
+            "a window width above 100000000 must be rejected"
         );
         // vips's max-slope range is 0..=100.
         assert!(
