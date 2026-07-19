@@ -11,6 +11,15 @@
 //! into fixed-point tables — the same convolution, off by at most one
 //! least-significant bit.
 //!
+//! **Oracle scope — non-alpha inputs only.** The ≤1 LSB BOUNDED-TOL contract
+//! holds for inputs WITHOUT an alpha channel. The core `shrink` / `reduce` /
+//! `resize` premultiply alpha before resampling (a documented, intentional
+//! divergence from bare `vips_shrink` / `vips_reduce`, which do not), so on an
+//! RGBA / GrayA input these ops diverge from vips wholesale — well beyond ≤1
+//! LSB (measured max-abs-diff 4 for `shrink 2 2` on a 4-band sRGB ramp). That
+//! divergence is deliberate and OUT of this oracle class; the differential
+//! suite exercises only non-alpha `grad` / `rgb` carriers accordingly.
+//!
 //! | command | vips | shape | notes |
 //! |---|---|---|---|
 //! | `shrink IN OUT HSHRINK VSHRINK`        | `shrink`   | S1 | box shrink, f64 factors |
@@ -357,10 +366,24 @@ pub fn commands() -> Vec<Command> {
                         .help("Fit within this height (>= 1); a square WIDTH box when omitted"),
                 )
                 .arg(
+                    // vips `thumbnail --crop` takes a VipsInteresting enum value
+                    // (none|centre|entropy|attention|low|high|all). The core
+                    // supports only centre-crop, so this flag accepts an OPTIONAL
+                    // value (`--crop` alone == `--crop centre`, matching the bare
+                    // form; `--crop none` == no crop) and rejects the unsupported
+                    // modes with a typed exit-1 in `run_thumbnail` rather than
+                    // silently accepting a value it cannot honour. This preserves
+                    // vips's literal `--crop centre` syntax instead of erroring on
+                    // it as an unexpected argument.
                     Arg::new("crop")
                         .long("crop")
-                        .action(ArgAction::SetTrue)
-                        .help("Fill the box and centre-crop (vips --crop centre)"),
+                        .value_name("INTERESTING")
+                        .num_args(0..=1)
+                        .default_missing_value("centre")
+                        .help(
+                            "Fill the box and centre-crop (vips --crop; core supports \
+                             none|centre only — `--crop` == `--crop centre`)",
+                        ),
                 )
                 .arg(
                     Arg::new("linear")
@@ -671,7 +694,19 @@ fn run_thumbnail(m: &ArgMatches) -> Result<()> {
     let out_path = PathBuf::from(pos(m, "OUT"));
     let width = *m.get_one::<u32>("WIDTH").expect("required");
     let height = m.get_one::<u32>("height").copied();
-    let crop = m.get_flag("crop");
+    // `--crop` carries an optional VipsInteresting value; the core supports only
+    // centre-crop, so map none→false and centre→true and reject every other vips
+    // mode with a typed exit-1 (never a silent accept-and-ignore).
+    let crop = match m.get_one::<String>("crop").map(String::as_str) {
+        None => false,
+        Some("centre" | "center") => true,
+        Some("none") => false,
+        Some(other) => bail!(
+            "--crop {other:?} is not supported: the core does centre-crop only \
+             (`--crop` or `--crop centre`) or no crop (`--crop none`); vips's \
+             entropy / attention / low / high / all crop modes are unavailable"
+        ),
+    };
     let linear = m.get_flag("linear");
     let export_profile = m.get_one::<String>("export-profile").map(String::as_str);
 
@@ -849,13 +884,47 @@ mod tests {
 
     #[test]
     fn thumbnail_reads_filename_width_and_flags() {
+        // Bare `--crop` takes the default_missing_value "centre".
         let m = cmd("thumbnail")
             .try_get_matches_from(["thumbnail", "in.png", "out.png", "16", "--crop"])
             .unwrap();
         assert_eq!(pos(&m, "FILENAME"), "in.png");
         assert_eq!(*m.get_one::<u32>("WIDTH").unwrap(), 16);
-        assert!(m.get_flag("crop"));
+        assert_eq!(
+            m.get_one::<String>("crop").map(String::as_str),
+            Some("centre")
+        );
         assert!(!m.get_flag("linear"));
+        // The literal vips syntax `--crop centre` now parses (was a clap
+        // "unexpected argument" error before the optional-value arity).
+        let m = cmd("thumbnail")
+            .try_get_matches_from(["thumbnail", "in.png", "out.png", "16", "--crop", "centre"])
+            .unwrap();
+        assert_eq!(
+            m.get_one::<String>("crop").map(String::as_str),
+            Some("centre")
+        );
+    }
+
+    #[test]
+    fn thumbnail_rejects_an_unsupported_crop_mode() {
+        // vips's entropy/attention/low/high/all crop modes are not core-backed;
+        // passing one is a typed exit-1 error, never a silent centre-crop.
+        let m = cmd("thumbnail")
+            .try_get_matches_from([
+                "thumbnail",
+                "in.png",
+                "out.png",
+                "16",
+                "--crop",
+                "attention",
+            ])
+            .unwrap();
+        let err = run_thumbnail(&m).unwrap_err();
+        assert!(
+            err.to_string().contains("--crop"),
+            "expected a crop-mode error, got: {err}"
+        );
     }
 
     #[test]
