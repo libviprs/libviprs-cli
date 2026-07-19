@@ -11,7 +11,7 @@
 //!
 //! | command | vips | shape | oracle | notes |
 //! |---|---|---|---|---|
-//! | `subtract L R OUT`            | `subtract`        | S2 | EAC | float diff, PNG save-cast clips negatives to 0 |
+//! | `subtract L R OUT`            | `subtract`        | S2 | EAC | core saturates the diff at 0 (unsigned out); the differential adds an `a>=b` case so the full range is exercised without a clip dead-zone |
 //! | `multiply L R OUT`            | `multiply`        | S2 | EAC | int promote (uchar→ushort), `.v` |
 //! | `divide L R OUT`             | `divide`          | S2 | EAC | float quotient, `.v` |
 //! | `minpair L R OUT`           | `minpair`         | S2 | EXACT | format-preserving |
@@ -26,11 +26,24 @@
 //! | `recomb IN OUT M.mat`      | `recomb`          | S1 | EAC | matrix FILE arg (shared matfile loader) |
 //! | `premultiply IN OUT`       | `premultiply`     | S1 | BOUNDED-TOL | ≤1 LSB post-cast |
 //! | `unpremultiply IN OUT`     | `unpremultiply`   | S1 | BOUNDED-TOL | ≤1 LSB post-cast |
-//! | `math IN OUT OP`           | `math`            | S1 | EAC | 16-way enum, float→`.v` |
-//! | `math2 L R OUT OP`        | `math2`           | S2 | EAC | enum atan2\|pow\|wop, float→`.v` |
+//! | `math IN OUT OP`           | `math`            | S1 | FOURIER | 16-way enum, float→`.v` (see the oracle-class note below) |
+//! | `math2 L R OUT OP`        | `math2`           | S2 | FOURIER | enum atan2\|pow\|wop, float→`.v` (see the oracle-class note below) |
 //! | `complexform L R OUT`      | `complexform`     | S2 | FOURIER | two reals → complex band-pairs, `.v` |
 //! | `complex IN OUT OP`       | `complex`         | S1 | FOURIER | enum polar\|rect\|conj, `.v` |
 //! | `complexget IN OUT OP`    | `complexget`      | S1 | FOURIER | enum real\|imag, `.v` |
+//!
+//! ## `math` / `math2` oracle class — `FOURIER`, not the OP_MAP `EAC` prediction
+//!
+//! OP_MAP.md provisionally predicts `EXACT-AFTER-CAST` for `math`/`math2`, but
+//! the differential deliberately validates them via the stricter **float
+//! carrier** (`.v`, compared at a small float eps) — the same FOURIER treatment
+//! the complex family uses, not the uchar save-cast EAC path. An EAC-uchar save
+//! of, say, `sin` output in `[-1, 1]` would round nearly everything to `0`/`1`
+//! and be near-vacuous, so the float carrier is the honest, more discriminating
+//! choice. [`metas`] therefore declares both as [`OracleClass::Fourier`] so
+//! `__dump-commands` and any §6 contract audit report the class actually used;
+//! this is a documented deviation from OP_MAP's prediction (cf. `recomb` /
+//! `gamma`, which similarly diverge from their EAC predictions).
 //!
 //! ## Float-input safety (`CLI_CONTRACT.md` §8)
 //!
@@ -144,14 +157,18 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: BoundedTol,
         },
         CommandMeta {
+            // FOURIER (float carrier), not OP_MAP's EAC prediction: the
+            // differential compares native float `.v` at a float eps, the
+            // stricter class actually used (see the module-header note).
             name: "math",
             shape: ImageToImage,
-            oracle_class: ExactAfterCast,
+            oracle_class: Fourier,
         },
         CommandMeta {
+            // FOURIER (float carrier); see `math` above and the module header.
             name: "math2",
             shape: NImageToImage,
-            oracle_class: ExactAfterCast,
+            oracle_class: Fourier,
         },
         CommandMeta {
             name: "complexform",
