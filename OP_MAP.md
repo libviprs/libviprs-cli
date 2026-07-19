@@ -142,7 +142,7 @@ save-cast). Wave agents must keep those subsets red-flagged in `--help` text.
 | `clamp` | `clamp` | S1 | EXACT | `--min --max` (vips optional args). |
 | `floor` | `round` *(fold)* | S1 | EXACT | `round in out floor` — one `viprs round` command, enum `rint|ceil|floor`. |
 | `ceil` | `round` *(fold)* | S1 | EXACT | `round … ceil`. |
-| `rint` | `round` *(fold)* | S1 | EXACT | `round … rint`. |
+| `rint` | `round` *(fold)* | S1 | GOLDEN-ONLY | `round … rint`. **Diverges from vips at exact half-integers**: core maps `f64::round` (half **away from zero**; 0.5→1, 2.5→3, −2.5→−3) but vips's C `rint` rounds half **to even** (0.5→0, 2.5→2, −2.5→−2). Verified live on vips 8.18.4; not a bounded tolerance. Carried as a viprs regression pin (`round_rint_golden.v`); core issue filed to reconcile `rint` with round-half-to-even (and fix the `arithmetic.rs` doc comment wrongly claiming vips rounds halves away from zero). `ceil`/`floor` remain EXACT. |
 | `pos` | — | — | EXCLUDED | identity; vips `copy` covers. |
 | `neg` | — | — | EXCLUDED | `linear -1 0`; no vips nickname. |
 
@@ -241,7 +241,7 @@ save-cast). Wave agents must keep those subsets red-flagged in `--help` text.
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
 | `hough_line` | `hough_line` | S1 | EXACT | uint accumulator; core has no params — vips `--width --height` defaults (256×256) must be pinned at fixture-gen time. |
-| `hough_circle` | `hough_circle` | S1 | EXACT | core takes `min_radius max_radius` only; vips `--scale` defaults to 3 — pin explicit `--scale`/radii flags when generating references so both sides compute the same parameter space. |
+| `hough_circle` | `hough_circle` | S1 | GOLDEN-ONLY | core takes `min_radius max_radius` only, as REQUIRED positionals (intentional surface deviation — vips exposes them as OPTIONAL `--min-radius`/`--max-radius`, defaults 10/20, so `vips hough_circle in out` is valid on its own). vips 8.18.4 `--scale` defaults to **1** (not 3), which is what the core computes. Carried GOLDEN-ONLY: the core per-cell vote model diverges structurally from vips (single point → core max 1 vs vips max 4), so there is no cross-oracle; reference is a viprs regression pin, core issue filed. |
 
 Non-op public API in this file (no rows): none — all 131 fns dedup to the 94 bases above.
 
