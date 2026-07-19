@@ -142,6 +142,16 @@ use libviprs::{Raster, SdfParams};
 use super::matfile::MatFile;
 use super::{CommandMeta, OracleClass, Shape, io};
 
+/// vips's declared maximum image dimension (`VIPS_MAX_COORD`, verified against
+/// vips 8.18.4: `black out 100000000 1` succeeds, `100000001` is refused).
+/// Typed `i64` because clap's ranged value-parser bounds are `RangeBounds<i64>`.
+const VIPS_MAX_COORD: i64 = 100_000_000;
+
+/// vips's declared upper bound for the mask `order` / frequency-cutoff /
+/// ringwidth / radius `gdouble` properties (verified against vips 8.18.4: a
+/// value of `1000000` is accepted, `1000001` is refused as out-of-range).
+const VIPS_MASK_PARAM_MAX: f64 = 1_000_000.0;
+
 /// Static command metadata for the family (name → shape + oracle class), used
 /// by `__dump-commands` and by the dispatcher (`CLI_CONTRACT.md` §6).
 pub fn metas() -> Vec<CommandMeta> {
@@ -194,11 +204,13 @@ fn out_arg() -> Arg {
     Arg::new("OUT").required(true).help("Output image path")
 }
 
-/// A required `WIDTH` / `HEIGHT` pixel dimension (vips minimum 1).
+/// A required `WIDTH` / `HEIGHT` pixel dimension (vips range 1..=1e8, i.e.
+/// `VIPS_MAX_COORD`; a value above vips's declared maximum is rejected by clap
+/// exactly as vips refuses to set the out-of-range gint property).
 fn dim_arg(name: &'static str, help: &'static str) -> Arg {
     Arg::new(name)
         .required(true)
-        .value_parser(value_parser!(u32).range(1..))
+        .value_parser(value_parser!(u32).range(1..=VIPS_MAX_COORD))
         .help(help)
 }
 
@@ -409,27 +421,38 @@ pub fn commands() -> Vec<Command> {
                     .long("a")
                     .value_name("\"x y\"")
                     .default_value("0 0")
-                    .help("Point a: circle centre / box corner / line start (vips --a)"),
+                    .help(
+                        "Point a: circle centre / box corner / line start, INTEGER \
+                         \"x y\" (vips --a; core SdfParams is integer-only — a §9 \
+                         subset of vips's gdouble VipsArrayDouble, so \"10.5 10.5\" \
+                         is rejected where vips would accept it)",
+                    ),
             )
-            .arg(
-                Arg::new("b")
-                    .long("b")
-                    .value_name("\"x y\"")
-                    .help("Point b: opposite box corner / line end (vips --b)"),
-            )
+            .arg(Arg::new("b").long("b").value_name("\"x y\"").help(
+                "Point b: opposite box corner / line end, INTEGER \"x y\" \
+                         (vips --b; integer-only, §9 subset of vips's gdouble)",
+            ))
             .arg(
                 Arg::new("r")
                     .long("r")
                     .value_name("R")
                     .default_value("50")
                     .value_parser(value_parser!(i64).range(0..))
-                    .help("Circle radius (vips --r, default 50, >= 0)"),
+                    .help(
+                        "Circle radius, INTEGER (vips --r, default 50, >= 0; \
+                         integer-only, §9 subset of vips's gdouble — \"16.5\" is \
+                         rejected where vips would accept it)",
+                    ),
             )
             .arg(
                 Arg::new("corners")
                     .long("corners")
                     .value_name("\"c0 c1 c2 c3\"")
-                    .help("rounded-box corner radii, clockwise from top-right (vips --corners)"),
+                    .help(
+                        "rounded-box corner radii, clockwise from top-right, \
+                         INTEGER (vips --corners; integer-only, §9 subset of vips's \
+                         gdouble)",
+                    ),
             ),
         // --- text -----------------------------------------------------------
         Command::new("text")
@@ -472,15 +495,22 @@ pub fn commands() -> Vec<Command> {
     ]
 }
 
-/// The `--seed` flag shared by the noise generators. Core seeds are `u32`
-/// (vips's `gint` seed is cast); a negative seed is rejected at parse time.
+/// The `--seed` flag shared by the noise generators. vips's `--seed` is a
+/// `gint` (range `-2^31..=2^31-1`) and accepts negatives, so the CLI does too:
+/// the value is parsed within the vips gint range and bit-reinterpreted to the
+/// `u32` the core PRNG seed takes (`seed as u32`, two's-complement — the same
+/// reinterpret vips performs when it uses the signed seed as unsigned state).
+/// This matches vips's acceptance surface exactly (`--seed -5` is honored, and
+/// a value above `2^31-1` is refused just as vips refuses the out-of-range
+/// gint), rather than the earlier `u32`-only narrowing.
 fn seed_arg() -> Arg {
     Arg::new("seed")
         .long("seed")
         .value_name("N")
         .default_value("0")
-        .value_parser(value_parser!(u32))
-        .help("PRNG seed (vips --seed, default 0)")
+        .allow_hyphen_values(true)
+        .value_parser(value_parser!(i64).range(-2_147_483_648_i64..=2_147_483_647_i64))
+        .help("PRNG seed (vips --seed gint, default 0; negatives honored)")
 }
 
 /// Dispatch a matched create subcommand to its handler.
@@ -555,9 +585,9 @@ fn require_range(name: &str, v: f64, min: f64, max: f64) -> Result<f64> {
     Ok(v)
 }
 
-/// A frequency cutoff / radius / ring width (vips minimum 0).
+/// A frequency cutoff / radius / ring width (vips range 0..=1e6).
 fn nonneg(m: &ArgMatches, id: &str) -> Result<f64> {
-    require_min(id, f64_at(m, id), 0.0)
+    require_range(id, f64_at(m, id), 0.0, VIPS_MASK_PARAM_MAX)
 }
 
 /// An amplitude cutoff (vips range 0..1).
@@ -636,7 +666,9 @@ fn run_sines(m: &ArgMatches) -> Result<()> {
 fn run_gaussnoise(m: &ArgMatches) -> Result<()> {
     let sigma = require_min("sigma", *m.get_one::<f64>("sigma").expect("default"), 0.0)?;
     let mean = *m.get_one::<f64>("mean").expect("default");
-    let seed = *m.get_one::<u32>("seed").expect("default");
+    // vips gint seed → core u32 via a two's-complement bit-reinterpret (so a
+    // negative seed maps to the same unsigned state vips would use).
+    let seed = *m.get_one::<i64>("seed").expect("default") as u32;
     let out_raster =
         Raster::try_gaussnoise_seeded(dim(m, "WIDTH"), dim(m, "HEIGHT"), mean, sigma, seed)?;
     io::save(&out_raster, &out_path(m))?;
@@ -645,7 +677,9 @@ fn run_gaussnoise(m: &ArgMatches) -> Result<()> {
 
 /// `perlin OUT W H --seed` — S5 GOLDEN-ONLY.
 fn run_perlin(m: &ArgMatches) -> Result<()> {
-    let seed = *m.get_one::<u32>("seed").expect("default");
+    // vips gint seed → core u32 via a two's-complement bit-reinterpret (so a
+    // negative seed maps to the same unsigned state vips would use).
+    let seed = *m.get_one::<i64>("seed").expect("default") as u32;
     let out_raster = Raster::try_perlin_seeded(dim(m, "WIDTH"), dim(m, "HEIGHT"), seed)?;
     io::save(&out_raster, &out_path(m))?;
     Ok(())
@@ -653,7 +687,9 @@ fn run_perlin(m: &ArgMatches) -> Result<()> {
 
 /// `worley OUT W H --seed` — S5 GOLDEN-ONLY.
 fn run_worley(m: &ArgMatches) -> Result<()> {
-    let seed = *m.get_one::<u32>("seed").expect("default");
+    // vips gint seed → core u32 via a two's-complement bit-reinterpret (so a
+    // negative seed maps to the same unsigned state vips would use).
+    let seed = *m.get_one::<i64>("seed").expect("default") as u32;
     let out_raster = Raster::try_worley_seeded(dim(m, "WIDTH"), dim(m, "HEIGHT"), seed)?;
     io::save(&out_raster, &out_path(m))?;
     Ok(())
@@ -777,7 +813,7 @@ fn run_mask_butterworth(m: &ArgMatches) -> Result<()> {
     let out_raster = Raster::try_mask_butterworth(
         dim(m, "WIDTH"),
         dim(m, "HEIGHT"),
-        require_min("ORDER", f64_at(m, "ORDER"), 1.0)?,
+        require_range("ORDER", f64_at(m, "ORDER"), 1.0, VIPS_MASK_PARAM_MAX)?,
         nonneg(m, "FREQUENCY_CUTOFF")?,
         amplitude(m, "AMPLITUDE_CUTOFF")?,
         m.get_flag("nodc"),
@@ -793,7 +829,7 @@ fn run_mask_butterworth_ring(m: &ArgMatches) -> Result<()> {
     let out_raster = Raster::try_mask_butterworth_ring(
         dim(m, "WIDTH"),
         dim(m, "HEIGHT"),
-        require_min("ORDER", f64_at(m, "ORDER"), 1.0)?,
+        require_range("ORDER", f64_at(m, "ORDER"), 1.0, VIPS_MASK_PARAM_MAX)?,
         nonneg(m, "FREQUENCY_CUTOFF")?,
         amplitude(m, "AMPLITUDE_CUTOFF")?,
         nonneg(m, "RINGWIDTH")?,
@@ -808,7 +844,7 @@ fn run_mask_butterworth_band(m: &ArgMatches) -> Result<()> {
     let out_raster = Raster::try_mask_butterworth_band(
         dim(m, "WIDTH"),
         dim(m, "HEIGHT"),
-        require_min("ORDER", f64_at(m, "ORDER"), 1.0)?,
+        require_range("ORDER", f64_at(m, "ORDER"), 1.0, VIPS_MASK_PARAM_MAX)?,
         nonneg(m, "FREQUENCY_CUTOFF_X")?,
         nonneg(m, "FREQUENCY_CUTOFF_Y")?,
         nonneg(m, "RADIUS")?,
@@ -1063,8 +1099,8 @@ mod tests {
             .unwrap();
         let err = run_mask_butterworth(&m).unwrap_err();
         assert!(
-            err.to_string().contains("below the vips minimum"),
-            "expected an order minimum error, got: {err}"
+            err.to_string().contains("outside the vips range"),
+            "expected an order range error, got: {err}"
         );
     }
 
@@ -1094,8 +1130,70 @@ mod tests {
         let m = cmd("gaussnoise")
             .try_get_matches_from(["gaussnoise", "out.v", "16", "16"])
             .unwrap();
-        assert_eq!(*m.get_one::<u32>("seed").unwrap(), 0);
+        assert_eq!(*m.get_one::<i64>("seed").unwrap(), 0);
         assert_eq!(*m.get_one::<f64>("sigma").unwrap(), 30.0);
         assert_eq!(*m.get_one::<f64>("mean").unwrap(), 128.0);
+    }
+
+    #[test]
+    fn negative_seed_is_accepted_and_bit_reinterpreted() {
+        // vips's `--seed` is a gint and accepts negatives; the CLI honors them
+        // (parity with vips), parsing within the gint range and reinterpreting
+        // to the core u32 seed via a two's-complement cast. Regression guard for
+        // the earlier u32-only narrowing that rejected `--seed -5` at exit 2.
+        for op in ["gaussnoise", "perlin", "worley"] {
+            let m = cmd(op)
+                .try_get_matches_from([op, "out.v", "16", "16", "--seed", "-5"])
+                .unwrap_or_else(|e| panic!("{op} must accept a negative seed: {e}"));
+            let seed = *m.get_one::<i64>("seed").unwrap();
+            assert_eq!(seed, -5);
+            // -5 as u32 is 0xFFFF_FFFB (two's complement), the unsigned state.
+            assert_eq!(seed as u32, 4_294_967_291);
+        }
+    }
+
+    #[test]
+    fn seed_above_gint_max_is_rejected() {
+        // Above vips's gint maximum (2^31-1) the CLI refuses the seed exactly as
+        // vips refuses to set the out-of-range gint property (was: accepted up to
+        // u32::MAX, an over-wide surface vs vips).
+        assert!(
+            cmd("perlin")
+                .try_get_matches_from(["perlin", "out.v", "16", "16", "--seed", "2147483648"])
+                .is_err(),
+            "a seed above the vips gint max must be rejected"
+        );
+    }
+
+    #[test]
+    fn dimension_above_vips_max_coord_is_rejected() {
+        // vips's VIPS_MAX_COORD is 1e8; a larger dimension is refused by clap
+        // exactly as vips refuses the out-of-range gint (finding 6).
+        assert!(
+            cmd("black")
+                .try_get_matches_from(["black", "out.v", "100000001", "8"])
+                .is_err(),
+            "a WIDTH above vips's 1e8 maximum must be rejected"
+        );
+        assert!(
+            cmd("black")
+                .try_get_matches_from(["black", "out.v", "100000000", "8"])
+                .is_ok(),
+            "the 1e8 maximum itself is accepted"
+        );
+    }
+
+    #[test]
+    fn mask_param_above_vips_max_is_a_typed_error() {
+        // Frequency cutoff / order share vips's 1e6 gdouble maximum; a larger
+        // value is a typed exit-1 error, matching vips's out-of-range refusal.
+        let m = cmd("mask_ideal")
+            .try_get_matches_from(["mask_ideal", "out.v", "16", "16", "1000001"])
+            .unwrap();
+        let err = run_mask_ideal(&m).unwrap_err();
+        assert!(
+            err.to_string().contains("outside the vips range"),
+            "expected a frequency-cutoff range error, got: {err}"
+        );
     }
 }

@@ -494,7 +494,7 @@ differential; uchar variants can use PNG.
 | `mask_butterworth_ring` | `mask_butterworth_ring` | S5 | BOUNDED-TOL | `+ ringwidth --nodc`. |
 | `mask_butterworth_band` | `mask_butterworth_band` | S5 | BOUNDED-TOL | fullest core signature: `order fcx fcy radius amplitude-cutoff --uchar --optical --nodc` — flag surfaces differ per mask op; CLI must expose exactly what core has, no invented parity. |
 | `mask_fractal` | `mask_fractal` | S5 | BOUNDED-TOL | `fractal-dimension`; pow() → f32 eps 1e-6. |
-| `sdf` | `sdf` | S5 | BOUNDED-TOL | `sdf out width height shape` + `--a "x y" --b "x y" --r` (`SdfParams`); shapes `circle|box|rounded-box|line`. Core mirrors the C f32 math exactly → expected tol 0, keep f32 eps 1e-6 for hypotf ULP. |
+| `sdf` | `sdf` | S5 | BOUNDED-TOL | `sdf out width height shape` + `--a "x y" --b "x y" --r --corners` (`SdfParams`); shapes `circle|box|rounded-box|line`. Core mirrors the C f32 math exactly → expected tol 0, keep f32 eps 1e-6 for hypotf ULP. **§9 core-limitation subset**: core `SdfParams` carries INTEGER points/radius, so `--a/--b/--corners` parse `i64` and `--r` `i64`, whereas vips `--a/--b/--corners` are `VipsArrayDouble` and `--r` `gdouble` — `viprs sdf … --r 16.5` / `--a "10.5 10.5"` are rejected (clean exit) where vips accepts them; surfaced in the command `--help` (adversarial-review create finding 5). |
 | `text` | `text` | S5 | GOLDEN-ONLY | Pango/fontconfig rendering differs across hosts; committed libviprs fixture. `text out "string" --font --dpi --width` per core surface. |
 
 Non-op public API (no rows): `SdfParams` accessors `max_value`/`min_value`.
