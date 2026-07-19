@@ -45,6 +45,16 @@
 //! exit-1 error rather than a silently-ignored flag (the `add` 16-bit lesson:
 //! never emit a wrong "success" for an input the core cannot honour). The
 //! differential only ever uses the default.
+//!
+//! **Deliberate divergence from the oracle (adversarial-review finding 2):**
+//! `vips merge --mblend N` *succeeds* and produces a valid, different blend for
+//! any in-range N, whereas `viprs merge --mblend N` (N != 10) *exits 1*. This is
+//! a real, intentional CLI-surface divergence — the loud-fail is correct, but it
+//! means no differential can (or does) cover what vips actually does at a
+//! non-default mblend, since the core cannot reproduce it. Flagged here and in
+//! `PROVENANCE.md` so a parity auditor is not surprised. (Note the asymmetry with
+//! `mosaic`, which omits its own `--mblend`/`--hwindow`/`--harea`/`--bandno`
+//! entirely rather than rejecting non-defaults; both are safe subsets.)
 //
 // @doc-command:begin name=merge about="Merge two overlapping images with a feathered seam." \
 //     slot-order=load,apply,save imports-base=decode_file,save_file
@@ -165,6 +175,12 @@ pub fn commands() -> Vec<Command> {
                 ),
         ),
         io::with_decode_limit_args(
+            // `mosaic` intentionally omits vips's four OPTIONAL flags
+            // (`--hwindow` / `--harea` / `--mblend` / `--bandno`): the core
+            // `try_mosaic` pins each to the vips default (hwindow 5, harea 15,
+            // mblend 10, bandno 0) and exposes no API to vary them, so surfacing
+            // them could only reject a non-default value — a safe, documented
+            // subset of the vips surface, not a parity gap (finding 1).
             Command::new("mosaic")
                 .about("Join two images by refining an approximate tie-point.")
                 .arg(
