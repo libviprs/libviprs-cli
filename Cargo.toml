@@ -16,7 +16,14 @@ name = "viprs"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["pdfium"]
+# Vector-PDF rasterisation via PDFium (`viprs pyramid <file>.pdf --render`).
+# On by default so the shipped binary keeps the `--render` path; build with
+# `--no-default-features` to produce a pdfium-free binary that links no
+# `pdfium-render`/native `libpdfium` (embedded-image extraction and `pdf`
+# info still work — those are pure-Rust `lopdf` paths). Enables the core
+# crate's `pdfium` feature, which is what pulls in `pdfium-render`.
+pdfium = ["libviprs/pdfium"]
 s3 = ["libviprs/s3"]
 packfile = ["libviprs/packfile"]
 tracing = ["libviprs/tracing", "dep:tracing-subscriber", "dep:tracing"]
@@ -24,7 +31,7 @@ tracing = ["libviprs/tracing", "dep:tracing-subscriber", "dep:tracing"]
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-libviprs = { path = "../libviprs", features = ["pdfium"] }
+libviprs = { path = "../libviprs" }
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
