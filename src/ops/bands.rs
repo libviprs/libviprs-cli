@@ -90,13 +90,13 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: OracleClass::Exact,
         },
         CommandMeta {
-            // BOUNDED-TOL (≤1 LSB), NOT EXACT: the core floors the per-pixel
-            // integer mean (truncating division) while vips rounds to nearest,
-            // so a non-divisible band sum diverges by at most one LSB. See the
-            // module header and OP_MAP.md.
+            // EXACT (tol 0): core issue #482 made the per-pixel integer mean
+            // round-to-nearest, matching vips 8.18.4 bit-for-bit (previously the
+            // core floored via truncating division, diverging ≤1 LSB on a
+            // non-divisible band sum). Verified against the oracle 2026-07-19.
             name: "bandmean",
             shape: Shape::ImageToImage,
-            oracle_class: OracleClass::BoundedTol,
+            oracle_class: OracleClass::Exact,
         },
         CommandMeta {
             name: "bandrank",

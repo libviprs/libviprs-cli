@@ -142,7 +142,7 @@ save-cast). Wave agents must keep those subsets red-flagged in `--help` text.
 | `clamp` | `clamp` | S1 | EXACT | `--min --max` (vips optional args). |
 | `floor` | `round` *(fold)* | S1 | EXACT | `round in out floor` — one `viprs round` command, enum `rint|ceil|floor`. |
 | `ceil` | `round` *(fold)* | S1 | EXACT | `round … ceil`. |
-| `rint` | `round` *(fold)* | S1 | GOLDEN-ONLY | `round … rint`. **Diverges from vips at exact half-integers**: core maps `f64::round` (half **away from zero**; 0.5→1, 2.5→3, −2.5→−3) but vips's C `rint` rounds half **to even** (0.5→0, 2.5→2, −2.5→−2). Verified live on vips 8.18.4; not a bounded tolerance. Carried as a viprs regression pin (`round_rint_golden.v`); core issue filed to reconcile `rint` with round-half-to-even (and fix the `arithmetic.rs` doc comment wrongly claiming vips rounds halves away from zero). `ceil`/`floor` remain EXACT. |
+| `rint` | `round` *(fold)* | S1 | EXACT | `round … rint`. Core #494 changed the core to round half **to even** (0.5→0, 2.5→2, −2.5→−2), matching vips's C `rint` at exact half-integers, so `round rint` is now EXACT (tol 0) against a genuine vips oracle. The former GOLDEN-ONLY pin (`round_rint_golden.v`) is retired in favour of a vips-minted `round_rint_expected.v`. `ceil`/`floor` were and remain EXACT. Verified against the oracle 2026-07-19. |
 | `pos` | — | — | EXCLUDED | identity; vips `copy` covers. |
 | `neg` | — | — | EXCLUDED | `linear -1 0`; no vips nickname. |
 
@@ -240,7 +240,7 @@ save-cast). Wave agents must keep those subsets red-flagged in `--help` text.
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
-| `hough_line` | `hough_line` | S1 | EXACT | uint accumulator; core has no params — vips `--width --height` defaults (256×256) must be pinned at fixture-gen time. |
+| `hough_line` | `hough_line` | S1 | GOLDEN-ONLY | core has no params — vips `--width --height` defaults (256×256) pinned at fixture-gen time. Core #495 fixed the distance binning so the accumulator vote PATTERN now matches vips 8.18.4 bit-for-bit, but an INHERENT format/saturation gap remains: the core accumulates into Gray16 (u16) while vips uses a uint accumulator, so a peak of >65535 collinear votes saturates in the core (no u32 carrier). Carried GOLDEN-ONLY (viprs regression pin) for that reason. |
 | `hough_circle` | `hough_circle` | S1 | GOLDEN-ONLY | core takes `min_radius max_radius` only, as REQUIRED positionals (intentional surface deviation — vips exposes them as OPTIONAL `--min-radius`/`--max-radius`, defaults 10/20, so `vips hough_circle in out` is valid on its own). vips 8.18.4 `--scale` defaults to **1** (not 3), which is what the core computes. Carried GOLDEN-ONLY: the core per-cell vote model diverges structurally from vips (single point → core max 1 vs vips max 4), so there is no cross-oracle; reference is a viprs regression pin, core issue filed. |
 
 Non-op public API in this file (no rows): none — all 131 fns dedup to the 94 bases above.
@@ -337,7 +337,7 @@ Non-op public API (no rows): `DrawOp` constructors `Circle::outline/filled`,
 | `bandjoin_vec` | `bandjoin_const` | S1 | EXACT | `bandjoin_const in out "c…"` — the general vector form is THE command; `bandjoin_const` fn is its 1-element case. |
 | `bandfold` | `bandfold` | S1 | EXACT | `--factor`. |
 | `bandunfold` | `bandunfold` | S1 | EXACT | `--factor`. |
-| `bandmean` | `bandmean` | S1 | BOUNDED-TOL | ≤1 LSB: core FLOORS the per-pixel integer mean (truncating division) vs vips ROUND-to-nearest; a non-divisible band sum diverges by at most one LSB (core-vs-vips rounding, not a CLI bug). |
+| `bandmean` | `bandmean` | S1 | EXACT | core #482 made the per-pixel integer mean round-to-nearest, matching vips 8.18.4 bit-for-bit (previously FLOORED via truncating division, ≤1 LSB below vips's round-to-nearest). Verified against the oracle 2026-07-19. |
 | `bandrank` | `bandrank` | S2 | EXACT | variadic inputs + `--index` (default median). |
 | `bandand` | `bandbool` *(fold)* | S1 | EXACT | `bandbool in out and` — one command, enum `and|or|eor`. |
 | `bandor` | `bandbool` *(fold)* | S1 | EXACT | `or`. |
@@ -364,7 +364,7 @@ Non-op public API (no rows): `DrawOp` constructors `Circle::outline/filled`,
 | `ifthenelse` | `ifthenelse` | S2 | EXACT | `ifthenelse cond in1 in2 out` (3 inputs); vips `--blend` not in core (hard select). |
 | `autorot` | `autorot` | S1 | EXACT | orientation lives in TIFF/`.v` metadata — PNG fixtures are no-ops; use oriented-TIFF fixture. |
 | `wrap` | `wrap` | S1 | EXACT | core has no args (vips `--x --y` default w/2,h/2 match). |
-| `gamma` | `gamma` | S1 | EXACT-AFTER-CAST | `--exponent` (vips default 2.4); contract §5 example. |
+| `gamma` | `gamma` | S1 | EXACT | `--exponent` (vips default 2.4); contract §5 example. Core #486 rebuilt the power LUT vips-exact over the full 0..255 domain (previously a ≤1-LSB LUT-rounding divergence). Verified against the oracle 2026-07-19. |
 | `falsecolour` | `falsecolour` | S1 | EXACT | fixed LUT map (UK spelling verified). |
 | `addalpha` | `addalpha` | S1 | EXACT | appends opaque alpha. |
 | `arrayjoin` | `arrayjoin` | S2 | EXACT | variadic + `--across --shim`; vips extra layout args (halign/valign/hspacing/background) not in core. |

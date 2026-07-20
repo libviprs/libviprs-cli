@@ -28,20 +28,18 @@
 //! | `abs IN OUT`                     | `abs`             | S1 | EXACT | \|v\| (meaningful on float `.v`) |
 //! | `sign IN OUT`                    | `sign`            | S1 | EXACT-AFTER-CAST | −1/0/1 (float in → signed out) |
 //! | `clamp IN OUT [--min] [--max]`   | `clamp`           | S1 | EXACT | clip to [min,max]; NaN/inverted bounds → typed exit 1 |
-//! | `round IN OUT rint\|ceil\|floor` | `round`           | S1 | EXACT (ceil/floor); GOLDEN-ONLY (rint) | rounding mode enum — rint's half-rule diverges from vips (see below) |
-//! | `hough_line IN OUT`              | `hough_line`      | S1 | GOLDEN-ONLY | 256×256 accumulator; core binning diverges from vips (see below) |
+//! | `round IN OUT rint\|ceil\|floor` | `round`           | S1 | EXACT | rounding mode enum — all three modes match vips (rint is now half-to-even, core #494) |
+//! | `hough_line IN OUT`              | `hough_line`      | S1 | GOLDEN-ONLY | 256×256 accumulator; binning now vips-exact (core #495) but Gray16-vs-uint format/saturation remains (see below) |
 //! | `hough_circle IN OUT MIN MAX`    | `hough_circle`    | S1 | GOLDEN-ONLY | scale-1 accumulator; core vote model diverges from vips. MIN/MAX are REQUIRED positionals (an intentional deviation — vips exposes them as optional `--min-radius`/`--max-radius`) |
 //!
-//! **`round rint` divergence (honest).** `OP_MAP.md` provisionally rated all three
-//! `round` modes EXACT, but the differential (on an afloat input that actually
-//! reaches the half-integer domain) measured a genuine, deterministic divergence
-//! from vips 8.18.4 at exact half-integers: the core maps `f64::round` (round
-//! half **away from zero**: 0.5→1, 2.5→3, −2.5→−3), while vips's C `rint` rounds
-//! half **to even** (0.5→0, 2.5→2, −2.5→−2). `ceil`/`floor` have no tie-break and
-//! stay EXACT. So `round rint` is carried GOLDEN-ONLY (a committed viprs-generated
-//! regression pin, no vips parity oracle) and a core issue is filed to reconcile
-//! `rint` with vips's round-half-to-even (and to correct the core doc comment at
-//! `arithmetic.rs` that wrongly states vips `rint` "rounds halves away from zero").
+//! **`round rint` (now EXACT).** `OP_MAP.md` originally rated all three `round`
+//! modes EXACT; a differential once measured a genuine divergence at exact
+//! half-integers (the core mapped `f64::round`, half **away from zero**:
+//! 0.5→1, 2.5→3, −2.5→−3, while vips's C `rint` rounds half **to even**:
+//! 0.5→0, 2.5→2, −2.5→−2). Core issue #494 changed the core to round half-to-even,
+//! so `round rint` now matches vips 8.18.4 bit-for-bit at exact half-integers and
+//! is carried EXACT (tol 0) against a genuine vips oracle — the GOLDEN-ONLY
+//! regression pin is retired. `ceil`/`floor` were and remain EXACT.
 //!
 //! **`hough_circle` surface (honest).** vips 8.18.4 exposes the radii as OPTIONAL
 //! flags (`--min-radius`/`--max-radius`, defaults 10/20), so `vips hough_circle in
@@ -51,15 +49,17 @@
 //! cross-oracle affected, and the core computes vips's `--scale 1` parameter
 //! space (vips 8.18.4's own `--scale` default is 1, not 3).
 //!
-//! **Hough divergence (honest).** `OP_MAP.md` provisionally lists both Hough ops
-//! EXACT, but the differential measured a genuine, non-tolerance divergence from
-//! vips 8.18.4: `hough_line`'s distance binning is offset by one accumulator cell
-//! (≤1 per vote, but N at a peak where N collinear pixels concentrate — a
-//! horizontal line measured max-abs-diff 32), and `hough_circle`'s per-cell vote
-//! model differs (a single point yields a core max of 1 vs a vips max of 4).
-//! Neither is a bounded rounding tolerance, so both are carried GOLDEN-ONLY
-//! (a committed viprs-generated regression pin, no vips parity oracle) and a core
-//! issue is filed to reconcile the binning / vote model with vips.
+//! **Hough (still GOLDEN-ONLY, for narrower reasons).** `OP_MAP.md` provisionally
+//! listed both Hough ops EXACT. Core issue #495 fixed `hough_line`'s distance
+//! binning, so its accumulator vote PATTERN now matches vips 8.18.4 bit-for-bit;
+//! what remains is an INHERENT format/saturation gap — the core accumulates into
+//! Gray16 (u16) while vips uses a uint accumulator, so at a peak where more than
+//! 65535 collinear pixels concentrate the core saturates and vips does not (the
+//! core has no u32 carrier). `hough_circle` still diverges STRUCTURALLY: its
+//! per-cell vote model differs from vips (a single point yields a core max of 1
+//! vs a vips max of 4), not a bounded tolerance. Both are therefore still carried
+//! GOLDEN-ONLY (committed viprs-generated regression pins, no full-width vips
+//! oracle).
 
 use std::path::{Path, PathBuf};
 
@@ -148,25 +148,24 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: OracleClass::Exact,
         },
         CommandMeta {
-            // Mixed-mode (as `smartcrop`): `ceil`/`floor` are EXACT against vips,
-            // but `rint` diverges at exact half-integers — the core uses
-            // `f64::round` (half away from zero) while vips's C `rint` rounds half
-            // to even, so `round rint` is GOLDEN-ONLY (viprs regression pin, core
-            // issue filed). The dominant modes are EXACT; the per-mode oracle is
-            // authoritative in the differential suite + OP_MAP + PROVENANCE.
+            // EXACT for ALL three modes: `ceil`/`floor` always matched vips, and
+            // core issue #494 changed `rint` to round half-to-even, so it now
+            // matches vips's C `rint` at exact half-integers too (previously the
+            // core used `f64::round`, half away from zero — a GOLDEN-ONLY pin).
+            // Verified against the oracle 2026-07-19.
             name: "round",
             shape: Shape::ImageToImage,
             oracle_class: OracleClass::Exact,
         },
         CommandMeta {
-            // NOT EXACT (OP_MAP.md provisionally listed EXACT): the core's
-            // distance-binning normalization differs from vips 8.18.4 by a
-            // one-cell shift, which is ≤1 per independent vote but amplifies to
-            // N at a peak where N collinear pixels vote (a horizontal line
-            // measured max-abs-diff 32, not a bounded tolerance). There is thus
-            // no meaningful vips tolerance oracle; the reference is a
-            // viprs-generated regression pin (GOLDEN-ONLY) and a core issue is
-            // filed to reconcile the binning with vips. See the wave report.
+            // GOLDEN-ONLY (format/saturation, not binning). Core issue #495 fixed
+            // the distance-binning normalization so the accumulator vote pattern
+            // now matches vips 8.18.4 bit-for-bit. What REMAINS is an inherent
+            // format/saturation divergence: the core accumulates into Gray16
+            // (u16) while vips uses a uint accumulator, so at a peak where more
+            // than 65535 collinear pixels concentrate the core saturates where
+            // vips does not — the core has no u32 carrier. So the op stays a
+            // viprs-generated regression pin (no cross-oracle at full width).
             name: "hough_line",
             shape: Shape::ImageToImage,
             oracle_class: OracleClass::GoldenOnly,

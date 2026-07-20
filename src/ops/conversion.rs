@@ -22,7 +22,7 @@
 //! | `ifthenelse COND IN1 IN2 OUT`            | `ifthenelse`  | S2 (3 in) | EXACT | hard select |
 //! | `autorot IN OUT`                         | `autorot`     | S1 | EXACT | oriented input (TIFF/`.v`) |
 //! | `wrap IN OUT`                            | `wrap`        | S1 | EXACT | default w/2,h/2 shift |
-//! | `gamma IN OUT [--exponent E]`            | `gamma`       | S1 | BOUNDED-TOL ≤1 LSB | power curve (measured; OP_MAP said EAC) |
+//! | `gamma IN OUT [--exponent E]`            | `gamma`       | S1 | EXACT | power LUT (core #486 made it vips-exact) |
 //! | `falsecolour IN OUT`                     | `falsecolour` | S1 | EXACT | fixed PET LUT |
 //! | `addalpha IN OUT`                        | `addalpha`    | S1 | EXACT | append opaque alpha |
 //! | `arrayjoin A B [C…] OUT [--across --shim]`| `arrayjoin`  | S2 variadic | EXACT | tile a grid |
@@ -126,12 +126,11 @@ pub fn metas() -> Vec<CommandMeta> {
         meta("ifthenelse", NImageToImage, Exact),
         meta("autorot", ImageToImage, Exact),
         meta("wrap", ImageToImage, Exact),
-        // BOUNDED-TOL ≤1 LSB (MEASURED): OP_MAP.md provisionally listed gamma
-        // EXACT-AFTER-CAST, but the differential measures a 1-LSB divergence —
-        // the power LUT is computed and rounded independently by the core and
-        // vips. An honest core-vs-vips rounding difference (flagged), not a CLI
-        // bug.
-        meta("gamma", ImageToImage, BoundedTol),
+        // EXACT (tol 0): core issue #486 rebuilt the gamma power LUT to be
+        // vips-exact, so the full 0..255 domain matches vips 8.18.4 bit-for-bit
+        // (previously a ≤1-LSB divergence from independent LUT rounding).
+        // Verified against the oracle 2026-07-19.
+        meta("gamma", ImageToImage, Exact),
         meta("falsecolour", ImageToImage, Exact),
         meta("addalpha", ImageToImage, Exact),
         meta("arrayjoin", NImageToImage, Exact),
