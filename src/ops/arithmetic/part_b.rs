@@ -22,8 +22,8 @@
 //! | `boolean L R OUT OP`       | `boolean`         | S2 | EXACT | enum and\|or\|eor (lshift/rshift are core-only-const, excluded) |
 //! | `boolean_const IN OUT OP C` | `boolean_const`   | S1 | EXACT | enum and\|or\|eor\|lshift\|rshift, scalar const |
 //! | `scale IN OUT [--log]`      | `scale`           | S1 | BOUNDED-TOL | ≤1 LSB; vips `--exp` is fixed at core 0.25, not exposed |
-//! | `stdif IN OUT W H`         | `stdif`           | S1 | BOUNDED-TOL | vips `--a --m0 --b --s0` fixed at core defaults |
-//! | `recomb IN OUT M.mat`      | `recomb`          | S1 | EAC | matrix FILE arg (shared matfile loader) |
+//! | `stdif IN OUT W H`         | `stdif`           | S1 | EXACT | vips `--a --m0 --b --s0` fixed at core defaults; core #490 edge-replicate now matches whole-image |
+//! | `recomb IN OUT M.mat`      | `recomb`          | S1 | EXACT | matrix FILE arg (shared matfile loader); core #491 f32-then-truncate now bit-exact |
 //! | `premultiply IN OUT`       | `premultiply`     | S1 | BOUNDED-TOL | ≤1 LSB post-cast |
 //! | `unpremultiply IN OUT`     | `unpremultiply`   | S1 | BOUNDED-TOL | ≤1 LSB post-cast |
 //! | `math IN OUT OP`           | `math`            | S1 | FOURIER | 16-way enum, float→`.v` (see the oracle-class note below) |
@@ -42,8 +42,9 @@
 //! and be near-vacuous, so the float carrier is the honest, more discriminating
 //! choice. [`metas`] therefore declares both as [`OracleClass::Fourier`] so
 //! `__dump-commands` and any §6 contract audit report the class actually used;
-//! this is a documented deviation from OP_MAP's prediction (cf. `recomb` /
-//! `gamma`, which similarly diverge from their EAC predictions).
+//! this is a documented deviation from OP_MAP's prediction. (`recomb` and
+//! `gamma`, once ≤1-LSB divergent from their EAC predictions, are now EXACT
+//! after core issues #491 / #486 made them bit-exact against vips 8.18.4.)
 //!
 //! ## Float-input safety (`CLI_CONTRACT.md` §8)
 //!
@@ -137,14 +138,22 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: BoundedTol,
         },
         CommandMeta {
+            // EXACT (tol 0): core issue #490 switched the sliding-window border
+            // handling to edge-replicate, matching vips 8.18.4 across the WHOLE
+            // image (previously clip-vs-mirror diverged in the 1px border ring).
+            // Verified against the oracle 2026-07-19.
             name: "stdif",
             shape: ImageToImage,
-            oracle_class: BoundedTol,
+            oracle_class: Exact,
         },
         CommandMeta {
+            // EXACT (tol 0): core issue #491 recomputes the band recombination in
+            // f32 and truncates once (as vips does), so integer-in/integer-out is
+            // now bit-exact (previously per-band round-and-saturate diverged
+            // ≤1 LSB). Verified against the oracle 2026-07-19.
             name: "recomb",
             shape: ImageToImage,
-            oracle_class: ExactAfterCast,
+            oracle_class: Exact,
         },
         CommandMeta {
             name: "premultiply",
