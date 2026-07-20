@@ -40,11 +40,11 @@
 //!   [`SmartcropInteresting`] strategies (vips's `none` is intentionally
 //!   excluded — not core-backed), default `attention` (vips's default).
 //!
-//! Two vips features the core does NOT back are intentionally NOT exposed (bands
-//! `lshift`/`rshift` precedent — no invented parity): `insert`'s `--background`
-//! (the core `try_insert` fills new pixels with black only) and `subsample`'s
-//! `--point` (the core always point-samples the top-left of each cell). Both are
-//! documented as subsets in the command help.
+//! `insert` exposes `--background` (core `try_insert` fills expand/off-canvas
+//! pixels with the given colour, default black, matching vips). One vips feature
+//! the core does NOT back is intentionally NOT exposed (bands `lshift`/`rshift`
+//! precedent — no invented parity): `subsample`'s `--point` (the core always
+//! point-samples the top-left of each cell), documented as a subset in help.
 //!
 //! Handlers keep the §3 `load → try_op → save` shape and call only the panic-free
 //! `try_*` core APIs, so a bad input becomes exit 1 rather than an abort
@@ -239,10 +239,11 @@ pub fn commands() -> Vec<Command> {
                         .long("expand")
                         .action(ArgAction::SetTrue)
                         .help(
-                            "Expand the output to hold all of both inputs (new pixels are black; \
-                             vips's --background colour is not core-backed)",
+                            "Expand the output to hold all of both inputs (new pixels use \
+                             --background, default black)",
                         ),
-                ),
+                )
+                .arg(background_arg()),
         ),
         io::with_decode_limit_args(
             Command::new("smartcrop")
@@ -597,6 +598,7 @@ fn run_insert(m: &ArgMatches) -> Result<()> {
     let x = *m.get_one::<i32>("X").expect("required");
     let y = *m.get_one::<i32>("Y").expect("required");
     let expand = m.get_flag("expand");
+    let background = background_of(m)?;
 
     // @doc-snippet:begin command=insert slot=load imports=decode_file
     let main = io::load(&main_path, &limits)?;
@@ -605,7 +607,7 @@ fn run_insert(m: &ArgMatches) -> Result<()> {
 
     // @doc-snippet:begin command=insert slot=apply
     // @doc-test: extract.rs::insert_without_expand_keeps_the_main_size:1514 repo=libviprs
-    let out = main.try_insert(&sub, x, y, expand)?;
+    let out = main.try_insert(&sub, x, y, expand, background.as_deref())?;
     // @doc-snippet:end command=insert slot=apply
 
     // @doc-snippet:begin command=insert slot=save imports=save_file
