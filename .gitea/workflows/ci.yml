@@ -1,0 +1,122 @@
+name: CI
+
+# Migrated from GitHub Actions (.github/workflows/ci.yml) to self-hosted
+# Gitea Actions. Runs on every branch push (mirror-sync from GitHub) and on
+# manual dispatch. Each job mirrors its GitHub counterpart 1:1 and results are
+# reported back to GitHub as `gitea/*` commit statuses:
+#   Check & Lint -> gitea/check
+#   MSRV (1.85)  -> gitea/msrv
+#   Test         -> gitea/test
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  check:
+    name: Check & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report pending (gitea/check)
+        if: always()
+        env:
+          GH_STATUS_TOKEN: ${{ secrets.GH_STATUS_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_STATUS_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d '{"state":"pending","context":"gitea/check","description":"Gitea: Check & Lint running","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"}' || true
+      - uses: actions/checkout@v4
+      - name: Clone libviprs (matching branch or main)
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone --depth 1 --branch "$BRANCH" https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs 2>/dev/null \
+            || git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets -- -D warnings -W clippy::incompatible_msrv -W deprecated
+
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report pending (gitea/msrv)
+        if: always()
+        env:
+          GH_STATUS_TOKEN: ${{ secrets.GH_STATUS_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_STATUS_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d '{"state":"pending","context":"gitea/msrv","description":"Gitea: MSRV (1.85) running","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"}' || true
+      - uses: actions/checkout@v4
+      - name: Clone libviprs (matching branch or main)
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone --depth 1 --branch "$BRANCH" https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs 2>/dev/null \
+            || git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report pending (gitea/test)
+        if: always()
+        env:
+          GH_STATUS_TOKEN: ${{ secrets.GH_STATUS_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_STATUS_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d '{"state":"pending","context":"gitea/test","description":"Gitea: Test running","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"}' || true
+      - uses: actions/checkout@v4
+      - name: Clone libviprs (matching branch or main)
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone --depth 1 --branch "$BRANCH" https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs 2>/dev/null \
+            || git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+  report:
+    name: Report Gitea results to GitHub
+    needs: [check, msrv, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post final gitea/* commit statuses
+        if: always()
+        env:
+          GH_STATUS_TOKEN: ${{ secrets.GH_STATUS_TOKEN }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          MSRV_RESULT: ${{ needs.msrv.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: |
+          post() {
+            ctx="$1"; res="$2"
+            if [ "$res" = "success" ]; then state=success; else state=failure; fi
+            curl -sf -X POST \
+              -H "Authorization: Bearer $GH_STATUS_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+              -d "{\"state\":\"$state\",\"context\":\"$ctx\",\"description\":\"Gitea result: $res\",\"target_url\":\"$TARGET_URL\"}" || true
+          }
+          post "gitea/check" "$CHECK_RESULT"
+          post "gitea/msrv"  "$MSRV_RESULT"
+          post "gitea/test"  "$TEST_RESULT"
