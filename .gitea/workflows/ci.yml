@@ -22,6 +22,7 @@ jobs:
     name: Check & Lint
     runs-on: ubuntu-latest
     steps:
+      # target_url is human-clicked from GitHub, so it uses the PUBLIC forge URL (vars.GIT_PUBLIC_URL); github.server_url is the runner's internal gitea:3000, for API and git calls only.
       - name: Report pending (gitea/check)
         if: always()
         env:
@@ -31,7 +32,7 @@ jobs:
             -H "Authorization: Bearer $GH_STATUS_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
-            -d '{"state":"pending","context":"gitea/check","description":"Gitea: Check & Lint running","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"}' || true
+            -d '{"state":"pending","context":"gitea/check","description":"Gitea: Check & Lint running","target_url":"${{ vars.GIT_PUBLIC_URL }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"}' || true
       - uses: actions/checkout@v4
       - name: Clone libviprs (matching branch or main)
         run: |
@@ -49,6 +50,7 @@ jobs:
     name: MSRV (1.85)
     runs-on: ubuntu-latest
     steps:
+      # target_url is human-clicked from GitHub, so it uses the PUBLIC forge URL (vars.GIT_PUBLIC_URL); github.server_url is the runner's internal gitea:3000, for API and git calls only.
       - name: Report pending (gitea/msrv)
         if: always()
         env:
@@ -58,7 +60,7 @@ jobs:
             -H "Authorization: Bearer $GH_STATUS_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
-            -d '{"state":"pending","context":"gitea/msrv","description":"Gitea: MSRV (1.85) running","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"}' || true
+            -d '{"state":"pending","context":"gitea/msrv","description":"Gitea: MSRV (1.85) running","target_url":"${{ vars.GIT_PUBLIC_URL }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"}' || true
       - uses: actions/checkout@v4
       - name: Clone libviprs (matching branch or main)
         run: |
@@ -73,6 +75,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
+      # target_url is human-clicked from GitHub, so it uses the PUBLIC forge URL (vars.GIT_PUBLIC_URL); github.server_url is the runner's internal gitea:3000, for API and git calls only.
       - name: Report pending (gitea/test)
         if: always()
         env:
@@ -82,7 +85,7 @@ jobs:
             -H "Authorization: Bearer $GH_STATUS_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
-            -d '{"state":"pending","context":"gitea/test","description":"Gitea: Test running","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"}' || true
+            -d '{"state":"pending","context":"gitea/test","description":"Gitea: Test running","target_url":"${{ vars.GIT_PUBLIC_URL }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"}' || true
       - uses: actions/checkout@v4
       - name: Clone libviprs (matching branch or main)
         run: |
@@ -99,6 +102,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # target_url is human-clicked from GitHub, so it uses the PUBLIC forge URL (vars.GIT_PUBLIC_URL); github.server_url is the runner's internal gitea:3000, for API and git calls only.
       - name: Post final gitea/* commit statuses
         if: always()
         env:
@@ -106,7 +110,7 @@ jobs:
           CHECK_RESULT: ${{ needs.check.result }}
           MSRV_RESULT: ${{ needs.msrv.result }}
           TEST_RESULT: ${{ needs.test.result }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+          TARGET_URL: ${{ vars.GIT_PUBLIC_URL }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
         run: |
           post() {
             ctx="$1"; res="$2"
