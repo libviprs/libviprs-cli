@@ -466,8 +466,8 @@ fn encode_pnm(raster: &Raster) -> Result<Vec<u8>> {
             out.extend_from_slice(row);
         } else {
             // Native-endian u16 samples -> big-endian PNM bytes.
-            for sample in row.chunks_exact(2) {
-                let v = u16::from_ne_bytes([sample[0], sample[1]]);
+            for &sample in row.as_chunks::<2>().0 {
+                let v = u16::from_ne_bytes(sample);
                 out.extend_from_slice(&v.to_be_bytes());
             }
         }

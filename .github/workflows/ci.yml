@@ -30,8 +30,13 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo clippy --all-targets -- -D warnings -W clippy::incompatible_msrv -W deprecated
 
+  # 1.97 is the core's MSRV, and this crate is a thin driver for it, so the
+  # floor cannot be lower than the library it links (issue #43). The guard
+  # below is the point of the job as much as the check is: the pin, the
+  # `rust-version` in Cargo.toml and the README badge drifted apart once
+  # already and nothing noticed for a month.
   msrv:
-    name: MSRV (1.85)
+    name: MSRV (1.97)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,8 +45,25 @@ jobs:
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           git clone --depth 1 --branch "$BRANCH" https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs 2>/dev/null \
             || git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
-      - uses: dtolnay/rust-toolchain@1.85
+      - uses: dtolnay/rust-toolchain@1.97
       - uses: Swatinem/rust-cache@v2
+      - name: Every MSRV claim agrees
+        run: |
+          declared=$(grep -m1 -E '^rust-version *= *"' Cargo.toml | sed -E 's/.*"([^"]*)".*/\1/' | cut -d. -f1,2)
+          core=$(grep -m1 -E '^rust-version *= *"' ../libviprs/Cargo.toml | sed -E 's/.*"([^"]*)".*/\1/' | cut -d. -f1,2)
+          pinned=$(rustc --version | sed -E 's/^rustc ([0-9]+\.[0-9]+).*/\1/')
+          advertised=$(grep -oE 'rust-[0-9]+\.[0-9]+%2B|Rust [0-9]+\.[0-9]+\+' README.md \
+            | grep -oE '[0-9]+\.[0-9]+' | sort -u | paste -sd/ -)
+          echo "declared (Cargo.toml): $declared"
+          echo "pinned (this job):     $pinned"
+          echo "advertised (README):   $advertised"
+          echo "core (libviprs):       $core"
+          rc=0
+          [ "$declared" = "$pinned" ] || { echo "::error::this job installs $pinned but Cargo.toml declares rust-version $declared"; rc=1; }
+          [ "$declared" = "$advertised" ] || { echo "::error::README advertises Rust $advertised+ but Cargo.toml declares $declared"; rc=1; }
+          [ "$(printf '%s\n%s\n' "$core" "$declared" | sort -V | tail -1)" = "$declared" ] \
+            || { echo "::error::libviprs needs $core, above the $declared this crate declares"; rc=1; }
+          exit $rc
       - run: cargo check --all-targets
 
   test:
