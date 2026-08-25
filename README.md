@@ -5,7 +5,7 @@
 <h1 align="center">libviprs-cli</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/rust-1.97%2B-orange?logo=rust" alt="Rust 1.97+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License">
 </p>
 
@@ -117,7 +117,7 @@ Install pre-commit (fmt + clippy) and pre-push (Docker test suite) hooks:
 
 ## Requirements
 
-- Rust 1.85+
+- Rust 1.97+
 - libpdfium shared library (only for `--render` flag)
 
 ### PDFium setup
