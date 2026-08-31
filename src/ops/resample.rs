@@ -588,11 +588,9 @@ fn run_resize(m: &ArgMatches) -> Result<()> {
     // @doc-snippet:end command=resize slot=load
 
     // @doc-snippet:begin command=resize slot=apply
-    let options = ResizeOptions {
-        vscale,
-        kernel,
-        ..ResizeOptions::default()
-    };
+    let options = ResizeOptions::default()
+        .with_vscale(vscale)
+        .with_kernel(kernel);
     let out = raster.try_resize_with(scale, options)?;
     // @doc-snippet:end command=resize slot=apply
 
