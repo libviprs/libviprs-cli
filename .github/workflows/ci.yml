@@ -29,6 +29,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt -- --check
       - run: cargo clippy --all-targets -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      # The pass above compiles the default configuration and nothing else, so
+      # the three feature-gated arms in src/main.rs (tracing at 634, s3 at
+      # 1057, packfile at 1091) were type-checked by no job at all, and neither
+      # were the `#[cfg(not(feature = "pdfium"))]` halves that the manifest
+      # tells people to build with --no-default-features. One cell each, same
+      # flags as above, so every configuration this crate ships gets linted
+      # (issue #48). Same hole the core closed for itself in libviprs#816.
+      - run: cargo clippy --all-targets --features tracing -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features packfile -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features s3 -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings -W clippy::incompatible_msrv -W deprecated
 
   # 1.97 is the core's MSRV, and this crate is a thin driver for it, so the
   # floor cannot be lower than the library it links (issue #43). The guard
