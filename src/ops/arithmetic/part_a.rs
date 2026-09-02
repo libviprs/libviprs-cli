@@ -814,6 +814,8 @@ fn run_hough_circle(m: &ArgMatches) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
 
     fn cmd(name: &str) -> Command {
@@ -1007,9 +1009,22 @@ mod tests {
     // --- tiny on-disk fixtures for the handler-level tests above ---
 
     /// Write a 4×4 Gray8 ramp PNG to a temp path and return it.
+    ///
+    /// The name carries a counter as well as the process id, so every call
+    /// gets a file of its own. Keying it on the process alone handed all three
+    /// callers the same path, and cargo runs them on parallel threads, so one
+    /// test's `fs::write` truncating the file was another test's decode
+    /// failing on a short read. That surfaced as a wrong-error assertion in
+    /// whichever test happened to be reading, which is the least useful place
+    /// for it to surface, and it reds `main` at random (issue #52).
     fn tmp_gray() -> String {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("viprs_aritha_pa_gray_{}.png", std::process::id()));
+        let path = dir.join(format!(
+            "viprs_aritha_pa_gray_{}_{}.png",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let fmt = PixelFormat::Gray8;
         let data: Vec<u8> = (0..16u16).map(|i| (i * 16) as u8).collect();
         let r = Raster::new(4, 4, fmt, data).unwrap();
