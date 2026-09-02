@@ -6,6 +6,14 @@ name: CI
 on:
   push:
     branches: ['**']
+  # Every job clones libviprs at whatever `main` is, so the library under this
+  # crate moves without a commit here to notice, and push-only triggers mean
+  # nothing runs until somebody pushes. #46 was that coupling biting: a core
+  # change made this crate stop compiling and libviprs-tests could not build a
+  # `viprs` binary at all. A nightly reports the drift while it is one day
+  # wide (#50). 06:11 UTC stays clear of libviprs-bench's nightly at 05:31.
+  schedule:
+    - cron: '11 6 * * *'
   workflow_dispatch:
 
 env:
