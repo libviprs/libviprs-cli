@@ -355,7 +355,11 @@ fn pyramid_directory_target_without_storage_flag_exits_2() {
     // passes for any usage error from any cause.
     let dir = unique_dir("dir-target-no-flag");
     let png = make_input(&dir, 320, 240);
-    let target = dir.join("tiles");
+    // Spelled with the archive extension *and* already a directory, so the
+    // only signal that can catch it is that it is a directory. The
+    // extensionless spelling gets its own case below, which keeps the two
+    // signals independently observable.
+    let target = dir.join("tiles.pmtiles");
     std::fs::create_dir_all(&target).expect("the target directory must be creatable");
 
     let out = run(&["pyramid", png.to_str().unwrap(), target.to_str().unwrap()]);
