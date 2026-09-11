@@ -5,7 +5,8 @@
 //! below.
 
 use std::io::Read as _;
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
@@ -13,10 +14,18 @@ use clap::{ArgGroup, Parser, ValueEnum};
 use libviprs::{
     BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
     EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout,
-    ManifestBuilder, PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy, TileFormat,
-    extract_page_image,
+    ManifestBuilder, PmTilesSink, PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy,
+    TileFormat, extract_page_image,
     streaming::{BudgetPolicy, compute_strip_height, estimate_streaming_memory},
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
+};
+// The PMTiles container is always compiled into the core crate and is never
+// behind a cargo feature here. `libviprs-tests` builds this binary with
+// `--release --no-default-features` for its black-box suite, so anything
+// `viprs pmtiles` needs has to survive that build.
+use libviprs::pmtiles::{
+    Compression, Entry, FileRangeReader, RangeReader as _, Reader, TileType, directory,
+    tileid_to_zxy,
 };
 // PDFium vector rasterisation is gated behind the `pdfium` feature (on by
 // default). Without it the `--render` path is compiled out and `render_page_pdfium`
@@ -68,6 +77,12 @@ enum Command {
 
     /// Generate a synthetic test image (RGB8 gradient).
     TestImage(TestImageArgs),
+
+    /// Inspect, read and unpack a PMTiles v3 archive.
+    ///
+    /// A container utility rather than a vips operation, so it lives here as a
+    /// first-class built-in and never under `src/ops/` or in `OP_MAP.md`.
+    Pmtiles(PmtilesArgs),
 }
 
 #[derive(Parser)]
@@ -82,8 +97,14 @@ struct PyramidArgs {
     /// Input file (PDF, PNG, JPEG, or TIFF). Use "-" for stdin.
     input: String,
 
-    /// Output directory for tiles.
-    output: PathBuf,
+    /// Where the pyramid goes.
+    ///
+    /// Optional under the default `--storage pmtiles`: with no output the
+    /// archive takes the input's name with a `.pmtiles` extension, so
+    /// `viprs pyramid drawing.tif` writes `drawing.pmtiles`. Required for
+    /// `--storage directory`, for `--packfile`, and for stdin input, none of
+    /// which has a name to derive one from.
+    output: Option<PathBuf>,
 
     /// Tile size in pixels.
     ///
@@ -99,9 +120,38 @@ struct PyramidArgs {
 
     /// Tile layout format.
     ///
+    /// The default depends on where the pyramid is going, because the two
+    /// storage backends do not address tiles the same way. `--storage pmtiles`
+    /// defaults to `xyz`, which is the only addressing PMTiles v3 has;
+    /// `--storage directory` defaults to `deep-zoom`, which is what this
+    /// command has always written. Asking for `deep-zoom` into an archive is a
+    /// usage error rather than a silent reinterpretation: a Deep Zoom tier is
+    /// not a slippy zoom, and an archive built from one is addressable but
+    /// renders as nonsense in every PMTiles viewer.
+    ///
     /// See also: [interactive example](https://libviprs.org/cli/#flag-layout).
-    #[arg(long, default_value = "deep-zoom")]
-    layout: LayoutArg,
+    #[arg(long)]
+    layout: Option<LayoutArg>,
+
+    /// Where the pyramid is written: one PMTiles v3 archive, or a loose tree.
+    ///
+    /// `pmtiles` writes a single indexed `.pmtiles` file and is the default.
+    /// `directory` restores the `{z}/{x}/{y}` (or Deep Zoom) tree earlier
+    /// versions wrote, and takes an explicit output directory.
+    ///
+    /// Conflicts with `--sink` and `--packfile`, which name their target
+    /// themselves. A `pmtiles://` URI through `--sink` is the long spelling of
+    /// the default.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-storage).
+    #[arg(
+        long,
+        default_value = "pmtiles",
+        value_name = "KIND",
+        conflicts_with_all = ["sink", "packfile"],
+        help_heading = "Output",
+    )]
+    storage: StorageArg,
 
     /// Tile image format.
     ///
@@ -205,8 +255,9 @@ struct PyramidArgs {
     // -------------------------------------------------------------------------
     // Phase 3 hardening flags
     // -------------------------------------------------------------------------
-    /// Sink URI: fs://path or packfile://path.tar[.gz]/.zip.
-    /// Defaults to the positional output directory as a filesystem sink.
+    /// Sink URI: pmtiles://path.pmtiles, fs://path, or
+    /// packfile://path.tar[.gz]/.zip.
+    /// Defaults to the positional output as a PMTiles archive.
     ///
     /// See also: [interactive example](https://libviprs.org/cli/#flag-sink).
     #[arg(long, value_name = "URI", help_heading = "Output")]
@@ -408,11 +459,90 @@ impl From<LayoutArg> for Layout {
     }
 }
 
+/// CLI representation of where a pyramid is stored.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum StorageArg {
+    /// One PMTiles v3 archive.
+    Pmtiles,
+    /// A loose tree of tile files.
+    Directory,
+}
+
+/// Tile encodings this CLI can produce.
+///
+/// There is deliberately no `webp` here. PMTiles v3 defines a WebP tile type
+/// and `libviprs` can encode WebP through `Raster::encode_webp`, but the core
+/// crate's `TileFormat` has no WebP variant, so no pyramid this command writes
+/// can contain one. Offering the choice would advertise a capability that does
+/// not exist. `viprs pmtiles info` still reports a WebP tile type when
+/// somebody else's archive carries one, and `viprs pmtiles extract` still
+/// gives those tiles the right extension: reading is not advertising.
 #[derive(Clone, ValueEnum)]
 enum FormatArg {
     Png,
     Jpeg,
     Raw,
+}
+
+#[derive(Parser)]
+struct PmtilesArgs {
+    #[command(subcommand)]
+    command: PmtilesCommand,
+}
+
+#[derive(clap::Subcommand)]
+enum PmtilesCommand {
+    /// Summarise an archive: version, tile type, zoom range, counts, bounds.
+    Info(PmtilesInfoArgs),
+
+    /// Write one tile's bytes to a file or to stdout.
+    Tile(PmtilesTileArgs),
+
+    /// Check an archive's header and directory structure.
+    Verify(PmtilesVerifyArgs),
+
+    /// Unpack an archive back into a loose `{z}/{x}/{y}` tile tree.
+    Extract(PmtilesExtractArgs),
+}
+
+#[derive(Parser)]
+struct PmtilesInfoArgs {
+    /// The `.pmtiles` archive to summarise.
+    archive: PathBuf,
+}
+
+#[derive(Parser)]
+struct PmtilesTileArgs {
+    /// The `.pmtiles` archive to read from.
+    archive: PathBuf,
+
+    /// Zoom level.
+    z: u8,
+
+    /// Tile column.
+    x: u32,
+
+    /// Tile row.
+    y: u32,
+
+    /// Where the tile bytes go. `-` (the default) is stdout.
+    #[arg(long, short, value_name = "FILE", default_value = "-")]
+    output: String,
+}
+
+#[derive(Parser)]
+struct PmtilesVerifyArgs {
+    /// The `.pmtiles` archive to check.
+    archive: PathBuf,
+}
+
+#[derive(Parser)]
+struct PmtilesExtractArgs {
+    /// The `.pmtiles` archive to unpack.
+    archive: PathBuf,
+
+    /// Directory to write the `{z}/{x}/{y}.{ext}` tree into.
+    output: PathBuf,
 }
 
 /// CLI representation of the checksum algorithm (maps to [`ChecksumAlgo`]).
@@ -524,7 +654,7 @@ fn main() {
     let matches = ops::assembled_cli().get_matches();
 
     match matches.subcommand() {
-        Some(("pyramid" | "info" | "plan" | "test-image", _)) => {
+        Some(("pyramid" | "info" | "plan" | "test-image" | "pmtiles", _)) => {
             let cli = Cli::from_arg_matches(&matches)
                 .expect("a built-in subcommand deserializes through the derive Cli");
             match cli.command {
@@ -532,6 +662,7 @@ fn main() {
                 Command::Info(args) => run_info(args),
                 Command::Plan(args) => run_plan(args),
                 Command::TestImage(args) => run_test_image(args),
+                Command::Pmtiles(args) => run_pmtiles(args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
@@ -552,28 +683,183 @@ fn main() {
     }
 }
 
+/// Report a usage error and exit 2 (`CLI_CONTRACT.md` §8).
+///
+/// A usage error is a flag combination with no defined meaning, and every one
+/// of them here names the flag that fixes it. An exit code on its own tells a
+/// user that something was wrong with what they typed and nothing about what.
+fn usage_error(message: &str, hint: &str) -> ! {
+    eprintln!("Error: {message}");
+    if !hint.is_empty() {
+        eprintln!("Hint: {hint}");
+    }
+    process::exit(2);
+}
+
+/// Report an operational failure and exit 1 (`CLI_CONTRACT.md` §8).
+fn operational_error(message: &str) -> ! {
+    eprintln!("Error: {message}");
+    process::exit(1);
+}
+
+/// Whether a path names a directory rather than an archive file.
+///
+/// Three signals, any one of which is enough: it already exists as a
+/// directory, it is spelled with a trailing separator, or it carries no
+/// extension at all. The last is the one that matters, because it is how every
+/// example of this command was written before the storage default moved:
+/// `viprs pyramid drawing.tif tiles` used to mean a directory called `tiles`
+/// and would now mean an archive called `tiles`, which is almost never what
+/// the person typing it wanted.
+fn looks_like_a_directory_target(path: &Path) -> bool {
+    let spelled = path.to_string_lossy();
+    path.is_dir()
+        || spelled.ends_with('/')
+        || spelled.ends_with(std::path::MAIN_SEPARATOR)
+        || path.extension().is_none()
+}
+
 /// Resolve the effective sink URI from flags.
 ///
 /// Priority:
 /// 1. `--packfile` shorthand  → `packfile://<output>.tar`
 /// 2. `--sink <URI>`          → as-is
-/// 3. (none)                  → `fs://<output>`
+/// 3. `--storage directory`   → `fs://<output>`
+/// 4. (none)                  → `pmtiles://<output, or the input stem>`
 ///
-/// `--packfile` and `--sink` are declared as `conflicts_with` at the clap
-/// layer, but we keep a defensive check here so `resolve_sink_uri` is safe
-/// to call from any caller regardless of how `PyramidArgs` was built.
+/// The fourth line is the default as of 0.4.0 and it is the one behaviour
+/// change in this release: `viprs pyramid drawing.tif` writes
+/// `drawing.pmtiles` where it used to write a `drawing/` tree.
+///
+/// `--storage`, `--packfile` and `--sink` are declared as `conflicts_with` at
+/// the clap layer (a defaulted `--storage` does not trip that, only an
+/// explicit one), but the `--packfile` versus `--sink` check is kept here so
+/// this function is safe to call however `PyramidArgs` was built.
 fn resolve_sink_uri(args: &PyramidArgs) -> String {
     if args.packfile && args.sink.is_some() {
-        eprintln!("Error: --packfile and --sink are mutually exclusive");
-        process::exit(2);
+        usage_error("--packfile and --sink are mutually exclusive", "");
     }
+
     if args.packfile {
-        return format!("packfile://{}.tar", args.output.display());
+        let Some(output) = args.output.as_ref() else {
+            usage_error(
+                "--packfile has no output path to name the archive after",
+                "--packfile composes packfile://<output>.tar, so give the output \
+                 positionally: `viprs pyramid drawing.tif tiles --packfile` writes tiles.tar",
+            );
+        };
+        return format!("packfile://{}.tar", output.display());
     }
+
     if let Some(ref uri) = args.sink {
         return uri.clone();
     }
-    format!("fs://{}", args.output.display())
+
+    match args.storage {
+        StorageArg::Directory => {
+            let Some(output) = args.output.as_ref() else {
+                usage_error(
+                    "--storage directory has no output directory to write into",
+                    "a tile tree gets no invented name, so name one: \
+                     `viprs pyramid drawing.tif tiles/ --storage directory`",
+                )
+            };
+            format!("fs://{}", output.display())
+        }
+        StorageArg::Pmtiles => format!("pmtiles://{}", resolve_archive_path(args).display()),
+    }
+}
+
+/// Where the `.pmtiles` archive goes when no sink URI named it.
+///
+/// With an explicit output that is the output, once it has been checked for
+/// being a directory in disguise. With no output at all the archive takes the
+/// input's name with a `.pmtiles` extension, which is what makes
+/// `viprs pyramid drawing.tif` a complete command.
+fn resolve_archive_path(args: &PyramidArgs) -> PathBuf {
+    if let Some(output) = args.output.as_ref() {
+        if looks_like_a_directory_target(output) {
+            usage_error(
+                &format!(
+                    "`{}` looks like a directory, and a pyramid now goes into one PMTiles archive",
+                    output.display()
+                ),
+                "add `--storage directory` to write a loose tile tree there, or name the \
+                 archive with an extension, as in `tiles.pmtiles`",
+            );
+        }
+        return output.clone();
+    }
+
+    if args.input == "-" {
+        usage_error(
+            "reading the image from stdin leaves no name to derive the archive from",
+            "name the output: `viprs pyramid - drawing.pmtiles`",
+        );
+    }
+
+    let input = PathBuf::from(&args.input);
+    let derived = input.with_extension("pmtiles");
+    if derived == input {
+        usage_error(
+            &format!(
+                "the derived archive name for `{}` is the input itself",
+                args.input
+            ),
+            "name a different output: `viprs pyramid in.pmtiles out.pmtiles`",
+        );
+    }
+    derived
+}
+
+/// Resolve the tile layout, which depends on where the pyramid is going.
+///
+/// PMTiles v3 addresses a tile as a slippy `(z, x, y)` and has no other
+/// addressing, so an archive gets `Layout::Xyz` unless `--layout` said
+/// otherwise. A directory keeps the Deep Zoom default it has always had.
+///
+/// The refusal is the important half. `Layout::DeepZoom` numbers tiers rather
+/// than slippy zooms, and `zxy_to_tileid` accepts those coordinates happily
+/// because they stay inside `col < 2^level`, so nothing downstream notices.
+/// The archive would be readable, addressable, and wrong in every viewer.
+fn resolve_layout(args: &PyramidArgs, to_archive: bool) -> Layout {
+    match (args.layout.clone(), to_archive) {
+        (Some(LayoutArg::DeepZoom), true) => usage_error(
+            "--layout deep-zoom cannot be addressed inside a PMTiles archive",
+            "PMTiles v3 addresses tiles as slippy z/x/y, and a Deep Zoom tier is not a slippy \
+             zoom. Use `--storage directory` for a Deep Zoom tree, or drop `--layout` to get \
+             the xyz addressing the archive wants",
+        ),
+        (Some(chosen), _) => chosen.into(),
+        (None, true) => Layout::Xyz,
+        (None, false) => Layout::DeepZoom,
+    }
+}
+
+/// Resolve the tile encoding, refusing the one PMTiles cannot carry.
+///
+/// A PMTiles tile is a self-describing blob a viewer hands to a decoder. Raw
+/// pixel bytes carry neither their dimensions nor their pixel format, so
+/// `TileType::try_from_tile_format` rejects `TileFormat::Raw` and there is no
+/// tile type to write into the header. `--format raw` worked before the
+/// storage default moved, so it gets a usage error naming the way out rather
+/// than a sink failure part way through a run.
+fn resolve_tile_format(args: &PyramidArgs, to_archive: bool) -> TileFormat {
+    if to_archive && matches!(args.format, FormatArg::Raw) {
+        usage_error(
+            "--format raw has no tile type in a PMTiles archive",
+            "a PMTiles tile is a blob a viewer hands to a decoder, and raw pixel bytes carry \
+             neither their dimensions nor their pixel format. Use `--format png` or \
+             `--format jpeg`, or `--storage directory` to keep writing raw tiles",
+        );
+    }
+    match args.format {
+        FormatArg::Png => TileFormat::Png,
+        FormatArg::Jpeg => TileFormat::Jpeg {
+            quality: args.quality,
+        },
+        FormatArg::Raw => TileFormat::Raw,
+    }
 }
 
 /// Determine the [`ResumeMode`] from the three mutually-exclusive flags.
@@ -653,6 +939,14 @@ fn maybe_init_tracing(level: &Option<String>) {
 fn run_pyramid(args: PyramidArgs) {
     let start = Instant::now();
 
+    // Resolve every flag combination before the input is touched. A usage error
+    // must not depend on whether the file happens to decode, and a refused run
+    // must not have written anything by the time it is refused.
+    let sink_uri = resolve_sink_uri(&args);
+    let to_archive = sink_uri.starts_with("pmtiles://");
+    let layout = resolve_layout(&args, to_archive);
+    let tile_format = resolve_tile_format(&args, to_archive);
+
     // Initialise tracing if requested (exits with an error when the feature is off).
     maybe_init_tracing(&args.trace_level);
 
@@ -678,8 +972,7 @@ fn run_pyramid(args: PyramidArgs) {
         );
     }
 
-    // Plan
-    let layout: Layout = args.layout.clone().into();
+    // Plan (the layout was resolved against the storage backend above).
     // @doc-snippet:begin slot=planner imports=PyramidPlanner,Layout
     let planner = match PyramidPlanner::new(
         w,
@@ -738,15 +1031,6 @@ fn run_pyramid(args: PyramidArgs) {
         args.overlap
     );
 
-    // Tile format
-    let tile_format = match args.format {
-        FormatArg::Png => TileFormat::Png,
-        FormatArg::Jpeg => TileFormat::Jpeg {
-            quality: args.quality,
-        },
-        FormatArg::Raw => TileFormat::Raw,
-    };
-
     // Resolve engine configuration
     let blank_strategy = build_blank_tile_strategy(&args);
     let failure_policy = build_failure_policy(&args);
@@ -786,8 +1070,7 @@ fn run_pyramid(args: PyramidArgs) {
     }
     // @doc-snippet:end slot=engine-config
 
-    // Resolve sink URI and build the appropriate sink.
-    let sink_uri = resolve_sink_uri(&args);
+    // Build the sink the resolved URI names.
     let resume_mode = resolve_resume_mode(&args);
 
     // We dispatch on the URI scheme.  The code below builds the appropriate
@@ -795,6 +1078,17 @@ fn run_pyramid(args: PyramidArgs) {
     // friendly error when the feature is not compiled in.
     if let Some(rest) = sink_uri.strip_prefix("s3://") {
         run_pyramid_s3(
+            rest,
+            &args,
+            &raster,
+            &plan,
+            tile_format,
+            engine_config,
+            resume_mode,
+            start,
+        );
+    } else if let Some(rest) = sink_uri.strip_prefix("pmtiles://") {
+        run_pyramid_pmtiles(
             rest,
             &args,
             &raster,
@@ -819,8 +1113,12 @@ fn run_pyramid(args: PyramidArgs) {
         // fs:// (strip optional scheme prefix)
         let base_dir = if let Some(p) = sink_uri.strip_prefix("fs://") {
             PathBuf::from(p)
+        } else if let Some(output) = args.output.clone() {
+            // A `--sink` naming a scheme this build does not know has always
+            // fallen through to the positional output, and that stays true.
+            output
         } else {
-            args.output.clone()
+            PathBuf::from(&sink_uri)
         };
 
         // Build FsSink with Phase 3 options
@@ -1071,6 +1369,468 @@ fn run_pyramid_s3(
         eprintln!("Error: s3:// sink requires the `s3` feature — rebuild with `--features s3`.");
         process::exit(2);
     }
+}
+
+// ---------------------------------------------------------------------------
+// PMTiles sink dispatch (always compiled)
+// ---------------------------------------------------------------------------
+
+/// Generate a pyramid straight into one PMTiles v3 archive.
+///
+/// Structurally the same as [`run_pyramid_packfile`]: build the sink, map the
+/// resume mode onto a policy, run the engine, print the summary against the
+/// path the sink actually wrote. The difference is that nothing here is
+/// feature-gated, because the container lives in the core crate unconditionally
+/// and `libviprs-tests` builds this binary with `--no-default-features`.
+#[allow(clippy::too_many_arguments)]
+fn run_pyramid_pmtiles(
+    path: &str,
+    args: &PyramidArgs,
+    raster: &Raster,
+    plan: &libviprs::PyramidPlan,
+    tile_format: TileFormat,
+    engine_config: EngineConfig,
+    resume_mode: ResumeMode,
+    start: Instant,
+) {
+    // @doc-snippet:begin slot=sink-pmtiles imports=PmTilesSink,TileFormat
+    // @doc-test: cli_e2e.rs::pyramid_default_output_is_a_pmtiles_archive:1
+    // @doc-flag: storage kind=param param_name=storage
+    let sink = match PmTilesSink::try_new(path, plan.clone(), tile_format) {
+        Ok(s) => s,
+        Err(e) => operational_error(&format!("creating the PMTiles archive failed: {e}")),
+    };
+    // @doc-snippet:end slot=sink-pmtiles
+
+    let policy = match resume_mode {
+        ResumeMode::Overwrite => ResumePolicy::overwrite(),
+        ResumeMode::Resume => ResumePolicy::resume(),
+        ResumeMode::Verify => ResumePolicy::verify(),
+    };
+    let result = match EngineBuilder::new(raster, plan.clone(), &sink)
+        .with_config(engine_config.clone())
+        .with_resume(policy)
+        .run()
+    {
+        Ok(r) => r,
+        Err(e) => operational_error(&format!("generating pyramid: {e}")),
+    };
+
+    let _ = args;
+    finish_run(result, sink.out_path(), start);
+}
+
+// ---------------------------------------------------------------------------
+// The `viprs pmtiles` group
+// ---------------------------------------------------------------------------
+
+/// How deep a chain of leaf directories a walk will follow before refusing.
+///
+/// A leaf pointing at a leaf is legal and two levels is the most any writer
+/// here produces, so four is slack rather than a limit anybody reaches. It is
+/// a limit and not an assertion because the archive is somebody else's file
+/// and a cycle in it must cost a refusal rather than the process.
+const MAX_LEAF_DEPTH: u8 = 4;
+
+/// Cap on a decompressed leaf directory.
+///
+/// No length field in PMTiles v3 is an uncompressed length, so a reader cannot
+/// pre-size the buffer and has to cap it instead. A leaf of the 21844 entries
+/// the writer targets is well under a megabyte.
+const MAX_LEAF_DECOMPRESSED: usize = 32 * 1024 * 1024;
+
+/// Cap on a decompressed tile payload, for the archives that store compressed
+/// tiles. PNG and JPEG are stored as they are and never reach this.
+const MAX_TILE_DECOMPRESSED: usize = 64 * 1024 * 1024;
+
+/// What a walk over an archive's directories found.
+#[derive(Default)]
+struct ArchiveWalk {
+    tile_entries: u64,
+    addressed_tiles: u64,
+    leaf_directories: u64,
+    /// Everything structurally wrong, in the order it was met. Collected
+    /// rather than returned one at a time so `verify` can report an archive's
+    /// problems in one pass instead of one per run.
+    problems: Vec<String>,
+}
+
+/// Open an archive for reading, or exit 1 saying why not.
+fn open_archive(path: &Path) -> Reader<FileRangeReader> {
+    match Reader::try_open(path) {
+        Ok(reader) => reader,
+        Err(e) => operational_error(&format!("reading {}: {e}", path.display())),
+    }
+}
+
+/// Read one leaf directory's entries.
+///
+/// The offset base is the part that is easy to get wrong and impossible to
+/// notice: a leaf entry's `offset` is relative to the leaf *directories*
+/// section, and a tile entry inside that leaf is relative to the *tile data*
+/// section, not to the leaf it was found in. A writer and a reader that make
+/// the same wrong choice round-trip perfectly.
+fn read_leaf_directory(
+    reader: &Reader<FileRangeReader>,
+    entry: &Entry,
+) -> Result<Vec<Entry>, String> {
+    let header = reader.header();
+    let length = usize::try_from(entry.length).map_err(|_| {
+        format!(
+            "leaf at tile {} has a length that does not fit in memory",
+            entry.tile_id
+        )
+    })?;
+    let end = entry
+        .offset
+        .checked_add(u64::from(entry.length))
+        .ok_or_else(|| format!("leaf at tile {} overflows its own end", entry.tile_id))?;
+    if end > header.leaf_directories_length {
+        return Err(format!(
+            "leaf at tile {} runs to {end}, past the {}-byte leaf directories section",
+            entry.tile_id, header.leaf_directories_length
+        ));
+    }
+    let at = header
+        .leaf_directories_offset
+        .checked_add(entry.offset)
+        .ok_or_else(|| format!("leaf at tile {} overflows the archive", entry.tile_id))?;
+    let raw = reader
+        .source()
+        .read_range(at, length)
+        .map_err(|e| format!("leaf at tile {}: {e}", entry.tile_id))?;
+    let bytes = header
+        .internal_compression
+        .decompress(&raw, MAX_LEAF_DECOMPRESSED)
+        .map_err(|e| format!("leaf at tile {}: {e}", entry.tile_id))?;
+    directory::deserialize_entries(&bytes)
+        .map_err(|e| format!("leaf at tile {}: {e}", entry.tile_id))
+}
+
+/// Walk every directory in the archive, calling `on_tile` for each tile entry.
+///
+/// `Reader` answers single-tile questions and keeps its leaf cache to itself,
+/// so the whole-archive routes (`verify`, `extract`) walk the tree here. One
+/// leaf is held at a time and the pending list holds directories rather than
+/// entries, so an archive with millions of tiles costs a page at a time.
+fn walk_archive(
+    reader: &Reader<FileRangeReader>,
+    on_tile: &mut dyn FnMut(&Entry) -> Result<(), String>,
+) -> ArchiveWalk {
+    let header = reader.header();
+    let mut walk = ArchiveWalk::default();
+    let mut pending: Vec<(Vec<Entry>, u8)> = vec![(reader.root_entries().to_vec(), 0)];
+
+    while let Some((entries, depth)) = pending.pop() {
+        // Sorted, non-overlapping ids are what makes the lookup a binary
+        // search. A directory that breaks either silently returns a
+        // neighbouring tile's bytes, which decode fine and look right.
+        let mut previous_end: Option<u64> = None;
+        for entry in &entries {
+            if let Some(end) = previous_end
+                && entry.tile_id < end
+            {
+                walk.problems.push(format!(
+                    "entry {} starts inside the run that ends at {end}",
+                    entry.tile_id
+                ));
+            }
+            previous_end = Some(
+                entry
+                    .tile_id
+                    .saturating_add(u64::from(entry.run_length.max(1))),
+            );
+
+            if entry.is_leaf() {
+                walk.leaf_directories += 1;
+                if depth >= MAX_LEAF_DEPTH {
+                    walk.problems.push(format!(
+                        "leaf chain at tile {} is deeper than the {MAX_LEAF_DEPTH} levels this build follows",
+                        entry.tile_id
+                    ));
+                    continue;
+                }
+                match read_leaf_directory(reader, entry) {
+                    Ok(child) => pending.push((child, depth + 1)),
+                    Err(problem) => walk.problems.push(problem),
+                }
+                continue;
+            }
+
+            walk.tile_entries += 1;
+            walk.addressed_tiles += u64::from(entry.run_length);
+
+            // The check the reference implementation does not make. Its own
+            // `verify` never adds the length to the offset, which is how it
+            // walks past a root offset of 999999 in an 1878-byte file.
+            match entry.offset.checked_add(u64::from(entry.length)) {
+                None => walk.problems.push(format!(
+                    "tile {} has an offset and length that overflow",
+                    entry.tile_id
+                )),
+                Some(end) if end > header.tile_data_length => walk.problems.push(format!(
+                    "tile {} runs to {end}, past the {}-byte tile data section",
+                    entry.tile_id, header.tile_data_length
+                )),
+                Some(_) => {}
+            }
+
+            if let Err(problem) = on_tile(entry) {
+                walk.problems.push(problem);
+            }
+        }
+    }
+
+    walk
+}
+
+/// A tile type's name for display: its extension where it has one, and its own
+/// spelling where it does not, so an unrecognised byte is reported rather than
+/// flattened into "unknown".
+fn tile_type_name(tile_type: TileType) -> String {
+    match tile_type.extension() {
+        Some(ext) => ext.to_string(),
+        None => format!("{tile_type:?}").to_lowercase(),
+    }
+}
+
+/// A compression's name for display.
+fn compression_name(compression: Compression) -> String {
+    format!("{compression:?}").to_lowercase()
+}
+
+/// Read one tile entry's stored payload.
+fn read_tile_payload(reader: &Reader<FileRangeReader>, entry: &Entry) -> Result<Vec<u8>, String> {
+    let header = reader.header();
+    let length = usize::try_from(entry.length).map_err(|_| {
+        format!(
+            "tile {} has a length that does not fit in memory",
+            entry.tile_id
+        )
+    })?;
+    let at = header
+        .tile_data_offset
+        .checked_add(entry.offset)
+        .ok_or_else(|| format!("tile {} overflows the archive", entry.tile_id))?;
+    reader
+        .source()
+        .read_range(at, length)
+        .map_err(|e| format!("tile {}: {e}", entry.tile_id))
+}
+
+/// Route the `viprs pmtiles` group.
+fn run_pmtiles(args: PmtilesArgs) {
+    match args.command {
+        PmtilesCommand::Info(a) => run_pmtiles_info(a),
+        PmtilesCommand::Tile(a) => run_pmtiles_tile(a),
+        PmtilesCommand::Verify(a) => run_pmtiles_verify(a),
+        PmtilesCommand::Extract(a) => run_pmtiles_extract(a),
+    }
+}
+
+/// `viprs pmtiles info <archive>`: what the archive says about itself.
+fn run_pmtiles_info(args: PmtilesInfoArgs) {
+    let reader = open_archive(&args.archive);
+    let header = reader.header();
+
+    println!("Archive: {}", args.archive.display());
+    println!("Version: 3");
+    println!("Tile type: {}", tile_type_name(header.tile_type));
+    println!(
+        "Tile compression: {}",
+        compression_name(header.tile_compression)
+    );
+    println!(
+        "Internal compression: {}",
+        compression_name(header.internal_compression)
+    );
+    println!("Clustered: {}", if header.clustered { "yes" } else { "no" });
+    println!("Zoom: {}-{}", header.min_zoom, header.max_zoom);
+    println!("Addressed tiles: {}", header.addressed_tiles_count);
+    println!("Tile entries: {}", header.tile_entries_count);
+    println!("Unique payloads: {}", header.tile_contents_count);
+    println!("Root entries: {}", reader.root_entries().len());
+    println!(
+        "Leaf directories: {}",
+        if header.has_leaves() { "yes" } else { "no" }
+    );
+    match reader.archive_size() {
+        Some(size) => println!("Archive size: {size} bytes"),
+        None => println!("Archive size: unknown"),
+    }
+    let (west, south, east, north) = header.bounds_degrees();
+    println!("Bounds: {west:.6},{south:.6},{east:.6},{north:.6}");
+    let (lon, lat) = header.center_degrees();
+    println!("Center: {lon:.6},{lat:.6} zoom {}", header.center_zoom);
+
+    // The metadata is somebody else's JSON and a parse failure in it is not a
+    // reason to fail the summary, so it is reported rather than fatal.
+    match reader.metadata() {
+        Ok(metadata) => match metadata.to_json() {
+            Ok(json) => println!("Metadata: {}", String::from_utf8_lossy(&json)),
+            Err(e) => eprintln!("Warning: the metadata did not re-serialise: {e}"),
+        },
+        Err(e) => eprintln!("Warning: the metadata did not parse: {e}"),
+    }
+}
+
+/// `viprs pmtiles tile <archive> <z> <x> <y>`: one tile's bytes, and nothing else.
+///
+/// stdout carries the tile and only the tile. Every diagnostic in this function
+/// goes to stderr, including the one for a tile that is not there, because a
+/// caller piping this into a decoder must not get a sentence where the bytes
+/// should be.
+fn run_pmtiles_tile(args: PmtilesTileArgs) {
+    let reader = open_archive(&args.archive);
+
+    let bytes = match reader.get_tile(args.z, args.x, args.y) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => operational_error(&format!(
+            "{}/{}/{} is not in {}",
+            args.z,
+            args.x,
+            args.y,
+            args.archive.display()
+        )),
+        Err(e) => operational_error(&format!(
+            "reading {}/{}/{} from {}: {e}",
+            args.z,
+            args.x,
+            args.y,
+            args.archive.display()
+        )),
+    };
+
+    if args.output == "-" {
+        let mut stdout = std::io::stdout().lock();
+        if let Err(e) = stdout.write_all(&bytes).and_then(|()| stdout.flush()) {
+            operational_error(&format!("writing the tile to stdout: {e}"));
+        }
+        return;
+    }
+
+    if let Err(e) = std::fs::write(&args.output, &bytes) {
+        operational_error(&format!("writing the tile to {}: {e}", args.output));
+    }
+    eprintln!("Wrote {} bytes to {}", bytes.len(), args.output);
+}
+
+/// `viprs pmtiles verify <archive>`: structural and index validation.
+///
+/// Deliberately stricter than the reference implementation in one place:
+/// go-pmtiles' own `verify` never adds an entry's length to its offset, so it
+/// accepts entries that address bytes the archive does not have. Matching that
+/// would be more compatible and less useful.
+fn run_pmtiles_verify(args: PmtilesVerifyArgs) {
+    let reader = open_archive(&args.archive);
+    let header = reader.header();
+
+    let mut walk = walk_archive(&reader, &mut |_entry| Ok(()));
+
+    // The header's own counts are part of the archive, so they are part of what
+    // there is to verify. A writer that miscounts produces an archive every
+    // reader still reads, and nothing else would ever notice.
+    if walk.tile_entries != header.tile_entries_count {
+        walk.problems.push(format!(
+            "the header claims {} tile entries and the directories hold {}",
+            header.tile_entries_count, walk.tile_entries
+        ));
+    }
+    if walk.addressed_tiles != header.addressed_tiles_count {
+        walk.problems.push(format!(
+            "the header claims {} addressed tiles and the runs cover {}",
+            header.addressed_tiles_count, walk.addressed_tiles
+        ));
+    }
+
+    if !walk.problems.is_empty() {
+        eprintln!(
+            "{}: {} problems",
+            args.archive.display(),
+            walk.problems.len()
+        );
+        for problem in &walk.problems {
+            eprintln!("  {problem}");
+        }
+        process::exit(1);
+    }
+
+    println!("Archive: {}", args.archive.display());
+    println!("Root entries: {}", reader.root_entries().len());
+    println!("Leaf directories: {}", walk.leaf_directories);
+    println!("Tile entries: {}", walk.tile_entries);
+    println!("Addressed tiles: {}", walk.addressed_tiles);
+    println!("OK");
+}
+
+/// `viprs pmtiles extract <archive> <dir>`: back to a loose tile tree.
+///
+/// The inverse of `viprs pyramid --storage directory --layout xyz` on the same
+/// input, which is what makes it a compatibility route rather than a debug
+/// aid: an archive somebody hands you turns into the tree every existing tool
+/// already knows how to serve.
+fn run_pmtiles_extract(args: PmtilesExtractArgs) {
+    let reader = open_archive(&args.archive);
+    let header = reader.header();
+
+    let Some(extension) = header.tile_type.extension() else {
+        operational_error(&format!(
+            "{} does not say what its tiles are ({}), so there is no file extension to give them",
+            args.archive.display(),
+            tile_type_name(header.tile_type)
+        ));
+    };
+    let compression = header.tile_compression;
+
+    if let Err(e) = std::fs::create_dir_all(&args.output) {
+        operational_error(&format!("creating {}: {e}", args.output.display()));
+    }
+
+    let mut written: u64 = 0;
+    let walk = walk_archive(&reader, &mut |entry| {
+        let stored = read_tile_payload(&reader, entry)?;
+        let bytes = if matches!(compression, Compression::None) {
+            stored
+        } else {
+            compression
+                .decompress(&stored, MAX_TILE_DECOMPRESSED)
+                .map_err(|e| format!("tile {}: {e}", entry.tile_id))?
+        };
+
+        // A run covers consecutive tile ids sharing one payload, which is how
+        // the archive stores a deduplicated blank: every coordinate in the run
+        // gets its own file back.
+        for step in 0..u64::from(entry.run_length) {
+            let tile_id = entry
+                .tile_id
+                .checked_add(step)
+                .ok_or_else(|| format!("run at tile {} overflows", entry.tile_id))?;
+            let (z, x, y) = tileid_to_zxy(tile_id)
+                .map_err(|e| format!("tile id {tile_id} is not a coordinate: {e}"))?;
+            let dir = args.output.join(z.to_string()).join(x.to_string());
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("creating {}: {e}", dir.display()))?;
+            let path = dir.join(format!("{y}.{extension}"));
+            std::fs::write(&path, &bytes)
+                .map_err(|e| format!("writing {}: {e}", path.display()))?;
+            written += 1;
+        }
+        Ok(())
+    });
+
+    if !walk.problems.is_empty() {
+        eprintln!(
+            "{}: {} problems",
+            args.archive.display(),
+            walk.problems.len()
+        );
+        for problem in &walk.problems {
+            eprintln!("  {problem}");
+        }
+        process::exit(1);
+    }
+
+    println!("Extracted {written} tiles to {}", args.output.display());
 }
 
 // ---------------------------------------------------------------------------
@@ -1726,10 +2486,119 @@ mod tests {
     // resolve_sink_uri
     // ----------------------------------------------------------------------
 
+    /// Parse a whole `viprs pyramid` argument vector, for the cases where the
+    /// positional output is the thing under test.
+    fn parse_pyramid_argv(argv: &[&str]) -> Result<PyramidArgs, clap::Error> {
+        let mut full = vec!["viprs"];
+        full.extend_from_slice(argv);
+        PyramidArgs::try_parse_from(full)
+    }
+
     #[test]
-    fn sink_uri_defaults_to_fs() {
-        let args = parse_pyramid(&[]).expect("bare invocation must parse");
-        assert_eq!(resolve_sink_uri(&args), "fs://out");
+    fn sink_uri_defaults_to_a_pmtiles_archive() {
+        // The 0.4.0 flip. This used to read `fs://out`.
+        let args = parse_pyramid_argv(&["in.pdf", "out.pmtiles"]).expect("must parse");
+        assert_eq!(resolve_sink_uri(&args), "pmtiles://out.pmtiles");
+    }
+
+    #[test]
+    fn sink_uri_derives_the_archive_from_the_input_name() {
+        let args = parse_pyramid_argv(&["drawing.tif"]).expect("must parse");
+        assert_eq!(resolve_sink_uri(&args), "pmtiles://drawing.pmtiles");
+    }
+
+    #[test]
+    fn sink_uri_storage_directory_is_an_fs_sink() {
+        let args =
+            parse_pyramid_argv(&["in.pdf", "tiles", "--storage", "directory"]).expect("must parse");
+        assert_eq!(resolve_sink_uri(&args), "fs://tiles");
+    }
+
+    #[test]
+    fn a_directory_shaped_target_is_recognised_by_any_of_its_three_signals() {
+        // Each signal on its own, so a rewrite that drops one is visible here
+        // rather than only in the end-to-end refusal.
+        assert!(looks_like_a_directory_target(Path::new("tiles")));
+        assert!(looks_like_a_directory_target(Path::new("tiles/")));
+        assert!(looks_like_a_directory_target(Path::new(".")));
+        // And the negative control, or the check would "pass" by refusing
+        // everything.
+        assert!(!looks_like_a_directory_target(Path::new("tiles.pmtiles")));
+        assert!(!looks_like_a_directory_target(Path::new("a/b/c.pmtiles")));
+    }
+
+    #[test]
+    fn layout_follows_the_storage_backend_unless_it_was_asked_for() {
+        let bare = parse_pyramid_argv(&["in.pdf", "out.pmtiles"]).expect("must parse");
+        assert_eq!(resolve_layout(&bare, true), Layout::Xyz);
+        assert_eq!(resolve_layout(&bare, false), Layout::DeepZoom);
+
+        let asked = parse_pyramid_argv(&["in.pdf", "out.pmtiles", "--layout", "google"])
+            .expect("must parse");
+        assert_eq!(resolve_layout(&asked, true), Layout::Google);
+        assert_eq!(resolve_layout(&asked, false), Layout::Google);
+    }
+
+    #[test]
+    fn tile_format_is_unchanged_for_everything_an_archive_can_hold() {
+        let png = parse_pyramid_argv(&["in.pdf", "out.pmtiles"]).expect("must parse");
+        assert_eq!(resolve_tile_format(&png, true), TileFormat::Png);
+
+        let jpeg = parse_pyramid_argv(&[
+            "in.pdf",
+            "out.pmtiles",
+            "--format",
+            "jpeg",
+            "--quality",
+            "70",
+        ])
+        .expect("must parse");
+        assert_eq!(
+            resolve_tile_format(&jpeg, true),
+            TileFormat::Jpeg { quality: 70 }
+        );
+
+        // Raw survives when it is not going into an archive.
+        let raw = parse_pyramid_argv(&[
+            "in.pdf",
+            "tiles",
+            "--storage",
+            "directory",
+            "--format",
+            "raw",
+        ])
+        .expect("must parse");
+        assert_eq!(resolve_tile_format(&raw, false), TileFormat::Raw);
+    }
+
+    #[test]
+    fn storage_conflicts_with_the_flags_that_name_their_own_target() {
+        assert!(
+            parse_pyramid_argv(&[
+                "in.pdf",
+                "out.pmtiles",
+                "--storage",
+                "pmtiles",
+                "--sink",
+                "fs://x"
+            ])
+            .is_err(),
+            "an explicit --storage next to --sink must be a parse error"
+        );
+        assert!(
+            parse_pyramid_argv(&["in.pdf", "out", "--storage", "directory", "--packfile"]).is_err(),
+            "an explicit --storage next to --packfile must be a parse error"
+        );
+        // The default value must not trip the conflict, or --sink and
+        // --packfile would both stop working entirely.
+        assert!(
+            parse_pyramid_argv(&["in.pdf", "out", "--sink", "fs://x"]).is_ok(),
+            "a defaulted --storage must not conflict with --sink"
+        );
+        assert!(
+            parse_pyramid_argv(&["in.pdf", "out", "--packfile"]).is_ok(),
+            "a defaulted --storage must not conflict with --packfile"
+        );
     }
 
     #[test]

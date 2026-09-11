@@ -265,7 +265,7 @@ pub static FAMILIES: &[Family] = &[
 /// The frozen derived built-ins that live in `main.rs` (`CLI_CONTRACT.md` §6),
 /// plus the hidden `__dump-commands`. Used by the registry-consistency check so
 /// a family can never shadow a built-in name.
-pub const BUILTIN_COMMANDS: &[&str] = &["pyramid", "info", "plan", "test-image"];
+pub const BUILTIN_COMMANDS: &[&str] = &["pyramid", "info", "plan", "test-image", "pmtiles"];
 
 /// Assemble the full `viprs` CLI: the frozen derived commands unioned with
 /// every family's commands and the hidden `__dump-commands`.
@@ -403,6 +403,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn builtin_commands_include_the_pmtiles_group() {
+        // `pmtiles` is a container utility rather than a vips op, so it is a
+        // first-class builtin declared in `main.rs` and never an `ops/` family.
+        // It still has to be in this list, because the list is what stops a
+        // family silently shadowing a built-in name.
+        assert!(
+            BUILTIN_COMMANDS.contains(&"pmtiles"),
+            "the pmtiles group must be declared as a builtin, got {BUILTIN_COMMANDS:?}"
+        );
+        assert!(
+            registry_consistency_error().is_none(),
+            "{}",
+            registry_consistency_error().unwrap_or_default()
+        );
     }
 
     #[test]
