@@ -406,6 +406,23 @@ mod tests {
     }
 
     #[test]
+    fn builtin_commands_include_the_pmtiles_group() {
+        // `pmtiles` is a container utility rather than a vips op, so it is a
+        // first-class builtin declared in `main.rs` and never an `ops/` family.
+        // It still has to be in this list, because the list is what stops a
+        // family silently shadowing a built-in name.
+        assert!(
+            BUILTIN_COMMANDS.contains(&"pmtiles"),
+            "the pmtiles group must be declared as a builtin, got {BUILTIN_COMMANDS:?}"
+        );
+        assert!(
+            registry_consistency_error().is_none(),
+            "{}",
+            registry_consistency_error().unwrap_or_default()
+        );
+    }
+
+    #[test]
     fn registry_is_globally_consistent() {
         // Uniqueness across every family + the built-ins + __dump-commands, and
         // the per-family command<->meta bijection. A mis-route (duplicate name
