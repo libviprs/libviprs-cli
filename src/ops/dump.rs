@@ -28,9 +28,19 @@ pub fn command() -> Command {
 ///
 /// Commands are emitted sorted by name; the hidden `__dump-commands` command is
 /// itself excluded. Family/shape/oracle-class come from each family's
-/// [`metas()`](super::commands); the built-in pyramid/info/plan/test-image
-/// commands carry `family: "builtin"` with `null` shape / oracle class (they
-/// are not ops).
+/// [`metas()`](super::commands); the built-in pyramid/info/plan/test-image/
+/// pmtiles commands carry `family: "builtin"` with `null` shape / oracle class
+/// (they are not ops).
+///
+/// # Command groups
+///
+/// This used to walk one level, which was fine while every command was a leaf.
+/// `viprs pmtiles` is a group of four, and a one-level walk emitted it as a
+/// single entry with no positionals and no flags: `info`, `tile`, `verify` and
+/// `extract` reached the site's data not at all, and the only record of them
+/// anywhere would have been hand-authored HTML that nothing could check. Each
+/// command now carries a `subcommands` array, empty for a leaf, so a group is
+/// visible to the generator rather than something it has to be told about.
 pub fn dump_commands_json(cli: &Command) -> Value {
     // name -> (family, shape, oracle_class), gathered from the family registry.
     let mut meta: std::collections::BTreeMap<String, (&'static str, CommandMeta)> =
@@ -46,26 +56,7 @@ pub fn dump_commands_json(cli: &Command) -> Value {
         if sub.is_hide_set() {
             continue; // skip __dump-commands and any other hidden command
         }
-        let name = sub.get_name();
-        let about = sub.get_about().map(|s| s.to_string());
-        let (family, shape, oracle_class): (&str, Value, Value) = match meta.get(name) {
-            Some((fam, cm)) => (
-                fam,
-                json!(cm.shape.as_str()),
-                json!(cm.oracle_class.as_str()),
-            ),
-            None => ("builtin", Value::Null, Value::Null),
-        };
-
-        commands.push(json!({
-            "name": name,
-            "about": about,
-            "family": family,
-            "shape": shape,
-            "oracle_class": oracle_class,
-            "positionals": positionals(sub),
-            "flags": flags(sub),
-        }));
+        commands.push(command_json(sub, &meta));
     }
 
     commands.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
@@ -74,6 +65,47 @@ pub fn dump_commands_json(cli: &Command) -> Value {
         "viprs_version": env!("CARGO_PKG_VERSION"),
         "generated_by": "viprs __dump-commands",
         "commands": commands,
+    })
+}
+
+/// One command's SCHEMA_V2 §3.1 entry, with its own subcommands underneath it.
+///
+/// Family, shape and oracle class are looked up for every level, so a family
+/// that grows a group later gets the same treatment as a top-level command
+/// rather than silently landing as a builtin.
+fn command_json(
+    cmd: &Command,
+    meta: &std::collections::BTreeMap<String, (&'static str, CommandMeta)>,
+) -> Value {
+    let name = cmd.get_name();
+    let about = cmd.get_about().map(|s| s.to_string());
+    let (family, shape, oracle_class): (&str, Value, Value) = match meta.get(name) {
+        Some((fam, cm)) => (
+            fam,
+            json!(cm.shape.as_str()),
+            json!(cm.oracle_class.as_str()),
+        ),
+        None => ("builtin", Value::Null, Value::Null),
+    };
+
+    let mut subcommands: Vec<Value> = Vec::new();
+    for sub in cmd.get_subcommands() {
+        if sub.is_hide_set() {
+            continue;
+        }
+        subcommands.push(command_json(sub, meta));
+    }
+    subcommands.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+
+    json!({
+        "name": name,
+        "about": about,
+        "family": family,
+        "shape": shape,
+        "oracle_class": oracle_class,
+        "positionals": positionals(cmd),
+        "flags": flags(cmd),
+        "subcommands": subcommands,
     })
 }
 
