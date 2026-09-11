@@ -399,32 +399,44 @@ fn pyramid_extensionless_target_without_storage_flag_exits_2() {
 #[test]
 fn pyramid_default_layout_with_pmtiles_is_xyz() {
     // PMTiles v3 addresses tiles as ZXY and nothing else, so the flip has to
-    // move the default layout as well as the default sink. Proven by producing
-    // the same archive twice, once by default and once with --layout xyz
-    // spelled out: if the default were still deep-zoom the two would differ.
+    // move the default layout as well as the default sink.
+    //
+    // The archive records the layout it was built with in its `vnd.libviprs`
+    // metadata, which is what makes this observable. Comparing two archives
+    // byte for byte would not: the metadata also carries the archive's own
+    // name, so two runs of the same command to different files differ anyway,
+    // and Deep Zoom and XYZ produce the *same* tile grid (both come from
+    // `compute_levels`), so the tile set cannot tell them apart either.
     let dir = unique_dir("default-layout-xyz");
     let png = make_input(&dir, 700, 500);
 
     let implicit = dir.join("implicit.pmtiles");
-    let a = run(&[
-        "pyramid",
-        png.to_str().unwrap(),
-        implicit.to_str().unwrap(),
-    ]);
+    let a = run(&["pyramid", png.to_str().unwrap(), implicit.to_str().unwrap()]);
     assert_eq!(
         code(&a),
         0,
         "stderr:\n{}",
         String::from_utf8_lossy(&a.stderr)
     );
+    read_archive(&implicit);
 
-    let explicit = dir.join("explicit.pmtiles");
+    let info = run(&["pmtiles", "info", implicit.to_str().unwrap()]);
+    assert_eq!(code(&info), 0);
+    let stdout = String::from_utf8_lossy(&info.stdout);
+    assert!(
+        stdout.contains("\"layout\":\"xyz\""),
+        "the default archive must record the xyz layout, got:\n{stdout}"
+    );
+
+    // The negative control: the recorded field tracks the flag rather than
+    // being a constant, so the assertion above is worth something.
+    let google = dir.join("google.pmtiles");
     let b = run(&[
         "pyramid",
         png.to_str().unwrap(),
-        explicit.to_str().unwrap(),
+        google.to_str().unwrap(),
         "--layout",
-        "xyz",
+        "google",
     ]);
     assert_eq!(
         code(&b),
@@ -432,17 +444,12 @@ fn pyramid_default_layout_with_pmtiles_is_xyz() {
         "stderr:\n{}",
         String::from_utf8_lossy(&b.stderr)
     );
-
-    let left = read_archive(&implicit);
-    let right = read_archive(&explicit);
-    assert_eq!(
-        left.len(),
-        right.len(),
-        "the implicit and explicit xyz archives must be the same size"
-    );
-    assert_eq!(
-        left, right,
-        "the default layout under --storage pmtiles must be xyz byte for byte"
+    let google_info = run(&["pmtiles", "info", google.to_str().unwrap()]);
+    assert_eq!(code(&google_info), 0);
+    let google_stdout = String::from_utf8_lossy(&google_info.stdout);
+    assert!(
+        google_stdout.contains("\"layout\":\"google\""),
+        "an explicit --layout google must be recorded as google, got:\n{google_stdout}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -507,11 +514,22 @@ fn pyramid_explicit_deep_zoom_with_storage_directory_still_works() {
         "stderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // Deep Zoom names a tile `{level}/{col}_{row}.{ext}`; XYZ names it
+    // `{z}/{x}/{y}.{ext}`. The path shape is the only thing that separates the
+    // two here, because both layouts plan the same grid.
     let files = collect_tree(&tree);
+    let deep_zoom_tiles = files
+        .iter()
+        .filter(|(p, _)| p.ends_with(".png") && p.matches('/').count() == 1 && p.contains('_'))
+        .count();
     assert!(
-        files.iter().any(|(p, _)| p.ends_with(".dzi")),
-        "a deep-zoom tree carries its .dzi manifest, got {:?}",
+        deep_zoom_tiles > 1,
+        "a deep-zoom tree names tiles {{level}}/{{col}}_{{row}}.png, got {:?}",
         files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+    );
+    assert!(
+        xyz_tiles(&tree).is_empty(),
+        "a deep-zoom tree must not also carry xyz-shaped paths"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1026,11 +1044,20 @@ fn pmtiles_extract_reproduces_the_directory_tree() {
         "the comparison needs more than one tile to mean anything"
     );
     assert_eq!(
-        expected.iter().map(|(z, x, y, _)| (*z, *x, *y)).collect::<Vec<_>>(),
-        actual.iter().map(|(z, x, y, _)| (*z, *x, *y)).collect::<Vec<_>>(),
+        expected
+            .iter()
+            .map(|(z, x, y, _)| (*z, *x, *y))
+            .collect::<Vec<_>>(),
+        actual
+            .iter()
+            .map(|(z, x, y, _)| (*z, *x, *y))
+            .collect::<Vec<_>>(),
         "extract must reproduce exactly the generated coordinate set"
     );
-    assert_eq!(expected, actual, "extract must reproduce the tile bytes too");
+    assert_eq!(
+        expected, actual,
+        "extract must reproduce the tile bytes too"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

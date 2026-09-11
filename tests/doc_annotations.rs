@@ -85,7 +85,10 @@ fn every_snippet_slot_is_opened_and_closed() {
     let opened = ids_after(&src, "@doc-snippet:begin slot=");
     let closed = ids_after(&src, "@doc-snippet:end slot=");
 
-    assert!(!opened.is_empty(), "the parse found no snippet slots at all");
+    assert!(
+        !opened.is_empty(),
+        "the parse found no snippet slots at all"
+    );
     let unclosed: Vec<&String> = opened.difference(&closed).collect();
     assert!(
         unclosed.is_empty(),

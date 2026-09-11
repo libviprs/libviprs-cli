@@ -265,7 +265,7 @@ pub static FAMILIES: &[Family] = &[
 /// The frozen derived built-ins that live in `main.rs` (`CLI_CONTRACT.md` §6),
 /// plus the hidden `__dump-commands`. Used by the registry-consistency check so
 /// a family can never shadow a built-in name.
-pub const BUILTIN_COMMANDS: &[&str] = &["pyramid", "info", "plan", "test-image"];
+pub const BUILTIN_COMMANDS: &[&str] = &["pyramid", "info", "plan", "test-image", "pmtiles"];
 
 /// Assemble the full `viprs` CLI: the frozen derived commands unioned with
 /// every family's commands and the hidden `__dump-commands`.
