@@ -155,6 +155,8 @@ const PMTILES_MAGIC: &[u8] = b"PMTiles";
 /// PMTiles v3 header offsets we read directly, per the v3 specification.
 const OFF_ROOT_OFFSET: usize = 8;
 const OFF_ROOT_LENGTH: usize = 16;
+const OFF_TILE_DATA_LENGTH: usize = 64;
+const OFF_TILE_ENTRIES: usize = 80;
 const OFF_MIN_ZOOM: usize = 100;
 const OFF_MAX_ZOOM: usize = 101;
 /// PNG's 8-byte signature, so a "tile" that is not a PNG cannot pass.
@@ -1132,4 +1134,215 @@ fn dump_commands_json_reaches_the_pmtiles_subcommands() {
             "the dump must carry the {positional} positional of `pmtiles tile`, got:\n{stdout}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The two archives go-pmtiles wrote
+// ---------------------------------------------------------------------------
+//
+// `verify` and `extract` walk directories, and every other case in this file
+// walks a directory our own writer produced. A misreading of the spec shared by
+// our writer and our reader survives all of them. These two files were written
+// by the reference implementation and have never been through any libviprs
+// code, so they cannot agree with us by construction. See
+// `tests/fixtures/pmtiles/PROVENANCE.md`.
+
+/// Path to a committed golden archive.
+fn golden(name: &str) -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/pmtiles")
+        .join(name);
+    assert!(
+        path.is_file(),
+        "the committed golden {name} must exist at {}",
+        path.display()
+    );
+    path
+}
+
+#[test]
+fn pmtiles_info_reports_the_recorded_golden_counts() {
+    // Recorded reference values, not our own output read back. 85 addressed
+    // tiles in 67 entries is what makes `dupes-z0z3` worth committing: the
+    // three numbers differ from each other, so a reader that conflated any two
+    // of them reds here.
+    let archive = golden("dupes-z0z3.pmtiles");
+    let out = run(&["pmtiles", "info", archive.to_str().unwrap()]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for needle in [
+        "Tile type: png",
+        "Zoom: 0-3",
+        "Addressed tiles: 85",
+        "Tile entries: 67",
+        "Unique payloads: 63",
+        "Leaf directories: no",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "info must report {needle:?} for the go-pmtiles golden, got:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn pmtiles_verify_accepts_an_archive_with_leaf_directories() {
+    // 6 root entries pointing at 6 leaves holding 21844 tile entries. The walk
+    // has to follow every pointer and add up what it finds, and the header's
+    // own counts are the cross-check: 21845 addressed tiles from 21844 entries
+    // only agrees if every leaf was read and every run length counted.
+    let archive = golden("leaves-z0z7.pmtiles");
+
+    let info = run(&["pmtiles", "info", archive.to_str().unwrap()]);
+    assert_eq!(code(&info), 0);
+    let summary = String::from_utf8_lossy(&info.stdout);
+    assert!(
+        summary.contains("Leaf directories: yes") && summary.contains("Root entries: 6"),
+        "this fixture earns its place by having leaves, got:\n{summary}"
+    );
+
+    let out = run(&["pmtiles", "verify", archive.to_str().unwrap()]);
+    assert_eq!(
+        code(&out),
+        0,
+        "verify must accept what the reference implementation wrote, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for needle in [
+        "Leaf directories: 6",
+        "Tile entries: 21844",
+        "Addressed tiles: 21845",
+        "OK",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "verify must report {needle:?}, got:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn pmtiles_extract_expands_a_run_into_one_file_per_coordinate() {
+    // A run is one entry covering consecutive tile ids that share a payload,
+    // which is how the format stores a deduplicated tile. Extract has to write
+    // every coordinate in the run, so 67 entries have to become 85 files. An
+    // extract that ignored run lengths writes 67 and looks perfectly healthy.
+    let dir = unique_dir("extract-runs");
+    let archive = golden("dupes-z0z3.pmtiles");
+    let unpacked = dir.join("unpacked");
+
+    let out = run(&[
+        "pmtiles",
+        "extract",
+        archive.to_str().unwrap(),
+        unpacked.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Extracted 85 tiles"),
+        "extract must report the addressed count, got:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let tiles = xyz_tiles(&unpacked);
+    assert_eq!(
+        tiles.len(),
+        85,
+        "the archive addresses 85 tiles through 67 entries, so 85 files have to land"
+    );
+    for (z, x, y, bytes) in &tiles {
+        assert!(
+            bytes.starts_with(PNG_MAGIC),
+            "{z}/{x}/{y} must be a real PNG"
+        );
+    }
+
+    // The duplicates are the point: fewer distinct payloads than files.
+    let mut distinct: Vec<&Vec<u8>> = tiles.iter().map(|(_, _, _, b)| b).collect();
+    distinct.sort();
+    distinct.dedup();
+    assert!(
+        distinct.len() < tiles.len(),
+        "the fixture is chosen for its duplicate payloads, got {} distinct of {}",
+        distinct.len(),
+        tiles.len()
+    );
+}
+
+#[test]
+fn pmtiles_verify_rejects_a_header_count_that_the_directories_contradict() {
+    // The corrupt-root case fails while the archive is being opened, so it
+    // proves the reader rather than the walk. This one opens cleanly and is
+    // caught only by verify adding up what the directories hold and comparing
+    // it with what the header claims.
+    let dir = unique_dir("verify-count-mismatch");
+    let mut bytes =
+        std::fs::read(golden("dupes-z0z3.pmtiles")).expect("the golden must be readable");
+    let before = header_u64(&bytes, OFF_TILE_ENTRIES);
+    assert_eq!(before, 67, "the fixture's recorded entry count");
+    bytes[OFF_TILE_ENTRIES..OFF_TILE_ENTRIES + 8].copy_from_slice(&(before + 1).to_le_bytes());
+
+    let tampered = dir.join("miscounted.pmtiles");
+    std::fs::write(&tampered, &bytes).expect("the tampered archive must be writable");
+
+    let out = run(&["pmtiles", "verify", tampered.to_str().unwrap()]);
+    assert_ne!(
+        code(&out),
+        0,
+        "verify must refuse a header that disagrees with its own directories, stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("68") && stderr.contains("67"),
+        "the diagnostic must name both counts, got:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pmtiles_verify_rejects_entries_past_the_tile_data_section() {
+    // Shrink the tile data section in the header. Every section still fits
+    // inside the file, so the archive opens, and the only thing that catches it
+    // is the check the reference implementation does not make: an entry's
+    // offset plus its length against the section that owns it.
+    let dir = unique_dir("verify-entry-bounds");
+    let mut bytes =
+        std::fs::read(golden("dupes-z0z3.pmtiles")).expect("the golden must be readable");
+    let before = header_u64(&bytes, OFF_TILE_DATA_LENGTH);
+    assert!(
+        before > 64,
+        "the fixture must have a real tile data section"
+    );
+    bytes[OFF_TILE_DATA_LENGTH..OFF_TILE_DATA_LENGTH + 8].copy_from_slice(&16u64.to_le_bytes());
+
+    let tampered = dir.join("short-section.pmtiles");
+    std::fs::write(&tampered, &bytes).expect("the tampered archive must be writable");
+
+    let out = run(&["pmtiles", "verify", tampered.to_str().unwrap()]);
+    assert_ne!(
+        code(&out),
+        0,
+        "verify must refuse an entry addressing bytes outside its section, stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("tile data section"),
+        "the diagnostic must name the section, got:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
