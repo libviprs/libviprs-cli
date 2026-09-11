@@ -98,3 +98,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+      # `libviprs-tests` builds this binary with
+      # `cargo build --release --no-default-features --bin viprs` for its
+      # black-box suite, and until now nothing ran that configuration's *tests*
+      # (the clippy job lints it, which is not the same thing). A command
+      # sitting behind a default-only feature passes every cell above and is
+      # then missing from the binary the other repository drives, which is how
+      # `viprs pmtiles` could have been green here and absent there.
+      - run: cargo test --no-default-features
