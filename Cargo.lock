@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "libviprs"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "ab_glyph",
  "blake3",
@@ -1171,8 +1171,9 @@ dependencies = [
 
 [[package]]
 name = "pdfium-render"
-version = "0.9.3"
-source = "git+https://github.com/libviprs/pdfium-render.git?rev=3b03093295b85486c2e42f514cef9647eb629c63#3b03093295b85486c2e42f514cef9647eb629c63"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8948a803616a9e936b15a6637af2cd48c5fb8ae0fcdeb3c32eac3a540e255a19"
 dependencies = [
  "bitflags",
  "bytemuck",
@@ -2193,8 +2194,3 @@ checksum = "410e9ecef634c709e3831c2cfdb8d9c32164fae1c67496d5b68fff728eec37fe"
 dependencies = [
  "zune-core 0.5.1",
 ]
-
-[[patch.unused]]
-name = "pdfium-render"
-version = "0.9.3"
-source = "git+https://github.com/libviprs/pdfium-render.git?branch=libviprs%2Fintegration#1000a1aff1888425004c11432b376d2c36a4d3f2"
