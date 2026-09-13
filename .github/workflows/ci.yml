@@ -54,8 +54,15 @@ jobs:
   # below is the point of the job as much as the check is: the pin, the
   # `rust-version` in Cargo.toml and the README badge drifted apart once
   # already and nothing noticed for a month.
+  #
+  # The version stays out of the job `name:` on purpose (issue #57). Required
+  # status contexts on `main` match check-run names exactly, so a name carrying
+  # the floor makes branch protection a place the number lives: bump the floor,
+  # rename the job, and every PR then blocks on a context nothing produces until
+  # somebody edits protection by hand. The `Every MSRV claim agrees` step below
+  # prints the pin and fails on disagreement, so the name never had to carry it.
   msrv:
-    name: MSRV (1.97)
+    name: MSRV
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
