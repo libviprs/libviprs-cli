@@ -470,18 +470,29 @@ enum StorageArg {
 
 /// Tile encodings this CLI can produce.
 ///
-/// There is deliberately no `webp` here. PMTiles v3 defines a WebP tile type
-/// and `libviprs` can encode WebP through `Raster::encode_webp`, but the core
-/// crate's `TileFormat` has no WebP variant, so no pyramid this command writes
-/// can contain one. Offering the choice would advertise a capability that does
-/// not exist. `viprs pmtiles info` still reports a WebP tile type when
-/// somebody else's archive carries one, and `viprs pmtiles extract` still
-/// gives those tiles the right extension: reading is not advertising.
+/// `webp` is lossless and has no quality knob. [`TileFormat::Webp`] is
+/// fieldless in the core crate on purpose: the encoder behind it encodes
+/// lossless WebP and nothing else, so a `--quality` that appeared to apply to
+/// it would be an argument thrown away. `--quality` therefore stays
+/// JPEG-only, and `--format webp --quality 50` writes exactly what
+/// `--format webp` writes.
+///
+/// This list carried the opposite note until issue #60. It said there was
+/// deliberately no `webp` here, because core's `TileFormat` had no WebP
+/// variant and offering the choice would have advertised a capability that
+/// did not exist. That was right, and libviprs#1123 removed its premise.
+///
+/// The half of it that survives is worth keeping: `viprs pmtiles info`
+/// reported a WebP tile type, and `viprs pmtiles extract` gave those tiles the
+/// right extension, for as long as this flag refused the format. Reading an
+/// archive somebody else wrote was never the same claim as being able to write
+/// one.
 #[derive(Clone, ValueEnum)]
 enum FormatArg {
     Png,
     Jpeg,
     Raw,
+    Webp,
 }
 
 #[derive(Parser)]
@@ -859,6 +870,7 @@ fn resolve_tile_format(args: &PyramidArgs, to_archive: bool) -> TileFormat {
             quality: args.quality,
         },
         FormatArg::Raw => TileFormat::Raw,
+        FormatArg::Webp => TileFormat::Webp,
     }
 }
 
