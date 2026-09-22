@@ -620,7 +620,10 @@ fn pyramid_offers_webp_and_the_archive_really_holds_webp_tiles() {
     assert_eq!(code(&out), 0);
     let help = String::from_utf8_lossy(&out.stdout);
     assert!(
-        help.contains("png") && help.contains("jpeg") && help.contains("raw") && help.contains("webp"),
+        help.contains("png")
+            && help.contains("jpeg")
+            && help.contains("raw")
+            && help.contains("webp"),
         "all four encodable formats must be listed, got:\n{help}"
     );
 
@@ -661,7 +664,12 @@ fn pyramid_offers_webp_and_the_archive_really_holds_webp_tiles() {
         archive.to_str().unwrap(),
         extracted.to_str().unwrap(),
     ]);
-    assert_eq!(code(&ex), 0, "extract failed:\n{}", String::from_utf8_lossy(&ex.stderr));
+    assert_eq!(
+        code(&ex),
+        0,
+        "extract failed:\n{}",
+        String::from_utf8_lossy(&ex.stderr)
+    );
 
     let mut checked = 0usize;
     for (rel, bytes) in collect_tree(&extracted) {
@@ -694,8 +702,18 @@ fn webp_ignores_quality_rather_than_pretending_to_use_it() {
     let dir = unique_dir("webp-quality-inert");
     let png = make_input(&dir, 64, 64);
 
-    let a = dir.join("a.pmtiles");
-    let b = dir.join("b.pmtiles");
+    // Same BASENAME in different directories, deliberately. The archive
+    // records a `name` derived from the output filename, and the metadata
+    // section is gzipped, so two different names compress to different lengths
+    // and shift every header offset after them. Comparing `a.pmtiles` against
+    // `b.pmtiles` would therefore fail on the name and look exactly like the
+    // quality leaking through, which is what it did when I first wrote this.
+    let left_dir = dir.join("q10");
+    let right_dir = dir.join("q95");
+    std::fs::create_dir_all(&left_dir).expect("left dir");
+    std::fs::create_dir_all(&right_dir).expect("right dir");
+    let a = left_dir.join("same.pmtiles");
+    let b = right_dir.join("same.pmtiles");
     for (out, q) in [(&a, "10"), (&b, "95")] {
         let r = run(&[
             "pyramid",
@@ -719,7 +737,9 @@ fn webp_ignores_quality_rather_than_pretending_to_use_it() {
     assert_eq!(
         left, right,
         "quality 10 and quality 95 produced different WebP archives, so the \
-         flag is reaching the encoder when it has nothing to reach"
+         flag is reaching the encoder when it has nothing to reach. Both were \
+         written to the same basename, so the archive `name` is identical and \
+         cannot account for a difference"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
