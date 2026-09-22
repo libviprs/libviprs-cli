@@ -604,33 +604,142 @@ fn pyramid_format_raw_with_storage_directory_still_works() {
 }
 
 #[test]
-fn pyramid_format_choices_do_not_advertise_webp() {
-    // Core's `TileFormat` has no WebP variant, so no surface here can produce a
-    // WebP tile. PMTiles can *store* one, and `pmtiles info` reports it when a
-    // foreign archive carries it, but this CLI must not offer what it cannot
-    // encode. This test is what stops "PMTiles supports WebP" leaking into the
-    // flag as a documentation claim.
+fn pyramid_offers_webp_and_the_archive_really_holds_webp_tiles() {
+    // The inverse of what this test used to assert. It used to pin
+    // `--format webp` as a usage error, and it was right to: core's
+    // `TileFormat` had no WebP variant, so offering the flag would have
+    // advertised a capability that did not exist. libviprs#1123 added the
+    // variant, so the premise is gone and the refusal became the lie.
+    //
+    // Checking the exit code is not enough. A `FormatArg::Webp` that parsed
+    // and then fell through to PNG would pass an exit-code assertion and write
+    // PNG tiles, which is exactly the shape of "advertising a capability that
+    // does not exist" that the old test existed to prevent. So this reads the
+    // archive back and looks at the tile type byte.
     let out = run(&["pyramid", "--help"]);
     assert_eq!(code(&out), 0);
     let help = String::from_utf8_lossy(&out.stdout);
     assert!(
-        help.contains("png") && help.contains("jpeg") && help.contains("raw"),
-        "the three encodable formats must be listed, got:\n{help}"
+        help.contains("png")
+            && help.contains("jpeg")
+            && help.contains("raw")
+            && help.contains("webp"),
+        "all four encodable formats must be listed, got:\n{help}"
     );
 
-    let dir = unique_dir("webp-refusal");
+    let dir = unique_dir("webp-reachable");
     let png = make_input(&dir, 64, 64);
-    let attempt = run(&[
+    let archive = dir.join("a.pmtiles");
+    let made = run(&[
         "pyramid",
         png.to_str().unwrap(),
-        dir.join("a.pmtiles").to_str().unwrap(),
+        archive.to_str().unwrap(),
         "--format",
         "webp",
     ]);
     assert_eq!(
-        code(&attempt),
-        2,
-        "--format webp must be a usage error while no encoder exists"
+        code(&made),
+        0,
+        "--format webp must work now that the encoder is reachable.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&made.stdout),
+        String::from_utf8_lossy(&made.stderr)
+    );
+
+    // The archive's own account of itself, which is the part an exit code
+    // cannot fake.
+    let info = run(&["pmtiles", "info", archive.to_str().unwrap()]);
+    assert_eq!(code(&info), 0);
+    let reported = String::from_utf8_lossy(&info.stdout);
+    assert!(
+        reported.to_lowercase().contains("webp"),
+        "the archive must report a WebP tile type, got:\n{reported}"
+    );
+
+    // And the bytes themselves. A WebP file is RIFF....WEBP, so this cannot be
+    // satisfied by a PNG the header merely claims is WebP.
+    let extracted = dir.join("out");
+    let ex = run(&[
+        "pmtiles",
+        "extract",
+        archive.to_str().unwrap(),
+        extracted.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        code(&ex),
+        0,
+        "extract failed:\n{}",
+        String::from_utf8_lossy(&ex.stderr)
+    );
+
+    let mut checked = 0usize;
+    for (rel, bytes) in collect_tree(&extracted) {
+        if !rel.ends_with(".webp") {
+            continue;
+        }
+        assert!(
+            bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+            "{rel} is not a WebP file, first bytes: {:?}",
+            &bytes[..bytes.len().min(16)]
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "extract produced no .webp tiles, so nothing was actually checked"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn webp_ignores_quality_rather_than_pretending_to_use_it() {
+    // `--quality` is documented as JPEG-only and `TileFormat::Webp` is
+    // fieldless on purpose: the encoder is lossless and has no quality knob,
+    // so a quality that appeared to apply would be an argument thrown away.
+    // Two runs at different qualities must produce byte-identical archives,
+    // which is the assertion that would notice a quality field being wired in
+    // later without anyone deciding to.
+    let dir = unique_dir("webp-quality-inert");
+    let png = make_input(&dir, 64, 64);
+
+    // Same BASENAME in different directories, deliberately. The archive
+    // records a `name` derived from the output filename, and the metadata
+    // section is gzipped, so two different names compress to different lengths
+    // and shift every header offset after them. Comparing `a.pmtiles` against
+    // `b.pmtiles` would therefore fail on the name and look exactly like the
+    // quality leaking through, which is what it did when I first wrote this.
+    let left_dir = dir.join("q10");
+    let right_dir = dir.join("q95");
+    std::fs::create_dir_all(&left_dir).expect("left dir");
+    std::fs::create_dir_all(&right_dir).expect("right dir");
+    let a = left_dir.join("same.pmtiles");
+    let b = right_dir.join("same.pmtiles");
+    for (out, q) in [(&a, "10"), (&b, "95")] {
+        let r = run(&[
+            "pyramid",
+            png.to_str().unwrap(),
+            out.to_str().unwrap(),
+            "--format",
+            "webp",
+            "--quality",
+            q,
+        ]);
+        assert_eq!(
+            code(&r),
+            0,
+            "--format webp --quality {q} should run.\nstderr:\n{}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+    }
+
+    let left = std::fs::read(&a).expect("read a");
+    let right = std::fs::read(&b).expect("read b");
+    assert_eq!(
+        left, right,
+        "quality 10 and quality 95 produced different WebP archives, so the \
+         flag is reaching the encoder when it has nothing to reach. Both were \
+         written to the same basename, so the archive `name` is identical and \
+         cannot account for a difference"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
