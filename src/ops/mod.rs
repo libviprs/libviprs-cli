@@ -40,6 +40,7 @@ pub mod core;
 pub mod create;
 pub mod draw;
 pub mod extract;
+pub mod foreign;
 pub mod freqfilt;
 pub mod histogram;
 pub mod matrix;
@@ -253,6 +254,12 @@ pub static FAMILIES: &[Family] = &[
         commands: matrix::commands,
         run: matrix::run,
         metas: matrix::metas,
+    },
+    Family {
+        name: "foreign",
+        commands: foreign::commands,
+        run: foreign::run,
+        metas: foreign::metas,
     },
     Family {
         name: "core",

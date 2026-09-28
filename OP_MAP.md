@@ -39,6 +39,9 @@ Of those, **151** are differential-backed and **13** are golden-only pins
 (7 `draw_*`, `globalbalance`, `gaussnoise`, `perlin`, `worley`, `fractsurf`,
 `text`) — squarely inside the contract's "~150–190 with a real vips oracle".
 
+The **foreign** (codec load/save) section near the end is counted on its own
+(47 rows, 32 commands) and is not in the totals below.
+
 | oracle_class | rows |
 |---|---|
 | EXACT | 105 |
@@ -542,6 +545,82 @@ implements them.
 |---|---|---|---|---|
 | `add` | `add` | S2 | EXACT-AFTER-CAST | **Accepted surface = uchar-only, equal-bands** (the exact set where core == vips). u8+u8→u16 widening compares tol 0. `add` **rejects float AND 16-bit inputs** (exit 1): core keeps a 16-bit input at 16-bit and SATURATES the sum at 65535 (`raster_ops.rs`), whereas vips promotes ushort→uint and returns the true sum — so 16-bit is rejected, NOT silently saturated (wide/float addition lands with a later arithmetic batch; core-side follow-up filed). Also a documented SUBSET of vips on bands: vips `add` BAND-BROADCASTS a 1-band operand across a multi-band one; core requires EQUAL band counts and the CLI keeps the exit-1 rejection (band-broadcast parity = core-side follow-up, not a regression). uchar int fixtures only; float/16-bit combos logged as skipped per §7. |
 | `getpoint` | `getpoint` | S3 | EXACT | `getpoint in x y` prints the band vector in vips numeric format. Oracle is the NUMERIC compare (float-parse + eps, §3); stdout TEXT formatting is NOT a pinned parity surface (§9) — non-dyadic float pixels print `f64::to_string` of the widened f32 (e.g. f32 0.1 → `0.10000000149011612`), which the numeric-eps compare carries regardless of vips's text form (pinned by the `getpoint_float_nd` non-dyadic case; the deliberately-dyadic `getpoint_float` fixture only sidesteps text, not the numeric oracle). |
+
+---
+
+## foreign (codec load/save, libviprs-cli#65)
+
+Not counted in the op totals above: these are containers, not image ops, and
+their oracle is a file vips wrote rather than an op vips ran. Command names and
+option names verified against `vips -l` and `vips <saver|loader> --help` on the
+author-Mac oracle `/opt/homebrew/bin/vips` **8.18.6**; core read at `8afc3ae5`
+(tree of `cf9e9bc1`). Every row is S1 (`<cmd> IN OUT [--flags]`), every loader
+takes the five `--max-*` limits and `-` for stdin (bar `analyzeload`), and the
+differential is `libviprs-tests/tests/cli_foreign_diff.rs`.
+
+**47 rows: 32 commands (27 EXACT, 5 BOUNDED-TOL) and 15 EXCLUDED.**
+
+### Save
+
+| libviprs_fn | vips_nickname | oracle_class | options | notes |
+|---|---|---|---|---|
+| `encode_jpeg_options` | `jpegsave` | BOUNDED-TOL (6) | `--Q`, `--subsample-mode auto\|on\|off` | Not libjpeg-turbo: tol is the measured max over Q 75 / Q 95 / Q 50 4:4:4. The SOF sampling factors are asserted exactly. |
+| `encode_png` / `encode_png_interlaced` / `encode_png_palette` | `pngsave` | EXACT (palette BOUNDED-TOL 49) | `--compression`, `--interlace`, `--palette`, `--bitdepth` (with `--palette`) | `--compression` conflicts with the other two, whose core encoders fix their own deflate level. `--bitdepth` caps the palette at 2^N entries; the core writes 8-bit indices whatever N is, vips packs them. |
+| `save_tiff` | `tiffsave` | EXACT | `--compression none\|lzw\|deflate` | Default `none`, which is `tiffsave`'s default. |
+| `encode_webp` | `webpsave` | EXACT | `--lossless` (required) | Lossless is the only mode the core has; vips defaults to lossy, so the flag is required rather than implied. |
+| `encode_gif` | `gifsave` | BOUNDED-TOL (105; 37 at `--dither 0`) | `--dither`, `--bitdepth`, `--interlace` | Different quantiser. The colour table size and the interlace bit are asserted structurally. |
+| `encode_jxl` | `jxlsave` | EXACT | `--lossless` (required) | Feature `jxl`. |
+| `encode_jp2k` | `jp2ksave` | EXACT (byte compare) | `--lossless` (required), `--tile-width`, `--tile-height` | Feature `jp2k`. The core writes OpenJPEG's codestream byte for byte. |
+| `encode_fits` | `fitssave` | EXACT (byte compare) | | |
+| `encode_radiance` | `radsave` | EXACT | | Three-band float in. vips converts scRGB to sRGB before it writes, the core writes what it is given. |
+| `uhdr::encode_uhdr` | `uhdrsave` | BOUNDED-TOL (87, base image) | `--Q`, `--gainmap-scale-factor` | The core chooses its own gain map (libuhdr's tone mapping has no spec to port), so only the SDR base is compared. Non-scRGB input is converted first. |
+| `csv_save` | `csvsave` | EXACT (byte compare) | | One band. |
+| `matrix_save` | `matrixsave` | EXACT (byte compare) | | One band. |
+| (CLI `encode_pnm`) | `ppmsave` | EXACT (byte compare) | | The same PNM encoder `.ppm` has used since #38. |
+
+### Load
+
+| libviprs_fn | vips_nickname | oracle_class | options | notes |
+|---|---|---|---|---|
+| `decode_bytes_with_limits` | `jpegload` | BOUNDED-TOL | `--shrink 1\|2\|4\|8` | zune-jpeg against libjpeg-turbo. `--shrink` is decode-then-box-shrink, as `decode_file_with_shrink` is (tol 47: vips shrinks in the DCT domain). |
+| `decode_bytes_with_limits` | `pngload` | EXACT | | Refuses a file without the PNG signature, as vips's does. |
+| `decode_tiff_page_with_limits` | `tiffload` | EXACT | `--page`, `--max-pages` | The loaded image carries `n-pages` (`tiff_page_count`). |
+| `decode_gif_with` | `gifload` | EXACT | `--page`, `--n`, `--max-pages` | |
+| `decode_webp_with` | `webpload` | EXACT | `--page`, `--n`, `--max-pages` | |
+| `decode_jxl` | `jxlload` | EXACT | | Feature `jxl`. |
+| `decode_jp2k` | `jp2kload` | EXACT | | Feature `jp2k`. |
+| `decode_avif` | `heifload` | EXACT | | Feature `avif`. AVIF only: HEIC/HEVC is a `foreign_stubs` refusal. |
+| `decode_svg_with_limits` | `svgload` | EXACT | `--dpi`, `--scale`, `--unlimited` | Feature `svg`. `--unlimited` lifts the core's 10 MB input ceiling, never the decode limits. |
+| `decode_fits` | `fitsload` | EXACT | | |
+| `decode_radiance` | `radload` | EXACT | | Three-band float, like `radload` + `rad2float`. |
+| `uhdr::decode_uhdr` | `uhdrload` | BOUNDED-TOL (2) | | The SDR base, gain map attached as metadata. |
+| `csv_load` | `csvload` | EXACT | | Geometry is checked against the limits before the grid is parsed. |
+| `matrix_load` | `matrixload` | EXACT | | The declared geometry is checked before the values are parsed. |
+| `decode_bytes_with_limits` | `ppmload` | EXACT | | |
+| `decode_exr` | `openexrload` | EXACT | | |
+| `decode_nifti` | `niftiload` | EXACT | | vips 8.18 has no NIfTI loader in any build; the oracle is nifti_clib's voxel dump from the core's capture. |
+| `decode_analyze_file` | `analyzeload` | EXACT | | File only: the image is a `.hdr`/`.img` pair. |
+| `decode_mat` | `matload` | EXACT | | |
+
+### EXCLUDED
+
+| libviprs_fn | vips_nickname | oracle_class | notes |
+|---|---|---|---|
+| `jpegsave_buffer_restart` | `jpegsave --restart-interval` | EXCLUDED | Refusal stub in the core (`image`'s JPEG encoder writes no restart markers). |
+| `save_tiff_tiled` | `tiffsave --tile` | EXCLUDED | Refusal stub in the core. |
+| `save_bigtiff` | `tiffsave --bigtiff` | EXCLUDED | Refusal stub in the core. |
+| (none) | `tiffsave` multi-page | EXCLUDED | The core has no multi-page TIFF encoder. |
+| `decode_file_sequential` | `--access sequential` | EXCLUDED | A documented alias of `decode_file`: no output could tell the flag apart from its absence. |
+| `encode_heif*` | `heifsave` | EXCLUDED | `foreign_stubs`: refusal stubs in the core. |
+| (none) | `heifload` of HEIC | EXCLUDED | No HEVC decoder in the core; `heifload` reads AVIF only and says so. |
+| `magickload`, `magickload_with` | `magickload` | EXCLUDED | `foreign_stubs`. |
+| `magicksave_buffer` | `magicksave` | EXCLUDED | `foreign_stubs`. |
+| `decode_openslide` | `openslideload` | EXCLUDED | `foreign_stubs`. |
+| `dzsave_buffer` | `dzsave` | EXCLUDED | `foreign_stubs`; `viprs pyramid` is the tiler. |
+| `Raster::encode_uhdr`, `encode_uhdr_gainmap_scale` | `uhdrsave` (stub form) | EXCLUDED | `foreign_stubs`; `uhdrsave` goes through the real `uhdr::encode_uhdr` instead. |
+| `decode_file_fail_on`, `decode_bytes_fail_on` | `--fail-on` | EXCLUDED | `foreign_stubs`. |
+| (none) | `webpsave`/`jxlsave` lossy (`--Q`, `--distance`) | EXCLUDED | No lossy encoder in the core. |
+| `jp2k::Compression::Lossy` | `jp2ksave --Q` | EXCLUDED | The core's lossy mode takes a rate, not vips's `Q`; a `--Q` that meant something else would be worse than none. |
 
 ---
 
