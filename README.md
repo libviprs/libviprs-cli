@@ -200,6 +200,34 @@ $ viprs features --json
 {"features":["pdfium"]}
 ```
 
+### Loading and saving every codec
+
+Every codec libviprs ships has a `*save` and a `*load` command, spelled the way vips spells it, so `vips jpegsave in.png out.jpg --Q 90` becomes `viprs jpegsave in.png out.jpg --Q 90`.
+
+| save | options | load | options |
+|---|---|---|---|
+| `jpegsave` | `--Q`, `--subsample-mode auto\|on\|off` | `jpegload` | `--shrink 1\|2\|4\|8` |
+| `pngsave` | `--compression 0-9`, `--interlace`, `--palette`, `--bitdepth` (with `--palette`) | `pngload` | |
+| `tiffsave` | `--compression none\|lzw\|deflate` | `tiffload` | `--page`, `--max-pages` |
+| `webpsave` | `--lossless` (required) | `webpload` | `--page`, `--n` |
+| `gifsave` | `--dither`, `--bitdepth`, `--interlace` | `gifload` | `--page`, `--n`, `--max-pages` |
+| `jxlsave` | `--lossless` (required) | `jxlload` | |
+| `jp2ksave` | `--lossless` (required), `--tile-width`, `--tile-height` | `jp2kload` | |
+| `fitssave` | | `fitsload` | |
+| `radsave` | | `radload` | |
+| `uhdrsave` | `--Q`, `--gainmap-scale-factor` | `uhdrload` | |
+| `csvsave` | | `csvload` | |
+| `matrixsave` | | `matrixload` | |
+| `ppmsave` | | `ppmload` | |
+
+Plus `heifload` (AVIF only), `svgload` (`--dpi`, `--scale`, `--unlimited`), `openexrload`, `niftiload`, `analyzeload` and `matload`. JPEG XL, JPEG 2000, AVIF and SVG need their cargo feature; without it the command refuses and names the feature to rebuild with.
+
+Every loader takes the five `--max-*` decode limits, and `-` reads the image from stdin (except `analyzeload`, whose image is a file pair). `webpsave`, `jxlsave` and `jp2ksave` only write lossless, while vips defaults to lossy for all three, so they insist on `--lossless` rather than quietly writing something other than what the vips spelling asks for.
+
+The op commands also pick the encoder from the output extension, so `viprs copy in.png out.webp` works for `.webp`, `.gif`, `.jxl`, `.jp2`, `.fits`, `.hdr`, `.csv` and `.mat` as well as `.png`, `.tif`, `.ppm` and `.v`. `.jpg` is the exception: it stays banned there, because those commands are the ones the vips differential suite compares, and `jpegsave` is the way to write one.
+
+Some things vips has are not here because the library itself refuses them: JPEG restart markers, tiled, BigTIFF and multi-page TIFF writing, and HEIF/HEIC, OpenSlide, ImageMagick and `dzsave`. `OP_MAP.md` says why for each.
+
 ## PDF Handling
 
 The CLI supports two modes for PDF input:
