@@ -75,7 +75,7 @@ pub fn decode_path(path: &Path, limits: DecodeLimits) -> Result<Raster> {
             // the wrong way.
             Err(CompressedSvg.into())
         } else {
-            decode_svg(&bytes, limits)
+            decode_svg(&bytes, SvgOptions::default(), limits)
         }
     } else {
         decode_file_with_limits(path, limits).map_err(refusal_or_error)
@@ -109,7 +109,7 @@ pub fn decode_bytes_default(bytes: &[u8]) -> Result<Raster> {
 /// As [`decode_path`], without the path.
 pub fn decode_bytes(bytes: &[u8], limits: DecodeLimits) -> Result<Raster> {
     if looks_like_svg(bytes) {
-        return decode_svg(bytes, limits);
+        return decode_svg(bytes, SvgOptions::default(), limits);
     }
     libviprs::source::decode_bytes_with_limits(bytes, limits).map_err(refusal_or_error)
 }
@@ -122,8 +122,15 @@ fn refusal_or_error(err: libviprs::source::SourceError) -> anyhow::Error {
     }
 }
 
-fn decode_svg(bytes: &[u8], limits: DecodeLimits) -> Result<Raster> {
-    match decode_svg_with_limits(bytes, SvgOptions::default(), limits) {
+/// Render an SVG document with `options`, turning a build without the `svg`
+/// feature into its refusal. Shared with `svgload` (libviprs-cli#65), which
+/// is the one caller that passes options.
+pub(crate) fn decode_svg(
+    bytes: &[u8],
+    options: SvgOptions,
+    limits: DecodeLimits,
+) -> Result<Raster> {
+    match decode_svg_with_limits(bytes, options, limits) {
         Ok(raster) => Ok(raster),
         // Without the `svg` feature the core's only answer is this one
         // `Unsupported` I/O error (`libviprs::svg`), so in that build it is
