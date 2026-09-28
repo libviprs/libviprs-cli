@@ -47,6 +47,19 @@ jobs:
       - run: cargo clippy --all-targets --features tracing -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features packfile -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features s3 -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      # The features #64 forwards from the core, one cell each for the same
+      # reason as the three above: each gates code (the four decoders' refusal
+      # arms in src/input.rs and src/features.rs, and the core's own bodies)
+      # that no other cell compiles. `full` is the union a user is most likely
+      # to build, so it gets a cell too. `pdfium-static` lints without a static
+      # libpdfium because clippy never links.
+      - run: cargo clippy --all-targets --features avif -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features svg -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features jxl -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features jp2k -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features object-store-sink -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features pdfium-static -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features full -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --no-default-features -- -D warnings -W clippy::incompatible_msrv -W deprecated
 
   # 1.97 is the core's MSRV, and this crate is a thin driver for it, so the
