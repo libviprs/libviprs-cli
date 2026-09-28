@@ -11,6 +11,7 @@ use std::process;
 use std::time::Instant;
 
 use clap::{ArgGroup, Parser, ValueEnum};
+use libviprs::source::DecodeLimits;
 use libviprs::{
     BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
     EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout,
@@ -37,6 +38,14 @@ use libviprs::pdf::render_page_pdfium;
 /// test-image commands below stay in `main.rs` untouched; every op family is
 /// additive under `src/ops/`.
 mod ops;
+
+/// `viprs features`, and the refusal a format gets when its cargo feature was
+/// left out of this build (libviprs-cli#64).
+mod features;
+
+/// The single decode path every command loads an input through: SVG routing
+/// and the missing-feature refusal (libviprs-cli#64).
+mod input;
 
 /// Upper bound, in megabytes, accepted for `--memory-limit` and
 /// `--memory-budget`. Values above this are rejected at parse time. The cap is
@@ -83,6 +92,12 @@ enum Command {
     /// A container utility rather than a vips operation, so it lives here as a
     /// first-class built-in and never under `src/ops/` or in `OP_MAP.md`.
     Pmtiles(PmtilesArgs),
+
+    /// List the cargo features this binary was built with, one per line.
+    ///
+    /// A format whose feature is missing is refused with a message naming the
+    /// feature to rebuild with; this is how to check before trying.
+    Features(FeaturesArgs),
 }
 
 #[derive(Parser)]
@@ -429,6 +444,13 @@ struct PlanArgs {
 }
 
 #[derive(Parser)]
+struct FeaturesArgs {
+    /// Print `{"features": [...]}` instead of one name per line.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
 struct TestImageArgs {
     /// Output image file path.
     output: PathBuf,
@@ -665,7 +687,7 @@ fn main() {
     let matches = ops::assembled_cli().get_matches();
 
     match matches.subcommand() {
-        Some(("pyramid" | "info" | "plan" | "test-image" | "pmtiles", _)) => {
+        Some(("pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features", _)) => {
             let cli = Cli::from_arg_matches(&matches)
                 .expect("a built-in subcommand deserializes through the derive Cli");
             match cli.command {
@@ -674,6 +696,7 @@ fn main() {
                 Command::Plan(args) => run_plan(args),
                 Command::TestImage(args) => run_test_image(args),
                 Command::Pmtiles(args) => run_pmtiles(args),
+                Command::Features(args) => features::run(args.json),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
@@ -1947,7 +1970,7 @@ fn run_info(args: InfoArgs) {
             }
         }
     } else {
-        match libviprs::decode_file(path) {
+        match input::decode_path(path, DecodeLimits::default()) {
             Ok(raster) => {
                 println!("Image: {}", path.display());
                 println!("Dimensions: {}x{}", raster.width(), raster.height());
@@ -1958,7 +1981,7 @@ fn run_info(args: InfoArgs) {
                 );
             }
             Err(e) => {
-                eprintln!("Error reading image: {e}");
+                eprintln!("Error reading image: {e:#}");
                 process::exit(1);
             }
         }
@@ -2098,10 +2121,10 @@ fn resolve_plan_dimensions(args: &PlanArgs) -> (u32, u32) {
             }
         }
     } else {
-        match libviprs::decode_file(&path) {
+        match input::decode_path(&path, DecodeLimits::default()) {
             Ok(raster) => (raster.width(), raster.height()),
             Err(e) => {
-                eprintln!("Error reading image: {e}");
+                eprintln!("Error reading image: {e:#}");
                 process::exit(1);
             }
         }
@@ -2117,10 +2140,10 @@ fn load_source(args: &PyramidArgs) -> Raster {
             eprintln!("Error reading stdin: {e}");
             process::exit(1);
         }
-        match libviprs::decode_bytes(&buf) {
+        match input::decode_bytes(&buf, DecodeLimits::default()) {
             Ok(r) => return r,
             Err(e) => {
-                eprintln!("Error decoding image from stdin: {e}");
+                eprintln!("Error decoding image from stdin: {e:#}");
                 process::exit(1);
             }
         }
@@ -2244,10 +2267,10 @@ fn load_source(args: &PyramidArgs) -> Raster {
         }
     } else {
         eprintln!("Decoding {}...", path.display());
-        match libviprs::decode_file(&path) {
+        match input::decode_path(&path, DecodeLimits::default()) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Error decoding image: {e}");
+                eprintln!("Error decoding image: {e:#}");
                 process::exit(1);
             }
         }

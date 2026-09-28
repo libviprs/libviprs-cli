@@ -56,7 +56,7 @@ use clap::{Arg, ArgMatches, Command, value_parser};
 use libviprs::Interpretation;
 use libviprs::PixelFormat;
 use libviprs::Raster;
-use libviprs::source::{DecodeLimits, decode_file_with_limits};
+use libviprs::source::DecodeLimits;
 
 /// Long name of the `--max-width` decode-limit flag.
 pub const MAX_WIDTH: &str = "max-width";
@@ -202,16 +202,22 @@ pub fn inputs_and_out(m: &ArgMatches, id: &str) -> Result<(Vec<PathBuf>, PathBuf
 /// Decode an image file under the supplied per-decode limits.
 ///
 /// Native `.v`, PNG, JPEG, TIFF and the other formats the core decoder
-/// understands all route through [`decode_file_with_limits`]; the limits are
-/// pushed down before any pixel buffer is allocated.
+/// understands all route through
+/// [`decode_file_with_limits`](libviprs::source::decode_file_with_limits), and
+/// SVG through the core's renderer; the limits are pushed down before any
+/// pixel buffer is allocated.
 ///
 /// # Errors
 ///
 /// Propagates the core decode error (missing file, unsupported format, a limit
-/// exceeded) as an [`anyhow::Error`] carrying the input path for context.
+/// exceeded) as an [`anyhow::Error`] carrying the input path for context, or a
+/// [`MissingFeature`](crate::features::MissingFeature) when this build left the
+/// format's decoder out.
 pub fn load(path: &Path, limits: &DecodeLimits) -> Result<Raster> {
-    decode_file_with_limits(path, *limits)
-        .with_context(|| format!("failed to load image {}", path.display()))
+    // Through the shared input path, so an SVG is routed to its renderer and a
+    // codec this build left out is refused naming its feature, exactly as the
+    // built-in commands do (libviprs-cli#64).
+    crate::input::decode_path(path, *limits)
 }
 
 /// Encode a raster to `path`, choosing the sink by extension and applying the

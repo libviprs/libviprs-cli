@@ -24,9 +24,38 @@ default = ["pdfium"]
 # info still work — those are pure-Rust `lopdf` paths). Enables the core
 # crate's `pdfium` feature, which is what pulls in `pdfium-render`.
 pdfium = ["libviprs/pdfium"]
+# Links PDFium statically rather than binding `libpdfium.so` at runtime. The
+# link needs a static `libpdfium.a` and `PDFIUM_STATIC_LIB_PATH` pointing at
+# it (see the pdfium-render docs), which is why it is not in `full` below.
+pdfium-static = ["pdfium", "libviprs/pdfium-static"]
 s3 = ["libviprs/s3"]
+# The injected-backend object-store seam on its own. `s3` is the core's
+# deprecated alias for it and stays here for the `s3://` sink arm, but a build
+# that wants the seam should not have to ask for S3 by name to get it.
+object-store-sink = ["libviprs/object-store-sink"]
 packfile = ["libviprs/packfile"]
 tracing = ["libviprs/tracing", "dep:tracing-subscriber", "dep:tracing"]
+# The four decoders the core keeps off by default. Without one, viprs refuses
+# that format with exit 1 and a message naming the feature to rebuild with
+# (`src/input.rs`), and `viprs features` says which ones this binary has.
+avif = ["libviprs/avif"]
+svg = ["libviprs/svg"]
+jxl = ["libviprs/jxl"]
+jp2k = ["libviprs/jp2k"]
+# Everything above except `pdfium-static`, which trades the runtime-binding
+# pdfium path for a link-time one and cannot be on for a build that has no
+# static libpdfium to link.
+full = [
+    "pdfium",
+    "s3",
+    "object-store-sink",
+    "packfile",
+    "tracing",
+    "avif",
+    "svg",
+    "jxl",
+    "jp2k",
+]
 
 [dependencies]
 anyhow = "1"
