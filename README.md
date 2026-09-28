@@ -209,7 +209,7 @@ Every codec libviprs ships has a `*save` and a `*load` command, spelled the way 
 | `jpegsave` | `--Q`, `--subsample-mode auto\|on\|off` | `jpegload` | `--shrink 1\|2\|4\|8` |
 | `pngsave` | `--compression 0-9`, `--interlace`, `--palette`, `--bitdepth` (with `--palette`) | `pngload` | |
 | `tiffsave` | `--compression none\|lzw\|deflate` | `tiffload` | `--page`, `--max-pages` |
-| `webpsave` | `--lossless` (required) | `webpload` | `--page`, `--n`, `--max-pages` |
+| `webpsave` | `--lossless` (required) | `webpload` | `--page`, `--n` |
 | `gifsave` | `--dither`, `--bitdepth`, `--interlace` | `gifload` | `--page`, `--n`, `--max-pages` |
 | `jxlsave` | `--lossless` (required) | `jxlload` | |
 | `jp2ksave` | `--lossless` (required), `--tile-width`, `--tile-height` | `jp2kload` | |

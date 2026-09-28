@@ -11,7 +11,7 @@
 //! | `jpegsave` | `--Q`, `--subsample-mode` | `jpegload` | `--shrink` |
 //! | `pngsave` | `--compression`, `--interlace`, `--palette`, `--bitdepth` | `pngload` | |
 //! | `tiffsave` | `--compression` | `tiffload` | `--page`, `--max-pages` |
-//! | `webpsave` | `--lossless` | `webpload` | `--page`, `--n`, `--max-pages` |
+//! | `webpsave` | `--lossless` | `webpload` | `--page`, `--n` |
 //! | `gifsave` | `--dither`, `--bitdepth`, `--interlace` | `gifload` | `--page`, `--n`, `--max-pages` |
 //! | `jxlsave` | `--lossless` | `jxlload` | |
 //! | `jp2ksave` | `--lossless`, `--tile-width`, `--tile-height` | `jp2kload` | |
@@ -142,34 +142,38 @@ fn lossless() -> Arg {
     )
 }
 
-fn page_args(cmd: Command, with_n: bool) -> Command {
-    let cmd = cmd
-        .arg(
-            Arg::new("page")
-                .long("page")
-                .value_name("N")
-                .value_parser(value_parser!(u32))
-                .help("First page to load, counting from 0"),
-        )
-        .arg(
+/// `--page` and `--n` for the multi-page loaders, and `--max-pages` for the
+/// two whose core decoder walks its page chain under `DecodeLimits::max_pages`
+/// (TIFF's IFD walk and GIF's frame scan). The WebP decoder does not consult
+/// it, so `webpload` does not offer a flag that would do nothing.
+fn page_args(cmd: Command, with_n: bool, with_max_pages: bool) -> Command {
+    let mut cmd = cmd.arg(
+        Arg::new("page")
+            .long("page")
+            .value_name("N")
+            .value_parser(value_parser!(u32))
+            .help("First page to load, counting from 0"),
+    );
+    if with_max_pages {
+        cmd = cmd.arg(
             Arg::new(MAX_PAGES)
                 .long(MAX_PAGES)
                 .value_name("N")
                 .value_parser(value_parser!(u32).range(1..))
                 .help("Reject a file declaring more than N pages (DecodeLimits::max_pages)"),
         );
+    }
     if with_n {
-        cmd.arg(
+        cmd = cmd.arg(
             Arg::new("n")
                 .long("n")
                 .value_name("N")
                 .allow_negative_numbers(true)
                 .value_parser(value_parser!(i32))
                 .help("Number of pages to load, -1 for every page from --page on"),
-        )
-    } else {
-        cmd
+        );
     }
+    cmd
 }
 
 /// The clap commands this family contributes.
@@ -303,9 +307,13 @@ pub fn commands() -> Vec<Command> {
                 .help("Shrink by this integer factor while loading"),
         ),
         loader("pngload", "Load a PNG image."),
-        page_args(loader("tiffload", "Load one page of a TIFF image."), false),
-        page_args(loader("webpload", "Load WebP frames."), true),
-        page_args(loader("gifload", "Load GIF frames."), true),
+        page_args(
+            loader("tiffload", "Load one page of a TIFF image."),
+            false,
+            true,
+        ),
+        page_args(loader("webpload", "Load WebP frames."), true, false),
+        page_args(loader("gifload", "Load GIF frames."), true, true),
         loader("jxlload", "Load a JPEG XL image (needs the `jxl` feature)."),
         loader(
             "jp2kload",

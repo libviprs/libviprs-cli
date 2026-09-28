@@ -586,7 +586,7 @@ differential is `libviprs-tests/tests/cli_foreign_diff.rs`.
 | `decode_bytes_with_limits` | `pngload` | EXACT | | Refuses a file without the PNG signature, as vips's does. |
 | `decode_tiff_page_with_limits` | `tiffload` | EXACT | `--page`, `--max-pages` | The loaded image carries `n-pages` (`tiff_page_count`). |
 | `decode_gif_with` | `gifload` | EXACT | `--page`, `--n`, `--max-pages` | |
-| `decode_webp_with` | `webpload` | EXACT | `--page`, `--n`, `--max-pages` | |
+| `decode_webp_with` | `webpload` | EXACT | `--page`, `--n` | No `--max-pages`: the core WebP decoder does not consult it. |
 | `decode_jxl` | `jxlload` | EXACT | | Feature `jxl`. |
 | `decode_jp2k` | `jp2kload` | EXACT | | Feature `jp2k`. |
 | `decode_avif` | `heifload` | EXACT | | Feature `avif`. AVIF only: HEIC/HEVC is a `foreign_stubs` refusal. |
