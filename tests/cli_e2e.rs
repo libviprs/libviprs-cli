@@ -1189,7 +1189,7 @@ fn help_lists_the_pmtiles_group() {
 }
 
 #[test]
-fn pmtiles_help_lists_the_four_subcommands() {
+fn pmtiles_help_lists_the_five_subcommands() {
     let out = run(&["pmtiles", "--help"]);
     assert_eq!(
         code(&out),
@@ -1198,7 +1198,7 @@ fn pmtiles_help_lists_the_four_subcommands() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for name in ["info", "tile", "verify", "extract"] {
+    for name in ["info", "tile", "verify", "extract", "pack"] {
         assert!(
             stdout.contains(name),
             "pmtiles --help must list {name}, got:\n{stdout}"
@@ -1455,6 +1455,237 @@ fn pmtiles_verify_rejects_entries_past_the_tile_data_section() {
     assert!(
         stderr.contains("tile data section"),
         "the diagnostic must name the section, got:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pmtiles_pack_round_trips_a_tree_into_the_archive_it_came_from() {
+    // `pack` is the inverse of `extract`, so packing a generated tree and
+    // extracting the result has to give the tree back, coordinate for
+    // coordinate and byte for byte.
+    //
+    // The input is deliberately NOT square. Every placement bug this command
+    // can have is a permutation of (col, row): a transposed tile id, a flipped
+    // row axis, a level base off by one. On a square grid a transposition is a
+    // permutation of the same coordinate set, so the *set* still matches and
+    // only the bytes move, and any tile that happens to be blank on both sides
+    // matches anyway. At 700x500 the grids are not square, so a transposition
+    // cannot even produce the same coordinate set. See libviprs#1118, which
+    // says a wrong plan yields a structurally perfect archive that
+    // `pmtiles verify` passes.
+    let dir = unique_dir("pack-roundtrip");
+    let png = make_input(&dir, 700, 500);
+    let tree = dir.join("tree");
+    let packed = dir.join("packed.pmtiles");
+    let unpacked = dir.join("unpacked");
+
+    assert_eq!(
+        code(&run(&[
+            "pyramid",
+            png.to_str().unwrap(),
+            tree.to_str().unwrap(),
+            "--storage",
+            "directory",
+            "--layout",
+            "xyz",
+        ])),
+        0
+    );
+
+    let out = run(&[
+        "pmtiles",
+        "pack",
+        tree.to_str().unwrap(),
+        packed.to_str().unwrap(),
+        "--width",
+        "700",
+        "--height",
+        "500",
+        "--layout",
+        "xyz",
+    ]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = run(&[
+        "pmtiles",
+        "extract",
+        packed.to_str().unwrap(),
+        unpacked.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let expected = xyz_tiles(&tree);
+    let actual = xyz_tiles(&unpacked);
+    assert!(
+        expected.len() > 1,
+        "the comparison needs more than one tile to mean anything"
+    );
+    // The control for the paragraph above: if the grid were square this test
+    // could not tell a transposition from a correct pack.
+    let widest = expected.iter().map(|(_, x, _, _)| *x).max().unwrap_or(0);
+    let tallest = expected.iter().map(|(_, _, y, _)| *y).max().unwrap_or(0);
+    assert_ne!(
+        widest, tallest,
+        "the fixture has gone square, so a transposed tile id would survive this test"
+    );
+
+    assert_eq!(
+        expected
+            .iter()
+            .map(|(z, x, y, _)| (*z, *x, *y))
+            .collect::<Vec<_>>(),
+        actual
+            .iter()
+            .map(|(z, x, y, _)| (*z, *x, *y))
+            .collect::<Vec<_>>(),
+        "pack then extract must reproduce exactly the generated coordinate set"
+    );
+    assert_eq!(expected, actual, "and the tile bytes with it");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pmtiles_pack_refuses_to_run_without_a_plan() {
+    // The CLI-level restatement of the trap. A directory of tiles does not say
+    // what its level indices mean, how big a tile is, or which layout placed
+    // it, so the command has to stop rather than pick something plausible.
+    let dir = unique_dir("pack-no-plan");
+    let png = make_input(&dir, 700, 500);
+    let tree = dir.join("tree");
+    let packed = dir.join("packed.pmtiles");
+
+    assert_eq!(
+        code(&run(&[
+            "pyramid",
+            png.to_str().unwrap(),
+            tree.to_str().unwrap(),
+            "--storage",
+            "directory",
+            "--layout",
+            "xyz",
+        ])),
+        0
+    );
+
+    let out = run(&[
+        "pmtiles",
+        "pack",
+        tree.to_str().unwrap(),
+        packed.to_str().unwrap(),
+        "--layout",
+        "xyz",
+    ]);
+    assert_ne!(code(&out), 0, "a pack with no dimensions must not succeed");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        stderr.contains("width") || stderr.contains("manifest"),
+        "the refusal must name what is missing, got:\n{stderr}"
+    );
+    assert!(
+        !packed.exists(),
+        "a refused pack must not leave an archive behind"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pmtiles_pack_reads_the_plan_from_a_manifest() {
+    // The good path: a tree written with --manifest already carries tile size,
+    // overlap, layout, format and the source dimensions, so packing it is
+    // reporting rather than guessing and needs no dimension flags at all.
+    let dir = unique_dir("pack-manifest");
+    let png = make_input(&dir, 700, 500);
+    let tree = dir.join("tree");
+    // `viprs pyramid` has no `--manifest <FILE>` flag: the manifest is emitted
+    // under a convention when checksums are asked for, both beside the tree and
+    // inside it. libviprs-cli#59 assumed a flag that does not exist.
+    let manifest = tree.join("manifest.json");
+    let packed = dir.join("packed.pmtiles");
+    let unpacked = dir.join("unpacked");
+
+    assert_eq!(
+        code(&run(&[
+            "pyramid",
+            png.to_str().unwrap(),
+            tree.to_str().unwrap(),
+            "--storage",
+            "directory",
+            "--layout",
+            "xyz",
+            "--manifest-emit-checksums",
+        ])),
+        0
+    );
+    assert!(manifest.is_file(), "the manifest must have been written");
+
+    let out = run(&[
+        "pmtiles",
+        "pack",
+        tree.to_str().unwrap(),
+        packed.to_str().unwrap(),
+        "--manifest",
+        manifest.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        code(&run(&[
+            "pmtiles",
+            "extract",
+            packed.to_str().unwrap(),
+            unpacked.to_str().unwrap(),
+        ])),
+        0
+    );
+    assert_eq!(
+        xyz_tiles(&tree),
+        xyz_tiles(&unpacked),
+        "the manifest route must land every tile where the explicit route does"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pmtiles_pack_refuses_a_manifest_and_explicit_dimensions_together() {
+    // Mutually exclusive by ArgGroup rather than by a precedence rule nobody
+    // reads. Two descriptions of one plan that disagree is the case that
+    // produces a wrong archive quietly.
+    let dir = unique_dir("pack-both");
+    let out = run(&[
+        "pmtiles",
+        "pack",
+        dir.to_str().unwrap(),
+        dir.join("packed.pmtiles").to_str().unwrap(),
+        "--manifest",
+        dir.join("manifest.json").to_str().unwrap(),
+        "--width",
+        "700",
+    ]);
+    assert_ne!(code(&out), 0, "--manifest with --width must be refused");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        stderr.contains("cannot be used with") || stderr.contains("conflict"),
+        "the refusal should come from the parser, got:\n{stderr}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

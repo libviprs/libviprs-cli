@@ -13,9 +13,10 @@ use std::time::Instant;
 use clap::{ArgGroup, Parser, ValueEnum};
 use libviprs::{
     BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
-    EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout,
-    ManifestBuilder, PmTilesSink, PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy,
-    TileFormat, extract_page_image,
+    DirectoryPyramidReader, EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink,
+    GeoCoord, GeoTransform, Layout, ManifestBuilder, ManifestV1, MigrateOptions, PmTilesSink,
+    PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy, TileFormat, extract_page_image,
+    migrate_directory_to_pmtiles,
     streaming::{BudgetPolicy, compute_strip_height, estimate_streaming_memory},
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
 };
@@ -514,6 +515,9 @@ enum PmtilesCommand {
 
     /// Unpack an archive back into a loose `{z}/{x}/{y}` tile tree.
     Extract(PmtilesExtractArgs),
+
+    /// Pack a loose `{z}/{x}/{y}` tile tree into an archive.
+    Pack(PmtilesPackArgs),
 }
 
 #[derive(Parser)]
@@ -554,6 +558,71 @@ struct PmtilesExtractArgs {
 
     /// Directory to write the `{z}/{x}/{y}.{ext}` tree into.
     output: PathBuf,
+}
+
+/// `viprs pmtiles pack`: the inverse of `extract`.
+///
+/// Every plan field is either read from a manifest or named on the command
+/// line, and the two routes are mutually exclusive so that two descriptions of
+/// one plan can never disagree. There is no third route and there must not be
+/// one: see the doc on [`run_pmtiles_pack`].
+#[derive(Parser)]
+#[command(group(
+    ArgGroup::new("plan_from_manifest")
+        .arg("manifest")
+        .conflicts_with("plan_explicit"),
+))]
+#[command(group(
+    ArgGroup::new("plan_explicit")
+        .args(["width", "height", "tile_size", "overlap", "layout", "format"])
+        .multiple(true),
+))]
+struct PmtilesPackArgs {
+    /// The `{z}/{x}/{y}` tile tree to pack.
+    input: PathBuf,
+
+    /// The `.pmtiles` archive to write.
+    archive: PathBuf,
+
+    /// Take the plan from a manifest written by `viprs pyramid --manifest`.
+    #[arg(long)]
+    manifest: Option<PathBuf>,
+
+    /// Source image width in pixels.
+    ///
+    /// Deliberately has no default. A tree cannot be packed without knowing
+    /// the grid that placed it, and a default here would be a guess wearing a
+    /// number.
+    #[arg(long)]
+    width: Option<u32>,
+
+    /// Source image height in pixels. No default, for the same reason.
+    #[arg(long)]
+    height: Option<u32>,
+
+    /// Tile size in pixels.
+    #[arg(long)]
+    tile_size: Option<u32>,
+
+    /// Tile overlap in pixels.
+    #[arg(long)]
+    overlap: Option<u32>,
+
+    /// Tile layout that placed the tree.
+    #[arg(long)]
+    layout: Option<LayoutArg>,
+
+    /// Encoding the stored tiles are in.
+    #[arg(long)]
+    format: Option<FormatArg>,
+
+    /// The tree was written with the image centred in the grid.
+    ///
+    /// Outside the manifest group on purpose: `GenerationSettings` records
+    /// tile size, overlap, layout and format but NOT centring, so a manifest
+    /// cannot answer this and a centred tree still needs to be told.
+    #[arg(long)]
+    centre: bool,
 }
 
 /// CLI representation of the checksum algorithm (maps to [`ChecksumAlgo`]).
@@ -1637,6 +1706,7 @@ fn run_pmtiles(args: PmtilesArgs) {
         PmtilesCommand::Tile(a) => run_pmtiles_tile(a),
         PmtilesCommand::Verify(a) => run_pmtiles_verify(a),
         PmtilesCommand::Extract(a) => run_pmtiles_extract(a),
+        PmtilesCommand::Pack(a) => run_pmtiles_pack(a),
     }
 }
 
@@ -1843,6 +1913,101 @@ fn run_pmtiles_extract(args: PmtilesExtractArgs) {
     }
 
     println!("Extracted {written} tiles to {}", args.output.display());
+}
+
+/// `viprs pmtiles pack <tree> <archive>`: the inverse of `extract`.
+///
+/// **This command will not guess a plan, and this is where somebody proposes a
+/// `--guess` flag.** `DirectoryPyramidReader::try_open` refuses to infer one
+/// because a directory of tiles does not say what its level indices mean, how
+/// big a tile is, or which layout placed it. Guess wrong about the layout, the
+/// level base, the tile size or the row axis and every tile lands at the wrong
+/// tile id, producing a structurally perfect archive that `viprs pmtiles
+/// verify` passes and that a round trip through our own reader cannot catch,
+/// because the reader resolves through the same wrong plan. Getting the row
+/// axis wrong flips y, and the archive looks right until it is opened over a
+/// real basemap. See libviprs#1118.
+///
+/// So the plan arrives one of two ways and they are mutually exclusive at parse
+/// time: a manifest, which is reporting rather than guessing, or the explicit
+/// flags, where `--width` and `--height` have no defaults so the command cannot
+/// run blind.
+///
+/// Three refusals come from the library rather than being restated here, so
+/// they cannot drift: a layout PMTiles cannot address by `(z, x, y)`,
+/// `TileFormat::Raw`, which has no PMTiles tile type, and any resume mode other
+/// than overwrite. An interrupted pack simply restarts: the writer stages to a
+/// temp file and renames, so a half-done archive never wears the final name.
+fn run_pmtiles_pack(args: PmtilesPackArgs) {
+    let (width, height, tile_size, overlap, layout, format) = match args.manifest.as_ref() {
+        Some(path) => {
+            let manifest = match ManifestV1::read_from(path) {
+                Ok(m) => m,
+                Err(e) => operational_error(&format!("reading {}: {e}", path.display())),
+            };
+            (
+                manifest.source.width,
+                manifest.source.height,
+                manifest.generation.tile_size,
+                manifest.generation.overlap,
+                manifest.generation.layout,
+                manifest.generation.format,
+            )
+        }
+        None => {
+            let (Some(width), Some(height)) = (args.width, args.height) else {
+                usage_error(
+                    "pack needs the grid that placed the tree, and --width/--height were not given",
+                    "pass --width and --height (plus --tile-size, --overlap, --layout and --format \
+                     if they were not the defaults), or point --manifest at the manifest \
+                     `viprs pyramid --manifest` wrote beside the tree. There is no inference here \
+                     on purpose: a wrong plan produces an archive that verifies and is still wrong",
+                );
+            };
+            let layout: Layout = args.layout.unwrap_or(LayoutArg::Xyz).into();
+            let format = match args.format.unwrap_or(FormatArg::Png) {
+                // Quality does not describe an existing tile, it describes one
+                // being encoded, and pack copies payloads through byte for
+                // byte. The library reads the tile type off this and nothing
+                // re-encodes, so the number is inert.
+                FormatArg::Jpeg => TileFormat::Jpeg { quality: 80 },
+                FormatArg::Png => TileFormat::Png,
+                FormatArg::Raw => TileFormat::Raw,
+                FormatArg::Webp => TileFormat::Webp,
+            };
+            (
+                width,
+                height,
+                args.tile_size.unwrap_or(256),
+                args.overlap.unwrap_or(0),
+                layout,
+                format,
+            )
+        }
+    };
+
+    let planner = match PyramidPlanner::new(width, height, tile_size, overlap, layout) {
+        Ok(p) => p.with_centre(args.centre),
+        Err(e) => operational_error(&format!("that plan does not describe a pyramid: {e}")),
+    };
+
+    let reader = match DirectoryPyramidReader::try_open(&args.input, planner.plan(), format) {
+        Ok(r) => r,
+        Err(e) => operational_error(&format!("opening {}: {e}", args.input.display())),
+    };
+
+    let report =
+        match migrate_directory_to_pmtiles(&reader, &args.archive, MigrateOptions::default()) {
+            Ok(r) => r,
+            Err(e) => operational_error(&format!("packing {}: {e}", args.input.display())),
+        };
+
+    println!("Wrote {}", report.out_path.display());
+    println!("  coordinates visited : {}", report.coords_visited);
+    println!("  tiles written       : {}", report.tiles_written);
+    println!("  tiles absent        : {}", report.tiles_absent);
+    println!("  distinct payloads   : {}", report.distinct_payloads);
+    println!("  tile format         : {:?}", report.tile_format);
 }
 
 // ---------------------------------------------------------------------------
