@@ -553,7 +553,8 @@ implements them.
 Not counted in the op totals above: these are containers, not image ops, and
 their oracle is a file vips wrote rather than an op vips ran. Command names and
 option names verified against `vips -l` and `vips <saver|loader> --help` on the
-author-Mac oracle `/opt/homebrew/bin/vips` **8.18.6**; core read at `8afc3ae5`
+vips **8.18.4** oracle on the native x86_64 NAS (libviprs-tests
+`tools/Dockerfile.vips-oracle`, first checked against Homebrew 8.18.6); core read at `8afc3ae5`
 (tree of `cf9e9bc1`). Every row is S1 (`<cmd> IN OUT [--flags]`), every loader
 takes the five `--max-*` limits and `-` for stdin (bar `analyzeload`), and the
 differential is `libviprs-tests/tests/cli_foreign_diff.rs`.
@@ -565,15 +566,15 @@ differential is `libviprs-tests/tests/cli_foreign_diff.rs`.
 | libviprs_fn | vips_nickname | oracle_class | options | notes |
 |---|---|---|---|---|
 | `encode_jpeg_options` | `jpegsave` | BOUNDED-TOL (6) | `--Q`, `--subsample-mode auto\|on\|off` | Not libjpeg-turbo: tol is the measured max over Q 75 / Q 95 / Q 50 4:4:4. The SOF sampling factors are asserted exactly. |
-| `encode_png` / `encode_png_interlaced` / `encode_png_palette` | `pngsave` | EXACT (palette BOUNDED-TOL 49) | `--compression`, `--interlace`, `--palette`, `--bitdepth` (with `--palette`) | `--compression` conflicts with the other two, whose core encoders fix their own deflate level. `--bitdepth` caps the palette at 2^N entries; the core writes 8-bit indices whatever N is, vips packs them. |
+| `encode_png` / `encode_png_interlaced` / `encode_png_palette` | `pngsave` | EXACT (palette BOUNDED-TOL 51) | `--compression`, `--interlace`, `--palette`, `--bitdepth` (with `--palette`) | `--compression` conflicts with the other two, whose core encoders fix their own deflate level. `--bitdepth` caps the palette at 2^N entries; the core writes 8-bit indices whatever N is, vips packs them. |
 | `save_tiff` | `tiffsave` | EXACT | `--compression none\|lzw\|deflate` | Default `none`, which is `tiffsave`'s default. |
 | `encode_webp` | `webpsave` | EXACT | `--lossless` (required) | Lossless is the only mode the core has; vips defaults to lossy, so the flag is required rather than implied. |
-| `encode_gif` | `gifsave` | BOUNDED-TOL (105; 37 at `--dither 0`) | `--dither`, `--bitdepth`, `--interlace` | Different quantiser. The colour table size and the interlace bit are asserted structurally. |
+| `encode_gif` | `gifsave` | BOUNDED-TOL (106; 37 at `--dither 0`) | `--dither`, `--bitdepth`, `--interlace` | Different quantiser. The colour table size and the interlace bit are asserted structurally. |
 | `encode_jxl` | `jxlsave` | EXACT | `--lossless` (required) | Feature `jxl`. |
 | `encode_jp2k` | `jp2ksave` | EXACT (byte compare) | `--lossless` (required), `--tile-width`, `--tile-height` | Feature `jp2k`. The core writes OpenJPEG's codestream byte for byte. |
 | `encode_fits` | `fitssave` | EXACT (byte compare) | | |
 | `encode_radiance` | `radsave` | EXACT | | Three-band float in. vips converts scRGB to sRGB before it writes, the core writes what it is given. |
-| `uhdr::encode_uhdr` | `uhdrsave` | BOUNDED-TOL (87, base image) | `--Q`, `--gainmap-scale-factor` | The core chooses its own gain map (libuhdr's tone mapping has no spec to port), so only the SDR base is compared. Non-scRGB input is converted first. |
+| `uhdr::encode_uhdr` | `uhdrsave` | BOUNDED-TOL (82, base image) | `--Q`, `--gainmap-scale-factor` | The core chooses its own gain map (libuhdr's tone mapping has no spec to port), so only the SDR base is compared. Non-scRGB input is converted first. |
 | `csv_save` | `csvsave` | EXACT (byte compare) | | One band. |
 | `matrix_save` | `matrixsave` | EXACT (byte compare) | | One band. |
 | (CLI `encode_pnm`) | `ppmsave` | EXACT (byte compare) | | The same PNM encoder `.ppm` has used since #38. |
