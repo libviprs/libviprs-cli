@@ -2,7 +2,7 @@
 //! section, `CLI_CONTRACT.md` §3/§5/§6).
 //!
 //! This lane fills the disjoint second half of the arithmetic family (part A
-//! owns statistics / const-linear / unary-rounding / hough). It contributes 20
+//! owns statistics / const-linear / unary-rounding / hough). It contributes 21
 //! `viprs` subcommands whose names, positional order, flag names, enum
 //! spellings, and input bounds mirror vips 8.18.4 exactly (verified against
 //! `vips <op>` usage). Every handler keeps the §3 `load → try_op → save` shape
@@ -16,6 +16,7 @@
 //! | `divide L R OUT`             | `divide`          | S2 | EAC | float quotient, `.v` |
 //! | `minpair L R OUT`           | `minpair`         | S2 | EXACT | format-preserving |
 //! | `maxpair L R OUT`           | `maxpair`         | S2 | EXACT | format-preserving |
+//! | `remainder L R OUT`         | `remainder`       | S2 | EXACT | integer remainder, format-preserving; `x % 0` is 0 (vips: -1) |
 //! | `sum A B [C…] OUT`          | `sum`             | S2 variadic | EAC | image array → ushort, `.v` |
 //! | `relational L R OUT OP`     | `relational`      | S2 | EXACT | enum equal\|noteq\|less\|lesseq\|more\|moreeq → 0/255 |
 //! | `relational_const IN OUT OP C`| `relational_const`| S1 | EXACT | scalar const (per-band vector is core-limited) |
@@ -53,9 +54,11 @@
 //! `read_u32`): `boolean`, `boolean_const`, `scale`, `stdif`, `recomb`,
 //! `premultiply`, `unpremultiply`. Their handlers reject a float input up front
 //! via [`reject_float`] with a typed exit-1 error rather than reaching the
-//! panic. The remaining ops are float-safe: `subtract` / `divide` /
-//! `multiply` / `minpair` / `maxpair` / `sum` and the relational family accept
-//! float (returning a typed error where they cannot), and the transcendental /
+//! panic. `remainder` refuses a float input in the core itself, as a typed
+//! error, so it needs no guard here. The remaining ops are float-safe:
+//! `subtract` / `divide` / `multiply` / `minpair` / `maxpair` / `sum` and the
+//! relational family accept float (returning a typed error where they
+//! cannot), and the transcendental /
 //! complex ops (`math` / `math2` / `complexform` / `complex` / `complexget`)
 //! take float by design.
 
@@ -104,6 +107,11 @@ pub fn metas() -> Vec<CommandMeta> {
         },
         CommandMeta {
             name: "maxpair",
+            shape: NImageToImage,
+            oracle_class: Exact,
+        },
+        CommandMeta {
+            name: "remainder",
             shape: NImageToImage,
             oracle_class: Exact,
         },
@@ -241,6 +249,10 @@ pub fn commands() -> Vec<Command> {
         ),
         binary_cmd("minpair", "Samplewise minimum of a pair of images."),
         binary_cmd("maxpair", "Samplewise maximum of a pair of images."),
+        binary_cmd(
+            "remainder",
+            "Remainder after integer division of the left image by the right.",
+        ),
         io::with_decode_limit_args(
             Command::new("sum")
                 .about("Sum an array of two or more images into one image.")
@@ -528,6 +540,7 @@ pub fn run(name: &str, m: &ArgMatches) -> Result<()> {
         "divide" => run_binary(m, Raster::try_div),
         "minpair" => run_binary(m, Raster::try_minpair),
         "maxpair" => run_binary(m, Raster::try_maxpair),
+        "remainder" => run_binary(m, Raster::try_remainder),
         "sum" => run_sum(m),
         "relational" => run_relational(m),
         "relational_const" => run_relational_const(m),
@@ -837,7 +850,7 @@ mod tests {
                 "meta {name} has no command"
             );
         }
-        assert_eq!(meta_names.len(), 20, "arith-b contributes 20 commands");
+        assert_eq!(meta_names.len(), 21, "arith-b contributes 21 commands");
     }
 
     #[test]

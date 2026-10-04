@@ -1,15 +1,17 @@
 //! Matrix op family — a per-family Wave-2 lane (`CLI_CONTRACT.md` §3/§6,
 //! `OP_MAP.md` matrix section).
 //!
-//! The core `src/matrix.rs` exposes six `pub fn` that fold to three base ops;
-//! those become **two** `viprs` subcommands here (`invertlut_size` collapses
-//! into `invertlut --size`, exactly as `OP_MAP.md` prescribes). Both are shape
-//! **S1** (`IN OUT`) and oracle class **BOUNDED-TOL**:
+//! The core `src/matrix.rs` exposes eight `pub fn` that fold to four base
+//! ops; those become **three** `viprs` subcommands here (`invertlut_size`
+//! collapses into `invertlut --size`, exactly as `OP_MAP.md` prescribes).
+//! `matrixmultiply` arrived in the core after `OP_MAP.md`'s first audit and
+//! joined in libviprs-cli#67:
 //!
 //! | command | vips | shape | oracle | notes |
 //! |---|---|---|---|---|
-//! | `matrixinvert IN.mat OUT`      | `matrixinvert` | S1 | BOUNDED-TOL | dense inverse of a square matrix |
+//! | `matrixinvert IN.mat OUT`      | `matrixinvert` | S1 | EXACT-AFTER-CAST | dense inverse of a square matrix |
 //! | `invertlut IN.mat OUT --size`  | `invertlut`    | S1 | BOUNDED-TOL | inverse LUT from measured `(x, f(x))` rows |
+//! | `matrixmultiply LEFT.mat RIGHT.mat OUT` | `matrixmultiply` | S2 | EXACT-AFTER-CAST | dense product, `LEFT` width = `RIGHT` height |
 //!
 //! # A matrix-in / matrix-out family, not an image one
 //!
@@ -23,8 +25,9 @@
 //!
 //! # Carrier & oracle (BOUNDED-TOL, f32 not f64)
 //!
-//! Both ops produce a **float matrix** (`matrixinvert` → `Interpretation::Matrix`,
-//! `invertlut` → `Interpretation::Histogram`), written to the native `.v`
+//! Every op produces a **float matrix** (`matrixinvert` and `matrixmultiply`
+//! → `Interpretation::Matrix`, `invertlut` → `Interpretation::Histogram`),
+//! written to the native `.v`
 //! container. The core computes in `f64` but stores results as **`f32`**
 //! (libvips stores `double`), so the differential compares f32-viprs against the
 //! vips double result **cast to float** (`vips cast … float`) — the libviprs
@@ -38,8 +41,8 @@
 //! # No panics on user input
 //!
 //! Every handler calls only fallible core APIs (`try_from_matrix`,
-//! `try_matrixinvert`, `try_invertlut_size`); a singular / non-square /
-//! out-of-range / bad-size matrix becomes a typed exit-1 error rather than a
+//! `try_matrixinvert`, `try_invertlut_size`, `try_matrixmultiply`); a
+//! singular / non-square / out-of-range / bad-size / shape-mismatched matrix becomes a typed exit-1 error rather than a
 //! `#[track_caller]` panic (`CLI_CONTRACT.md` §8). Clap enforces the vips
 //! `--size` bound (`1..=1000000`) at parse time; the i64→u32 narrowing that
 //! follows is a typed error, never an unchecked cast.
@@ -50,6 +53,9 @@
 // @doc-command:begin name=invertlut about="Build an inverse look-up table from a matrix of measured (x, f(x)) rows." \
 //     slot-order=load,apply,save imports-base=decode_file,save_file
 // @doc-command:end name=invertlut
+// @doc-command:begin name=matrixmultiply about="Multiply two matrices read from vips text-matrix files." \
+//     slot-order=load,apply,save imports-base=decode_file,save_file
+// @doc-command:end name=matrixmultiply
 
 use std::path::{Path, PathBuf};
 
@@ -76,6 +82,13 @@ pub fn metas() -> Vec<CommandMeta> {
             name: "invertlut",
             shape: Shape::ImageToImage,
             oracle_class: OracleClass::BoundedTol,
+        },
+        CommandMeta {
+            // The core sums in f64 and stores f32, vips stores double: the
+            // compare is against the vips result cast to float.
+            name: "matrixmultiply",
+            shape: Shape::NImageToImage,
+            oracle_class: OracleClass::ExactAfterCast,
         },
     ]
 }
@@ -123,6 +136,25 @@ pub fn commands() -> Vec<Command> {
                     .value_parser(value_parser!(i64).range(1..=1_000_000))
                     .help("LUT size to generate (vips range 1..=1000000, default 256)"),
             ),
+        Command::new("matrixmultiply")
+            .about("Multiply two matrices read from vips text-matrix files.")
+            .arg(
+                Arg::new("LEFT")
+                    .required(true)
+                    .value_name("LEFT.mat")
+                    .help("Left matrix as a vips text-matrix file"),
+            )
+            .arg(
+                Arg::new("RIGHT")
+                    .required(true)
+                    .value_name("RIGHT.mat")
+                    .help("Right matrix (its height must equal LEFT's width)"),
+            )
+            .arg(
+                Arg::new("OUT")
+                    .required(true)
+                    .help("Output matrix path (use .v: a float matrix carrier)"),
+            ),
     ]
 }
 
@@ -131,6 +163,7 @@ pub fn run(name: &str, m: &ArgMatches) -> Result<()> {
     match name {
         "matrixinvert" => run_matrixinvert(m),
         "invertlut" => run_invertlut(m),
+        "matrixmultiply" => run_matrixmultiply(m),
         other => bail!("matrix family has no command {other:?}"),
     }
 }
@@ -201,6 +234,27 @@ fn run_invertlut(m: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
+/// `matrixmultiply LEFT.mat RIGHT.mat OUT`: S2, dense matrix product.
+fn run_matrixmultiply(m: &ArgMatches) -> Result<()> {
+    let left_path = PathBuf::from(pos(m, "LEFT"));
+    let right_path = PathBuf::from(pos(m, "RIGHT"));
+    let out_path = PathBuf::from(pos(m, "OUT"));
+
+    // @doc-snippet:begin command=matrixmultiply slot=load imports=decode_file
+    let left = load_matrix(&left_path)?;
+    let right = load_matrix(&right_path)?;
+    // @doc-snippet:end command=matrixmultiply slot=load
+
+    // @doc-snippet:begin command=matrixmultiply slot=apply
+    let out = left.try_matrixmultiply(&right)?;
+    // @doc-snippet:end command=matrixmultiply slot=apply
+
+    // @doc-snippet:begin command=matrixmultiply slot=save imports=save_file
+    io::save(&out, &out_path)?;
+    // @doc-snippet:end command=matrixmultiply slot=save
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,7 +280,7 @@ mod tests {
             );
         }
         assert_eq!(cmd_names.len(), meta_names.len());
-        assert_eq!(meta_names.len(), 2, "the matrix family has two commands");
+        assert_eq!(meta_names.len(), 3, "the matrix family has three commands");
     }
 
     #[test]
@@ -298,5 +352,20 @@ mod tests {
         for &s in &[1_i64, 256, 65536, 1_000_000] {
             assert!(u32::try_from(s).is_ok(), "size {s} must narrow to u32");
         }
+    }
+
+    #[test]
+    fn matrixmultiply_takes_left_right_then_out() {
+        let m = cmd("matrixmultiply")
+            .try_get_matches_from(["matrixmultiply", "a.mat", "b.mat", "out.v"])
+            .unwrap();
+        assert_eq!(pos(&m, "LEFT"), "a.mat");
+        assert_eq!(pos(&m, "RIGHT"), "b.mat");
+        assert_eq!(pos(&m, "OUT"), "out.v");
+        assert!(
+            cmd("matrixmultiply")
+                .try_get_matches_from(["matrixmultiply", "a.mat", "out.v"])
+                .is_err()
+        );
     }
 }
