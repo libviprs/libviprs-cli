@@ -49,6 +49,25 @@ pub fn decode_path(path: &Path, limits: DecodeLimits) -> Result<Raster> {
     raster.with_context(|| format!("failed to load image {}", path.display()))
 }
 
+/// [`decode_path`] under the core's default limits, for the built-ins that
+/// take no `--max-*` flags.
+///
+/// # Errors
+///
+/// As [`decode_path`].
+pub fn decode_path_default(path: &Path) -> Result<Raster> {
+    decode_path(path, DecodeLimits::default())
+}
+
+/// [`decode_bytes`] under the core's default limits.
+///
+/// # Errors
+///
+/// As [`decode_bytes`].
+pub fn decode_bytes_default(bytes: &[u8]) -> Result<Raster> {
+    decode_bytes(bytes, DecodeLimits::default())
+}
+
 /// Decode an in-memory image (the `pyramid -` stdin path) under `limits`.
 ///
 /// # Errors

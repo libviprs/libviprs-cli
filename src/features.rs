@@ -39,12 +39,20 @@ pub fn compiled() -> Vec<&'static str> {
         .collect()
 }
 
+/// Arguments of `viprs features`.
+#[derive(clap::Parser)]
+pub struct FeaturesArgs {
+    /// Print `{"features": [...]}` instead of one name per line.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// `viprs features [--json]`: one feature per line, or
 /// `{"features": [...]}` with `--json`. Always exits 0; an empty list is a
 /// valid answer for a `--no-default-features` build.
-pub fn run(json: bool) {
+pub fn run(args: FeaturesArgs) {
     let features = compiled();
-    if json {
+    if args.json {
         println!("{}", serde_json::json!({ "features": features }));
     } else {
         for name in features {

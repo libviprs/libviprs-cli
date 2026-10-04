@@ -11,7 +11,6 @@ use std::process;
 use std::time::Instant;
 
 use clap::{ArgGroup, Parser, ValueEnum};
-use libviprs::source::DecodeLimits;
 use libviprs::{
     BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
     EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout,
@@ -97,7 +96,7 @@ enum Command {
     ///
     /// A format whose feature is missing is refused with a message naming the
     /// feature to rebuild with; this is how to check before trying.
-    Features(FeaturesArgs),
+    Features(features::FeaturesArgs),
 }
 
 #[derive(Parser)]
@@ -444,13 +443,6 @@ struct PlanArgs {
 }
 
 #[derive(Parser)]
-struct FeaturesArgs {
-    /// Print `{"features": [...]}` instead of one name per line.
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Parser)]
 struct TestImageArgs {
     /// Output image file path.
     output: PathBuf,
@@ -696,7 +688,7 @@ fn main() {
                 Command::Plan(args) => run_plan(args),
                 Command::TestImage(args) => run_test_image(args),
                 Command::Pmtiles(args) => run_pmtiles(args),
-                Command::Features(args) => features::run(args.json),
+                Command::Features(args) => features::run(args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
@@ -1970,7 +1962,7 @@ fn run_info(args: InfoArgs) {
             }
         }
     } else {
-        match input::decode_path(path, DecodeLimits::default()) {
+        match input::decode_path_default(path) {
             Ok(raster) => {
                 println!("Image: {}", path.display());
                 println!("Dimensions: {}x{}", raster.width(), raster.height());
@@ -2121,7 +2113,7 @@ fn resolve_plan_dimensions(args: &PlanArgs) -> (u32, u32) {
             }
         }
     } else {
-        match input::decode_path(&path, DecodeLimits::default()) {
+        match input::decode_path_default(&path) {
             Ok(raster) => (raster.width(), raster.height()),
             Err(e) => {
                 eprintln!("Error reading image: {e:#}");
@@ -2140,7 +2132,7 @@ fn load_source(args: &PyramidArgs) -> Raster {
             eprintln!("Error reading stdin: {e}");
             process::exit(1);
         }
-        match input::decode_bytes(&buf, DecodeLimits::default()) {
+        match input::decode_bytes_default(&buf) {
             Ok(r) => return r,
             Err(e) => {
                 eprintln!("Error decoding image from stdin: {e:#}");
@@ -2267,7 +2259,7 @@ fn load_source(args: &PyramidArgs) -> Raster {
         }
     } else {
         eprintln!("Decoding {}...", path.display());
-        match input::decode_path(&path, DecodeLimits::default()) {
+        match input::decode_path_default(&path) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Error decoding image: {e:#}");

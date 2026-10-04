@@ -58,7 +58,15 @@ jobs:
       - run: cargo clippy --all-targets --features jxl -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features jp2k -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features object-store-sink -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      # The core compiles out the only caller of its `resolve_pdfium_path` under
+      # `pdfium-static`, so the job-wide `RUSTFLAGS: -Dwarnings` makes the core
+      # itself fail with dead_code before this crate is even checked. Clearing
+      # it for this one cell keeps `-D warnings` on the flags after `--`, which
+      # clippy applies to this crate only. Drop the override once the core
+      # gates that function on `not(pdfium-static)` too.
       - run: cargo clippy --all-targets --features pdfium-static -- -D warnings -W clippy::incompatible_msrv -W deprecated
+        env:
+          RUSTFLAGS: ''
       - run: cargo clippy --all-targets --features full -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --no-default-features -- -D warnings -W clippy::incompatible_msrv -W deprecated
 
