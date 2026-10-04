@@ -26,23 +26,25 @@
 //!
 //! # Passwords
 //!
-//! `libviprs::extract_page_image_with_password` and `pdf_info_with_password`
-//! do not decrypt: for an encrypted file and a non-empty password they return
-//! an "is not available in this build" error. This module passes the password
-//! through and prints that error, so a protected file still exits 1 and the
-//! message is the library's own. What the library has no way to tell the
-//! caller is that a document is encrypted when no password is given at all
-//! (the empty password short-circuits), so [`require_password_if_encrypted`]
-//! asks `lopdf` directly for that one fact. When core grows a decryption path
-//! the pass-through starts working with no change here.
+//! `libviprs::pdf_info_with_password` and `extract_page_image_with_password`
+//! open an encrypted file through pdfium. They answer an empty password with
+//! `PdfError::PasswordRequired` and a wrong one with `PdfError::WrongPassword`,
+//! and this module turns those two into the messages a person sees. Without a
+//! `--password` the same calls are made with an empty one, which is how a
+//! document that is encrypted gets reported as needing a password at all. The
+//! error comes back folded into an `io::Error` on the extract path, so
+//! [`pdf_error_in`] looks for the `PdfError` inside the chain rather than
+//! matching on text. A build without the `pdfium` feature cannot decrypt, so
+//! there the library's own "not available in this build" is what gets printed.
 
 use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+use libviprs::pdf::PdfError;
 use libviprs::{
-    GeoCoord, GeoTransform, Layout, PixelCoord, PixelFormat, PyramidPlan, extract_page_image,
-    extract_page_image_with_background, extract_page_image_with_password, pdf_info,
-    pdf_info_with_password, planner::TileCoord,
+    GeoCoord, GeoTransform, Layout, PixelCoord, PixelFormat, PyramidPlan,
+    extract_page_image_with_background, extract_page_image_with_password, pdf_info_with_password,
+    planner::TileCoord,
 };
 
 use crate::{operational_error, ops, usage_error};
@@ -141,22 +143,42 @@ pub fn run_pdf(args: PdfArgs) {
     }
 }
 
-/// Exit 1 with "a password is needed" when `path` is encrypted and no password
-/// was given. See the module docs for why this asks `lopdf` rather than core.
-fn require_password_if_encrypted(path: &Path, password: Option<&str>) {
-    if password.is_some() {
-        return;
+/// Find a [`PdfError`] in `err`, either as the error itself or anywhere down
+/// its source chain, including inside the `io::Error` that core wraps it in.
+///
+/// `io::Error::source` skips the error it wraps, so each link is also asked
+/// through `get_ref` for the wrapped value.
+fn pdf_error_in<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a PdfError> {
+    let mut current = Some(err);
+    while let Some(e) = current {
+        if let Some(pdf) = e.downcast_ref::<PdfError>() {
+            return Some(pdf);
+        }
+        if let Some(inner) = e
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            && let Some(pdf) = pdf_error_in(inner)
+        {
+            return Some(pdf);
+        }
+        current = e.source();
     }
-    // A file that does not load is not this function's finding to report: the
-    // library call that follows reads it again and says why in its own words.
-    let Ok(doc) = lopdf::Document::load(path) else {
-        return;
-    };
-    if doc.is_encrypted() {
-        operational_error(&format!(
+    None
+}
+
+/// Exit 1 for a failed PDF call. A missing password and a wrong one get their
+/// own messages; anything else keeps `context` and the library's wording.
+fn pdf_failure(context: &str, path: &Path, err: &(dyn std::error::Error + 'static)) -> ! {
+    match pdf_error_in(err) {
+        Some(PdfError::PasswordRequired) => operational_error(&format!(
             "{} is encrypted and a password is needed (pass --password)",
             path.display()
-        ));
+        )),
+        Some(PdfError::WrongPassword) => operational_error(&format!(
+            "wrong password for {} (the --password given does not open it)",
+            path.display()
+        )),
+        _ => operational_error(&format!("{context}: {err}")),
     }
 }
 
@@ -168,11 +190,8 @@ fn require_file(path: &Path) {
 
 fn run_pdf_info(args: PdfInfoArgs) {
     require_file(&args.input);
-    require_password_if_encrypted(&args.input, args.password.as_deref());
-    let info = match args.password.as_deref() {
-        Some(pw) => pdf_info_with_password(&args.input, pw),
-        None => pdf_info(&args.input),
-    };
+    // An empty password is how the library is asked "is this one locked?".
+    let info = pdf_info_with_password(&args.input, args.password.as_deref().unwrap_or(""));
     match info {
         Ok(info) => {
             println!("PDF: {}", args.input.display());
@@ -187,7 +206,11 @@ fn run_pdf_info(args: PdfInfoArgs) {
                 );
             }
         }
-        Err(e) => operational_error(&format!("reading {}: {e}", args.input.display())),
+        Err(e) => pdf_failure(
+            &format!("reading {}", args.input.display()),
+            &args.input,
+            &e,
+        ),
     }
 }
 
@@ -226,7 +249,6 @@ fn parse_background(text: &str) -> Vec<f64> {
 
 fn run_pdf_extract(args: PdfExtractArgs) {
     require_file(&args.input);
-    require_password_if_encrypted(&args.input, args.password.as_deref());
 
     // Parsed before anything is rendered, so a bad value writes nothing.
     let background = args.background.as_deref().map(parse_background);
@@ -238,15 +260,16 @@ fn run_pdf_extract(args: PdfExtractArgs) {
 
     let raster = if let Some(bg) = background {
         extract_page_image_with_background(&args.input, page_u32, &bg)
-            .unwrap_or_else(|e| operational_error(&format!("rendering with a background: {e}")))
+            .unwrap_or_else(|e| pdf_failure("rendering with a background", &args.input, &e))
     } else if let Some(dpi) = args.dpi {
         render_at_dpi(&args.input, args.page, dpi, args.render_budget)
-    } else if let Some(pw) = args.password.as_deref() {
-        extract_page_image_with_password(&args.input, page_u32, pw)
-            .unwrap_or_else(|e| operational_error(&format!("extracting with a password: {e}")))
     } else {
-        extract_page_image(&args.input, args.page)
-            .unwrap_or_else(|e| operational_error(&format!("extracting page {}: {e}", args.page)))
+        // With no --password this asks with an empty one, so an encrypted file
+        // is reported as needing a password instead of failing on its streams.
+        let pw = args.password.as_deref().unwrap_or("");
+        extract_page_image_with_password(&args.input, page_u32, pw).unwrap_or_else(|e| {
+            pdf_failure(&format!("extracting page {}", args.page), &args.input, &e)
+        })
     };
 
     if let Err(e) = ops::io::save(&raster, &args.output) {

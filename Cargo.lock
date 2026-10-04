@@ -1283,7 +1283,6 @@ dependencies = [
  "anyhow",
  "clap",
  "libviprs",
- "lopdf",
  "serde_json",
  "tracing",
  "tracing-subscriber",

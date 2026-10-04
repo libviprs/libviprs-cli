@@ -253,7 +253,7 @@ Some things vips has are not here because the library itself refuses them: JPEG 
 
 ### `viprs pdf`
 
-`viprs pdf info FILE` lists pages and sizes, `viprs pdf rotation FILE --page N` prints a page's `/Rotate`, and `viprs pdf extract FILE OUT` writes one page as an image. With no render option `extract` pulls the page's largest embedded image at its stored size. `--dpi`, `--background R,G,B[,A]` and `--render-budget PIXELS` render through PDFium instead, so they need a default-features build and a libpdfium (see below). `--password` goes to the library as is, but the library does not decrypt yet: an encrypted file with no password exits 1 saying a password is needed, and with one it exits 1 with the library's own "not available in this build".
+`viprs pdf info FILE` lists pages and sizes, `viprs pdf rotation FILE --page N` prints a page's `/Rotate`, and `viprs pdf extract FILE OUT` writes one page as an image. With no render option `extract` pulls the page's largest embedded image at its stored size. `--dpi`, `--background R,G,B[,A]` and `--render-budget PIXELS` render through PDFium instead, so they need a default-features build and a libpdfium (see below). `--password` opens an encrypted file through PDFium, so like the render options it needs a default-features build and a libpdfium. An encrypted file with no password exits 1 saying it is encrypted and a password is needed (pass `--password`), and a wrong one exits 1 saying "wrong password". Both messages come from the library's typed errors, not from the CLI inspecting the file. A build without PDFium cannot decrypt, so there an encrypted file gets the library's own "not available in this build".
 
 ### `viprs geo`
 
