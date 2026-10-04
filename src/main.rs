@@ -47,6 +47,9 @@ mod features;
 /// and the missing-feature refusal (libviprs-cli#64).
 mod input;
 
+/// `viprs pdf`, `viprs geo` and the planner query flags (#68).
+mod pdf_geo_plan;
+
 /// Upper bound, in megabytes, accepted for `--memory-limit` and
 /// `--memory-budget`. Values above this are rejected at parse time. The cap is
 /// 16 Ti MB, so the byte conversion (`mb * 1024 * 1024`) tops out at 2^54,
@@ -103,6 +106,12 @@ enum Command {
     /// A format whose feature is missing is refused with a message naming the
     /// feature to rebuild with; this is how to check before trying.
     Features(features::FeaturesArgs),
+
+    /// Inspect a PDF and extract one page, with a password, background, DPI or budget.
+    Pdf(pdf_geo_plan::PdfArgs),
+
+    /// Map pixels to geographic positions and back, and find tile centres.
+    Geo(pdf_geo_plan::GeoArgs),
 }
 
 #[derive(Parser)]
@@ -204,11 +213,11 @@ struct PyramidArgs {
     buffer_size: usize,
 
     /// Geo-reference origin as "longitude,latitude" (top-left pixel).
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     geo_origin: Option<String>,
 
     /// Geo-reference pixel scale as "scale_x,scale_y" (degrees per pixel).
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     geo_scale: Option<String>,
 
     /// Use PDFium for PDF rendering (required for vector PDFs).
@@ -446,6 +455,9 @@ struct PlanArgs {
     /// Centre the image within the tile grid (even padding on all sides).
     #[arg(long)]
     centre: bool,
+
+    #[command(flatten)]
+    queries: pdf_geo_plan::PlanQueryArgs,
 }
 
 #[derive(Parser)]
@@ -467,6 +479,8 @@ enum LayoutArg {
     DeepZoom,
     Xyz,
     Google,
+    Zoomify,
+    Iiif,
 }
 
 impl From<LayoutArg> for Layout {
@@ -475,6 +489,8 @@ impl From<LayoutArg> for Layout {
             LayoutArg::DeepZoom => Layout::DeepZoom,
             LayoutArg::Xyz => Layout::Xyz,
             LayoutArg::Google => Layout::Google,
+            LayoutArg::Zoomify => Layout::Zoomify,
+            LayoutArg::Iiif => Layout::Iiif,
         }
     }
 }
@@ -758,7 +774,10 @@ fn main() {
     let matches = ops::assembled_cli().get_matches();
 
     match matches.subcommand() {
-        Some(("pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features", _)) => {
+        Some((
+            "pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features" | "pdf" | "geo",
+            _,
+        )) => {
             let cli = Cli::from_arg_matches(&matches)
                 .expect("a built-in subcommand deserializes through the derive Cli");
             match cli.command {
@@ -768,6 +787,8 @@ fn main() {
                 Command::TestImage(args) => run_test_image(args),
                 Command::Pmtiles(args) => run_pmtiles(args),
                 Command::Features(args) => features::run(args),
+                Command::Pdf(args) => pdf_geo_plan::run_pdf(args),
+                Command::Geo(args) => pdf_geo_plan::run_geo(args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
@@ -2577,6 +2598,10 @@ fn run_plan(args: PlanArgs) {
         }
     };
     let plan = planner.plan();
+    if args.queries.is_query() {
+        pdf_geo_plan::run_plan_query(&args.queries, &plan, layout);
+        return;
+    }
 
     let peak_memory = planner.estimate_peak_memory();
     let (canvas_w, canvas_h) = planner.canvas_dimensions();

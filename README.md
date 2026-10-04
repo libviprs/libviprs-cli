@@ -154,6 +154,16 @@ Size: 36.0 MB
 
 Preview the pyramid layout (level count, tile counts, output bytes) without writing tiles. See the [plan command page](https://libviprs.org/cli/#plan) for flags and example output.
 
+`plan` also answers one planner question at a time and prints only the answer, so it can be captured as is:
+
+```bash
+viprs plan 5000 --height 3000 --estimate-memory 256              # streaming peak memory in bytes for a 256 row strip
+viprs plan 5000 --height 3000 --dzi-manifest png                 # the .dzi XML (deep-zoom only)
+viprs plan 5000 --height 3000 --layout zoomify --properties-sidecar png   # ImageProperties.xml (zoomify) or info.json (iiif)
+viprs plan 5000 --height 3000 --tile-path 13,3,2 --tile-ext jpg  # where one tile goes, as LEVEL,COL,ROW
+viprs plan 5000 --height 3000 --overlap 4 --tile-rect 13,3,2     # x,y,width,height that tile reads from
+```
+
 ### [`viprs test-image`](https://libviprs.org/cli/#test-image)
 
 Generate synthetic test images (gradients, checkerboards, noise) for benchmarking and fixture creation. See the [test-image command page](https://libviprs.org/cli/#test-image) for flags and example output.
@@ -240,6 +250,14 @@ Every loader takes the five `--max-*` decode limits, and `-` reads the image fro
 The op commands also pick the encoder from the output extension, so `viprs copy in.png out.webp` works for `.webp`, `.gif`, `.jxl`, `.jp2`, `.fits`, `.hdr`, `.csv` and `.mat` as well as `.png`, `.tif`, `.ppm` and `.v`. `.jpg` is the exception: it stays banned there, because those commands are the ones the vips differential suite compares, and `jpegsave` is the way to write one.
 
 Some things vips has are not here because the library itself refuses them: JPEG restart markers, tiled, BigTIFF and multi-page TIFF writing, and HEIF/HEIC, OpenSlide, ImageMagick and `dzsave`. `OP_MAP.md` says why for each.
+
+### `viprs pdf`
+
+`viprs pdf info FILE` lists pages and sizes, `viprs pdf rotation FILE --page N` prints a page's `/Rotate`, and `viprs pdf extract FILE OUT` writes one page as an image. With no render option `extract` pulls the page's largest embedded image at its stored size. `--dpi`, `--background R,G,B[,A]` and `--render-budget PIXELS` render through PDFium instead, so they need a default-features build and a libpdfium (see below). `--password` goes to the library as is, but the library does not decrypt yet: an encrypted file with no password exits 1 saying a password is needed, and with one it exits 1 with the library's own "not available in this build".
+
+### `viprs geo`
+
+`viprs geo pixel-to-geo X Y`, `geo-to-pixel X Y` and `tile-center COL ROW --tile-size N` map points through a transform given as `--geo-origin X,Y --geo-scale X,Y` (the same pair `viprs pyramid` takes) or as the six affine coefficients `--affine a,b,c,d,e,f`. Each prints `x,y`; `geo-to-pixel` exits 1 for a transform that cannot be inverted.
 
 ## PDF Handling
 
