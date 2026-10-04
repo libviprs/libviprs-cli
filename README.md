@@ -131,6 +131,25 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | [`--geo-scale`](https://libviprs.org/cli/#flag-geo-scale) | | Pixel scale as `"sx,sy"` (degrees/pixel) |
 | [`--render`](https://libviprs.org/cli/#flag-render) | off | Use PDFium for vector PDF rendering |
 
+#### Pipeline controls
+
+`--layout` picks the pyramid scheme. It is not `--pmtiles-layout`, which only decides where the tile bytes sit inside an archive.
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--pmtiles-layout tile-id\|arrival` | archive | `tile-id` (default) sorts at the end and is always clustered; `arrival` writes every byte once, in the order tiles came |
+| `--ordered-emission` | archive | Emit tiles in tile id order, so an `arrival` archive is byte-identical to the `tile-id` one |
+| `--dedupe-memory-bytes N` | archive | Writer's duplicate-tile window, about 65 bytes a tile; below 520 is refused |
+| `--resume` / `--checkpoint-every N` / `--checkpoint-root DIR` | tree | Pick up an interrupted run; checkpoint every 1000 tiles by default |
+| `--retries N` / `--retry-backoff-ms MS` / `--fail-fast` | all | Retry failed writes, then skip and count the tile, or abort with `--fail-fast` |
+| `--checksum` / `--manifest-source-hash` | tree | Per-tile checksums (re-hashed before the run succeeds) and the source digest, in `manifest.json` |
+| `--region x,y,w,h` | all | Crop, then pyramid |
+| `--skip-blanks` | all | Leave blank tiles out altogether (`--skip-blank` writes a placeholder per blank tile instead) |
+| `--events none\|text\|json` | all | One line per engine event on stdout |
+| `--sink s3://bucket/prefix --object-store-root DIR` | object store | Needs the `s3` feature; writes through a local stub store, since this build has no network transport |
+
+Ctrl-C stops a run at the next tile and exits 130. A tile tree it leaves behind finishes with the same command plus `--resume`, to exactly the bytes an uninterrupted run writes.
+
 See the [pyramid command page](https://libviprs.org/cli/#pyramid) for the complete flag list (including `--memory-budget` and other tuning knobs) and an interactive Rust program generator.
 
 ### [`viprs info`](https://libviprs.org/cli/#info)
@@ -275,6 +294,21 @@ The password comes from, in order:
 ### `viprs geo`
 
 `viprs geo pixel-to-geo X Y`, `geo-to-pixel X Y` and `tile-center COL ROW --tile-size N` map points through a transform given as `--geo-origin X,Y --geo-scale X,Y` (the same pair `viprs pyramid` takes, through the same parser) or as the six affine coefficients `--affine a,b,c,d,e,f`. Each prints `x,y`; `geo-to-pixel` exits 1 for a transform that cannot be inverted. A value that isn't a finite number (NaN, `inf`, or something like `1e400` that overflows) is a usage error, exit 2, on `geo` and `pyramid` alike.
+
+### `viprs verify`
+
+Check a finished pyramid and name any tile that is missing or damaged. Exit 0 with a summary, or exit 1 with one line per bad tile.
+
+```bash
+# An archive: plan, structure, every tile present and decoded
+viprs verify blueprint.pmtiles
+
+# A tree written with --checksum: every tile against its recorded checksum
+viprs verify tiles/
+
+# Re-render from the input and compare (byte for byte for --format raw trees)
+viprs verify tiles/ --source blueprint.png
+```
 
 ## PDF Handling
 

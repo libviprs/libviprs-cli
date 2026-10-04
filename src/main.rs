@@ -50,6 +50,11 @@ mod input;
 /// `viprs pdf`, `viprs geo` and the planner query flags (#68).
 mod pdf_geo_plan;
 
+/// The pipeline controls on `viprs pyramid`, and `viprs verify`
+/// (libviprs-cli#66).
+mod pipeline;
+mod verify;
+
 /// Upper bound, in megabytes, accepted for `--memory-limit` and
 /// `--memory-budget`. Values above this are rejected at parse time. The cap is
 /// 16 Ti MB, so the byte conversion (`mb * 1024 * 1024`) tops out at 2^54,
@@ -112,6 +117,9 @@ enum Command {
 
     /// Map pixels to geographic positions and back, and find tile centres.
     Geo(pdf_geo_plan::GeoArgs),
+    /// Check a finished pyramid (a PMTiles archive or a tile tree) and name
+    /// any tile that is missing or damaged.
+    Verify(verify::VerifyArgs),
 }
 
 #[derive(Parser)]
@@ -120,7 +128,7 @@ enum Command {
     ArgGroup::new("checksums")
         .required(false)
         .multiple(true)
-        .args(["manifest_emit_checksums", "dedupe_all"]),
+        .args(["manifest_emit_checksums", "dedupe_all", "checksum"]),
 ))]
 struct PyramidArgs {
     /// Input file (PDF, PNG, JPEG, or TIFF). Use "-" for stdin.
@@ -157,6 +165,11 @@ struct PyramidArgs {
     /// usage error rather than a silent reinterpretation: a Deep Zoom tier is
     /// not a slippy zoom, and an archive built from one is addressable but
     /// renders as nonsense in every PMTiles viewer.
+    ///
+    /// This is not the PMTiles layout. It picks the pyramid scheme, which
+    /// decides what a tile is and how it is addressed; `--pmtiles-layout`
+    /// picks where the tile bytes sit inside an archive, and is a different
+    /// setting altogether.
     ///
     /// See also: [interactive example](https://libviprs.org/cli/#flag-layout).
     #[arg(long)]
@@ -415,6 +428,9 @@ struct PyramidArgs {
     /// See also: [interactive example](https://libviprs.org/cli/#flag-dedupe-all).
     #[arg(long, conflicts_with = "dedupe_blanks", help_heading = "Dedupe")]
     dedupe_all: bool,
+
+    #[command(flatten)]
+    pipeline: pipeline::PipelineArgs,
 }
 
 #[derive(Parser)]
@@ -772,7 +788,8 @@ fn main() {
 
     match matches.subcommand() {
         Some((
-            "pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features" | "pdf" | "geo",
+            "pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features" | "pdf" | "geo"
+            | "verify",
             _,
         )) => {
             let cli = Cli::from_arg_matches(&matches)
@@ -786,6 +803,7 @@ fn main() {
                 Command::Features(args) => features::run(args),
                 Command::Pdf(args) => pdf_geo_plan::run_pdf(args),
                 Command::Geo(args) => pdf_geo_plan::run_geo(args),
+                Command::Verify(args) => verify::run(args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
@@ -1063,6 +1081,9 @@ fn maybe_init_tracing(level: &Option<String>) {
 }
 
 fn run_pyramid(args: PyramidArgs) {
+    if pipeline::takes_over(&args) {
+        return pipeline::run(args);
+    }
     let start = Instant::now();
 
     // Resolve every flag combination before the input is touched. A usage error
@@ -2977,14 +2998,21 @@ mod tests {
     }
 
     #[test]
-    fn help_does_not_advertise_s3() {
-        // The s3:// sink is a compiled-in stub, so the help must not advertise
-        // an `s3://` scheme users cannot actually use.
+    fn help_mentions_s3_only_beside_the_feature_it_needs() {
+        // The s3:// sink was a compiled-in stub, and this test used to forbid
+        // the help from mentioning it at all. It writes through the local stub
+        // store now (libviprs-cli#66), but only in a build with the `s3`
+        // feature, so the help may name the scheme only where it also names
+        // that feature.
         use clap::CommandFactory;
         let help = PyramidArgs::command().render_long_help().to_string();
+        let mentions: Vec<&str> = help
+            .split("\n\n")
+            .filter(|para| para.contains("s3://"))
+            .collect();
         assert!(
-            !help.contains("s3://"),
-            "help text must not advertise the unimplemented s3:// sink scheme, got:\n{help}"
+            mentions.iter().all(|para| para.contains("`s3` feature")),
+            "every help paragraph naming s3:// must say it needs the `s3` feature, got:\n{help}"
         );
     }
 
