@@ -6,10 +6,16 @@
 >
 > **Provenance**: every `vips_nickname` below was verified against the author-Mac
 > oracle `/opt/homebrew/bin/vips` **8.18.4** (`vips -l` + `vips <op> --help`,
-> 2026-07-19). libviprs public surface read at core commit `4629599`
-> (all `pub fn` in `src/{arithmetic,composite,resample,resize,colour,draw,bands,
+> 2026-07-19). libviprs public surface first read at core commit `4629599`
+> (2026-07-19) and **re-audited at core commit `8afc3ae5`** (libviprs `main`,
+> the tree of the 0.5.0 tag `cf9e9bc1`) on 2026-10-04 for libviprs-cli#67:
+> all `pub fn` in `src/{arithmetic,composite,resample,resize,colour,draw,bands,
 > conversion,convolution,morphology,histogram,mosaicing,freqfilt,create,extract,
-> matrix}.rs`, 463 fns, plus the two contract-mandated ops in `raster_ops.rs`).
+> matrix}.rs`, **494** fns (463 at `4629599`), plus the two contract-mandated ops
+> in `raster_ops.rs`. The seven rows the re-audit added (`sobel`, `scharr`,
+> `prewitt`, `canny`, `matrixmultiply`, `remainder`, `join`) were checked against
+> vips **8.18.4** built from source on the native x86_64 NAS (libviprs-tests
+> `tools/Dockerfile.vips-oracle`).
 
 ## Column legend
 
@@ -31,47 +37,53 @@
 
 ## Count summary
 
-Rows (op base names): **247** — 205 with a real vips differential oracle,
-16 GOLDEN-ONLY, 26 EXCLUDED, **0 DEFERRED** (see notes below the table).
+Rows (op base names): **254**, of which 205 with a real vips differential oracle,
+23 GOLDEN-ONLY, 26 EXCLUDED, **0 DEFERRED** (see notes below the table).
 Distinct `viprs` subcommands implied (fold-rows collapsed into their parent
-command): **164**, every name verified vips-callable (incl. the `crop` alias).
-Of those, **151** are differential-backed and **13** are golden-only pins
-(7 `draw_*`, `globalbalance`, `gaussnoise`, `perlin`, `worley`, `fractsurf`,
-`text`) — squarely inside the contract's "~150–190 with a real vips oracle".
+command): **171**, every name verified vips-callable (incl. the `crop` alias).
+Of those, **151** are differential-backed and **20** are golden-only pins (7
+`draw_*`, `dECMC`, `fractsurf`, `gaussnoise`, `globalbalance`, `hist_local`,
+`hist_match`, `hist_plot`, `hough_circle`, `hough_line`, `percent`, `perlin`,
+`text`, `worley`).
+
+These numbers are recounted from the tables below by libviprs-tests
+`tests/cli_op_map_counts.rs`, which fails when a row changes without them, and
+which also holds the commands the tables imply to the ones `viprs
+__dump-commands` ships. Regenerate them from the tables, never by hand.
 
 The **foreign** (codec load/save) section near the end is counted on its own
 (47 rows, 32 commands) and is not in the totals below.
 
 | oracle_class | rows |
 |---|---|
-| EXACT | 105 |
+| EXACT | 108 |
 | EXACT-AFTER-CAST | 29 |
-| BOUNDED-TOL | 59 |
+| BOUNDED-TOL | 56 |
 | FOURIER | 12 |
-| GOLDEN-ONLY | 16 |
+| GOLDEN-ONLY | 23 |
 | EXCLUDED | 26 |
 | DEFERRED | 0 |
 
 | family | rows | EXACT | EAC | BT | FOURIER | GOLDEN | EXCLUDED |
 |---|---|---|---|---|---|---|---|
-| arithmetic | 94 | 39 | 27 | 7 | 6 | 0 | 15 |
+| arithmetic | 95 | 40 | 26 | 6 | 6 | 2 | 15 |
 | composite | 2 | 0 | 0 | 2 | 0 | 0 | 0 |
 | resample | 15 | 0 | 0 | 13 | 0 | 0 | 2 |
 | resize (helpers) | 2 | 0 | 0 | 0 | 0 | 0 | 2 |
-| colour | 9 | 0 | 0 | 7 | 0 | 0 | 2 |
+| colour | 9 | 0 | 0 | 6 | 0 | 1 | 2 |
 | draw | 9 | 0 | 0 | 0 | 0 | 7 | 2 |
 | bands | 12 | 12 | 0 | 0 | 0 | 0 | 0 |
-| conversion | 21 | 18 | 1 | 2 | 0 | 0 | 0 |
-| convolution | 9 | 4 | 0 | 5 | 0 | 0 | 0 |
+| conversion | 22 | 20 | 0 | 2 | 0 | 0 | 0 |
+| convolution | 13 | 7 | 0 | 6 | 0 | 0 | 0 |
 | morphology | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
-| histogram | 15 | 10 | 0 | 4 | 0 | 0 | 1 |
+| histogram | 15 | 7 | 0 | 3 | 0 | 4 | 1 |
 | mosaicing | 3 | 2 | 0 | 0 | 0 | 1 | 0 |
 | freqfilt | 6 | 0 | 0 | 0 | 6 | 0 | 0 |
 | create | 29 | 3 | 0 | 16 | 0 | 8 | 2 |
 | extract | 11 | 11 | 0 | 0 | 0 | 0 | 0 |
-| matrix | 3 | 0 | 0 | 3 | 0 | 0 | 0 |
+| matrix | 4 | 0 | 2 | 2 | 0 | 0 | 0 |
 | core (raster_ops) | 2 | 1 | 1 | 0 | 0 | 0 | 0 |
-| **total** | **247** | **105** | **29** | **59** | **12** | **16** | **26** |
+| **total** | **254** | **108** | **29** | **56** | **12** | **23** | **26** |
 
 ### Why DEFERRED = 0
 
@@ -100,7 +112,7 @@ save-cast). Wave agents must keep those subsets red-flagged in `--help` text.
 
 ---
 
-## arithmetic (src/arithmetic.rs — 131 pub fns → 94 base ops)
+## arithmetic (src/arithmetic.rs: 139 pub fns → 95 base ops)
 
 ### Statistics / scalar outputs
 
@@ -159,6 +171,7 @@ save-cast). Wave agents must keep those subsets red-flagged in `--help` text.
 | `minpair` | `minpair` | S2 | EXACT | format-preserving (vips ≥8.15 nickname verified present in 8.18.4). |
 | `maxpair` | `maxpair` | S2 | EXACT | as `minpair`. |
 | `sum` | `sum` | S2 | EXACT-AFTER-CAST | vips `in` is an image ARRAY → `viprs sum A B C… OUT` variadic. |
+| `remainder` | `remainder` | S2 | EXACT | Added at the `8afc3ae5` re-audit (libviprs-cli#67). `remainder left right out`; format-preserving unsigned int op. Two deliberate core divergences, both kept off the fixture: `x % 0` is `0` (vips writes `-1`, read back as 255 on uchar), and no band broadcast or size alignment (operands must match exactly). Float input is refused by the core (exit 1). |
 | `max_diff` | — | — | EXCLUDED | libviprs test helper; no vips op (`abs∘subtract→max` composition). |
 | `avg_diff` | — | — | EXCLUDED | as `max_diff`. |
 
@@ -199,12 +212,18 @@ save-cast). Wave agents must keep those subsets red-flagged in `--help` text.
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
 | `scaleimage` | `scale` | S1 | BOUNDED-TOL | vips nickname is `scale` (NOT scaleimage). `--log --exp`; ≤1 LSB uchar (log path transcendental). |
-| `stdif` | `stdif` | S1 | BOUNDED-TOL | core exposes `width height` only (vips `--a --m0 --b --s0` defaults assumed); ≤1 LSB. |
-| `recomb` | `recomb` | S1 | EXACT-AFTER-CAST | `recomb in out m` — **matrix FILE arg** (shared loader). |
+| `stdif` | `stdif` | S1 | EXACT | core exposes `width height` only (vips `--a --m0 --b --s0` defaults assumed). EXACT since core #490 moved the window border to edge-replicate; the CLI metadata and the differential have said so since, this row had not (corrected at the libviprs-cli#67 refresh). |
+| `recomb` | `recomb` | S1 | EXACT | `recomb in out m`, a **matrix FILE arg** (shared loader). EXACT since core #491 (f32 then truncate, as vips does); row corrected at the libviprs-cli#67 refresh to match the CLI metadata and the tol-0 differential. |
 | `premultiply` | `premultiply` | S1 | BOUNDED-TOL | #406-418; float out in vips; ≤1 LSB post-cast (or f32 eps 1e-5 via `.v`). `--max-alpha` not in core. |
 | `unpremultiply` | `unpremultiply` | S1 | BOUNDED-TOL | division; same bounds as `premultiply`. |
 
 ### Trig / log / exp (one `math` command; enum verified: `sin cos tan asin acos atan log log10 exp exp10 sinh cosh tanh asinh acosh atanh`)
+
+The CLI's `__dump-commands` reports `math` and `math2` as FOURIER rather than
+EXACT-AFTER-CAST: the differential compares them on the float `.v` carrier
+(documented in `src/ops/arithmetic/part_b.rs`), which is stricter than the
+save-cast these rows describe. The rows keep the class of the op; the
+command metadata names the carrier.
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -246,11 +265,11 @@ save-cast). Wave agents must keep those subsets red-flagged in `--help` text.
 | `hough_line` | `hough_line` | S1 | GOLDEN-ONLY | core has no params — vips `--width --height` defaults (256×256) pinned at fixture-gen time. Core #495 fixed the distance binning so the accumulator vote PATTERN now matches vips 8.18.4 bit-for-bit, but an INHERENT format/saturation gap remains: the core accumulates into Gray16 (u16) while vips uses a uint accumulator, so a peak of >65535 collinear votes saturates in the core (no u32 carrier). Carried GOLDEN-ONLY (viprs regression pin) for that reason. |
 | `hough_circle` | `hough_circle` | S1 | GOLDEN-ONLY | core takes `min_radius max_radius` only, as REQUIRED positionals (intentional surface deviation — vips exposes them as OPTIONAL `--min-radius`/`--max-radius`, defaults 10/20, so `vips hough_circle in out` is valid on its own). vips 8.18.4 `--scale` defaults to **1** (not 3), which is what the core computes. Carried GOLDEN-ONLY: the core per-cell vote model diverges structurally from vips (single point → core max 1 vs vips max 4), so there is no cross-oracle; reference is a viprs regression pin, core issue filed. |
 
-Non-op public API in this file (no rows): none — all 131 fns dedup to the 94 bases above.
+Non-op public API in this file (no rows): none; all 139 fns dedup to the 95 bases above (the eight added since `4629599` are `remainder`, `try_remainder` and the `try_*` twins of `add_const`, `sub_const`, `mul_const`, `floordiv_const`, `pow_const` and `rem_const`).
 
 ---
 
-## composite (src/composite.rs — 3 pub fns → 2 base ops)
+## composite (src/composite.rs: 3 pub fns → 2 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -259,7 +278,7 @@ Non-op public API in this file (no rows): none — all 131 fns dedup to the 94 b
 
 ---
 
-## resample (src/resample.rs — 43 pub fns → 15 base ops) + resize helpers
+## resample (src/resample.rs: 54 pub fns → 15 base ops) + resize helpers
 
 All BOUNDED-TOL per the premultiply/rounding campaign #406-418; state ≤1 LSB
 (8-bit) / ≤1 LSB per channel (16-bit) unless noted.
@@ -272,7 +291,7 @@ All BOUNDED-TOL per the premultiply/rounding campaign #406-418; state ≤1 LSB
 | `reduce` | `reduce` | S1 | BOUNDED-TOL | `--kernel` (core `ReduceKernel`; `from_name` maps CLI string) `--gap` not in core. |
 | `reduceh` | `reduceh` | S1 | BOUNDED-TOL | — |
 | `reducev` | `reducev` | S1 | BOUNDED-TOL | — |
-| `resize` | `resize` | S1 | BOUNDED-TOL | `resize in out scale`; `try_resize_with` options → `--kernel --vscale`(core `ResizeOptions`); vips `--gap` if core grows it. Dedup of `resize`/`resize_with`/`try_resize_with`. |
+| `resize` | `resize` | S1 | BOUNDED-TOL | `resize in out scale`; `try_resize_with` options → `--kernel --vscale`(core `ResizeOptions`). Core `ResizeOptions` also carries `gap` (vips `--gap`, default 2.0), which the CLI does not expose yet: a flag subset on an existing command, not a missing op. Dedup of `resize`/`resize_with`/`try_resize_with`. |
 | `affine` | `affine` | S1 | BOUNDED-TOL | `affine in out "a b c d"` (matrix = one space-separated string); `--interpolate`; `try_affine_with` extras (oarea/offsets) as flags if exposed. |
 | `similarity` | `similarity` | S1 | BOUNDED-TOL | `--scale --angle` (vips optional args); `_with` variant folds. |
 | `rotate` | `rotate` | S1 | BOUNDED-TOL | `rotate in out angle`; `_with` folds. |
@@ -285,11 +304,14 @@ All BOUNDED-TOL per the premultiply/rounding campaign #406-418; state ≤1 LSB
 | `downscale_to` *(resize.rs)* | — | — | EXCLUDED | internal helper; `resize`/`thumbnail` cover. |
 
 Non-op public API (no rows): `ReduceKernel::from_name`, `Interpolate::from_name`
-(CLI string→enum plumbing used by `--kernel`/`--interpolate`).
+(CLI string→enum plumbing used by `--kernel`/`--interpolate`), and the eleven
+options-struct setters added since `4629599`: `AffineOptions::with_{odx,
+ody,idx,idy,oarea,extend,background,premultiplied}` and `ResizeOptions::with_{vscale,
+kernel,gap}`. Those feed `affine`/`resize` flags; they are not ops.
 
 ---
 
-## colour (src/colour.rs — 19 pub fns → 9 base ops)
+## colour (src/colour.rs: 19 pub fns → 9 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -297,7 +319,7 @@ Non-op public API (no rows): `ReduceKernel::from_name`, `Interpolate::from_name`
 | `de76` | `dE76` | S2 | BOUNDED-TOL | capital-E spelling verified. Float ΔE out via `.v`, eps 1e-4. |
 | `de00` | `dE00` | S2 | BOUNDED-TOL | mirrors libvips's dE00. eps 1e-4. |
 | `de00_sharma` | — | — | EXCLUDED | Sharma-2005 variant of CIEDE2000; no distinct vips nickname (`dE00` maps to `de00`). Library extension; revisit only with an `extension` flag row. |
-| `de_cmc` | `dECMC` | S2 | BOUNDED-TOL | eps 1e-4. |
+| `de_cmc` | `dECMC` | S2 | GOLDEN-ONLY | Was BOUNDED-TOL here and in the CLI's metadata, but the differential has carried it GOLDEN-ONLY since the colour wave: the core computes the published CMC(1:1) ΔE, vips approximates dECMC as a Euclidean distance in its CMC uniform space (measured max-abs-diff ~297), so there is no cross-oracle and libviprs-tests pins a viprs-made `colour/dECMC_golden.v`. Corrected at the libviprs-cli#67 refresh. |
 | `icc_import` | `icc_import` | S1 | BOUNDED-TOL | `--input-profile --intent --pcs` (core `_with` folds). **Caveat**: libviprs ships a native ICC engine; homebrew vips uses lcms2. Restrict differential fixtures to matrix-shaper RGB profiles (sRGB); CMYK combos diverge by design (core targets the no-lcms approximation) → mark those cases GOLDEN-ONLY in the test files, tol from measurement (start 1e-3 float / ≤2 LSB uchar). |
 | `icc_export` | `icc_export` | S1 | BOUNDED-TOL | `--output-profile --intent`; same lcms caveat. |
 | `icc_transform` | `icc_transform` | S1 | BOUNDED-TOL | `icc_transform in out output-profile` (profile is positional in vips); same caveat. |
@@ -305,7 +327,7 @@ Non-op public API (no rows): `ReduceKernel::from_name`, `Interpolate::from_name`
 
 ---
 
-## draw (src/draw.rs — 28 pub fns → 9 base ops)
+## draw (src/draw.rs: 28 pub fns → 9 base ops)
 
 All GOLDEN-ONLY (§5): vips `draw_*` are in-place mutators whose CLI discards the
 result, so there is NO vips CLI oracle. Reference images are committed ONCE from
@@ -331,7 +353,7 @@ Non-op public API (no rows): `DrawOp` constructors `Circle::outline/filled`,
 
 ---
 
-## bands (src/bands.rs — 24 pub fns → 12 base ops)
+## bands (src/bands.rs: 24 pub fns → 12 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -350,7 +372,7 @@ Non-op public API (no rows): `DrawOp` constructors `Circle::outline/filled`,
 
 ---
 
-## conversion (src/conversion.rs — 53 pub fns → 21 base ops)
+## conversion (src/conversion.rs: 55 pub fns → 22 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -375,15 +397,17 @@ Non-op public API (no rows): `DrawOp` constructors `Circle::outline/filled`,
 | `identity` | `identity` | S5 | EXACT | `identity out [--ushort]`; vips `--bands --size` not in core. |
 | `identity_ushort` | `identity` *(fold)* | S5 | EXACT | IS `identity --ushort`. |
 | `switch` | `switch` | S2 | EXACT | `switch A B C… OUT` (vips `tests` image array). |
+| `join` | `join` | S2 | EXACT | Added at the `8afc3ae5` re-audit (libviprs-cli#67). `join in1 in2 out horizontal\|vertical --expand --shim --background --align low\|centre\|high`, vips's positional order and option names; `--shim` bounded 0..=1000000 as vips declares it. |
 
-Non-op public API (no rows): `RasterCopyBuilder` (`for_format`, setters
+Non-op public API (no rows): `RasterCopyBuilder` (`for_format` (a builder
+constructor, so not an op: the libviprs-cli#67 candidate is struck), setters
 `interpretation/xres/yres/xoffset/yoffset/orientation`, `build`) and Raster
 accessors (`bands`, `interpretation`, `xres`, `yres`, `xoffset`, `yoffset`,
 `orientation`) — flag/introspection plumbing for `copy`/`info`.
 
 ---
 
-## convolution (src/convolution.rs — 22 pub fns → 9 base ops)
+## convolution (src/convolution.rs: 30 pub fns → 13 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -396,12 +420,18 @@ accessors (`bands`, `interpretation`, `xres`, `yres`, `xoffset`, `yoffset`,
 | `sharpen` | `sharpen` | S1 | BOUNDED-TOL | core `--sigma --m1 --m2` (vips also x1/y2/y3/mode — defaults); LabS float path ≤1 LSB. |
 | `spcor` | `spcor` | S2 | BOUNDED-TOL | `spcor in ref out`; float correlation out via `.v`, eps 1e-5. |
 | `fastcor` | `fastcor` | S2 | EXACT | int sum-of-squared-differences (uint out). |
+| `sobel` | `sobel` | S1 | EXACT | Added at the `8afc3ae5` re-audit (libviprs-cli#67), as are the next three. `sobel in out`, no options in vips or the core. Output is always uchar; a uchar input takes `\|Gx\| + \|Gy\|` clipped at 255 through two integer convolutions (references minted with `VIPS_NOVECTOR=1`, as for every uchar integer convolution, #558), anything wider takes `sqrt(Gx² + Gy²)` in float and a truncating cast. Both arms pinned. |
+| `scharr` | `scharr` | S1 | EXACT | `scharr in out`; `sobel` with the Scharr mask, same contract. |
+| `prewitt` | `prewitt` | S1 | EXACT | `prewitt in out`; `sobel` with the Prewitt mask, same contract. |
+| `canny` | `canny` | S1 | BOUNDED-TOL | `canny in out --sigma --precision`, vips defaults (1.4, float). Float out for a uchar input at float precision → `.v`. Measured max-abs-diff 0 against vips 8.18.4 on native x86_64; the eps 1e-3 is the same cross-platform libm allowance (`atan2`, `sqrt`) the other float convolution surfaces carry. vips silently runs at 1.4 when `--sigma` is outside 0.01..=1000; the CLI refuses it at parse time instead. vips's `approximate` precision is not core-backed. |
 
 Non-op public API (no rows): `Kernel` accessors `width/height/max`.
+`logmat_with_precision` is the panicking form of `try_logmat`'s precision
+argument and folds into `logmat --precision` (counted with the twins).
 
 ---
 
-## morphology (src/morphology.rs — 10 pub fns → 5 base ops)
+## morphology (src/morphology.rs: 10 pub fns → 5 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -415,7 +445,7 @@ Non-op public API (no rows): `Kernel` accessors `width/height/max`.
 
 ---
 
-## histogram (src/histogram.rs — 29 pub fns → 15 base ops)
+## histogram (src/histogram.rs: 29 pub fns → 15 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -424,7 +454,7 @@ Non-op public API (no rows): `Kernel` accessors `width/height/max`.
 | `hist_find_indexed` | `hist_find_indexed` | S2 | EXACT | `hist_find_indexed in index out` (2 inputs). Bins combine by SUM only (vips `--combine` max/min not in core; red-flagged in --help). |
 | `hist_find_ndim` | `hist_find_ndim` | S1 | EXACT | `--bins`; N-dim output may exceed 4 bands → `.v`. |
 | `hist_cum` | `hist_cum` | S1 | EXACT | integer cumulative. |
-| `hist_norm` | `hist_norm` | S1 | EXACT | integer renormalisation. |
+| `hist_norm` | `hist_norm` | S1 | BOUNDED-TOL | integer renormalisation; the cumulative-normalise rounding sits ≤1 apart from vips on some entries (measured max-abs-diff 1), which the CLI metadata and the differential already carry. Row corrected from EXACT at the libviprs-cli#67 refresh. |
 | `hist_match` | `hist_match` | S2 | GOLDEN-ONLY | `hist_match in ref out`; core emits a `uchar` index LUT, vips a `uint` LUT — mappings diverge wholesale (measured max-abs-diff 254). No vips cross-oracle; pinned to a viprs-generated reference. |
 | `hist_plot` | `hist_plot` | S1 | GOLDEN-ONLY | core plots `max+1` rows, vips `max` — raster heights never match. No vips cross-oracle; viprs regression pin. |
 | `hist_entropy` | `hist_entropy` | S3 | BOUNDED-TOL | float scalar (log2); printed-value eps 1e-9. |
@@ -437,7 +467,7 @@ Non-op public API (no rows): `Kernel` accessors `width/height/max`.
 
 ---
 
-## mosaicing (src/mosaicing.rs — 6 pub fns → 3 base ops)
+## mosaicing (src/mosaicing.rs: 6 pub fns → 3 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -447,7 +477,7 @@ Non-op public API (no rows): `Kernel` accessors `width/height/max`.
 
 ---
 
-## freqfilt (src/freqfilt.rs — 12 pub fns → 6 base ops)
+## freqfilt (src/freqfilt.rs: 12 pub fns → 6 base ops)
 
 Complex = float-pair bands stamped `Interpretation::Fourier`; all IO via `.v`;
 compare as f64 band-pairs at a per-op MEASURED absolute epsilon (see
@@ -465,7 +495,7 @@ f32-quantisation floor — NOT a fixed 1e-6 relative (contract §5 FOURIER).
 
 ---
 
-## create (src/create.rs — 56 pub fns → 29 base ops)
+## create (src/create.rs: 56 pub fns → 29 base ops)
 
 Creators are S5 (OUT first, §3). Float-valued creators write `.v` for the
 differential; uchar variants can use PNG.
@@ -506,7 +536,7 @@ Non-op public API (no rows): `SdfParams` accessors `max_value`/`min_value`.
 
 ---
 
-## extract (src/extract.rs — 19 pub fns → 11 base ops)
+## extract (src/extract.rs: 19 pub fns → 11 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
@@ -524,17 +554,18 @@ Non-op public API (no rows): `SdfParams` accessors `max_value`/`min_value`.
 
 ---
 
-## matrix (src/matrix.rs — 6 pub fns → 3 base ops)
+## matrix (src/matrix.rs: 8 pub fns → 4 base ops)
 
 | libviprs_fn | vips_nickname | cli_shape | oracle_class | notes |
 |---|---|---|---|---|
-| `matrixinvert` | `matrixinvert` | S1 | BOUNDED-TOL | matrix FILE in → matrix out (`.mat`); Gaussian-elimination pivot order → f64 eps 1e-9. |
+| `matrixinvert` | `matrixinvert` | S1 | EXACT-AFTER-CAST | matrix FILE in → matrix out (`.v`); the core is an operation-order port of `matrixinvert.c`, so against the vips double result cast to float it is bit-identical on both the cofactor and PLU paths (tol 0). Row corrected from BOUNDED-TOL at the libviprs-cli#67 refresh, to match the CLI metadata and the differential. |
 | `invertlut` | `invertlut` | S1 | BOUNDED-TOL | matrix (buildlut-style) in; `--size` (vips default 256); f64 eps 1e-9. |
 | `invertlut_size` | `invertlut` *(fold)* | S1 | BOUNDED-TOL | IS `invertlut --size N`. |
+| `matrixmultiply` | `matrixmultiply` | S2 | EXACT-AFTER-CAST | Added at the `8afc3ae5` re-audit (libviprs-cli#67). `matrixmultiply left.mat right.mat out`; both operands are matrix FILES (shared loader), `left` width must equal `right` height (exit 1 otherwise). Core sums in f64 and stores f32, vips stores double: compared against the vips result cast to float, tol 0. |
 
 ---
 
-## core raster ops (src/raster_ops.rs — outside the 16 audited modules, contract-mandated)
+## core raster ops (src/raster_ops.rs: outside the 16 audited modules, contract-mandated)
 
 `add` and `getpoint` live in `raster_ops.rs`, not in an op family module, but the
 frozen contract hard-codes both (`viprs add a.png b.png out.png` §1; `vips
@@ -627,23 +658,27 @@ differential is `libviprs-tests/tests/cli_foreign_diff.rs`.
 
 ## Audit trail — public fns per module vs rows
 
+Counted at core `8afc3ae5` (libviprs-cli#67); the `4629599` audit had 465 fns and
+247 rows. The 31 new fns are the seven new ops and their `try_*` twins, the six
+new `try_*` twins of existing const ops, and the eleven options-struct setters.
+
 | module | pub fns | try/panic twins + option-variant folds | non-op API (no rows) | base rows |
 |---|---|---|---|---|
-| arithmetic.rs | 131 | 37 twins | 0 | 94 |
+| arithmetic.rs | 139 | 44 twins | 0 | 95 |
 | composite.rs | 3 | 1 | 0 | 2 |
-| resample.rs | 43 | 26 (twins + `_with`/free-fn folds) | 2 (`from_name` ×2) | 15 |
+| resample.rs | 54 | 26 (twins + `_with`/free-fn folds) | 13 (`from_name` ×2, `AffineOptions::with_*` ×8, `ResizeOptions::with_*` ×3) | 15 |
 | resize.rs | 2 | 0 | 0 | 2 |
 | colour.rs | 19 | 10 (twins + `_with` folds) | 0 | 9 |
 | draw.rs | 28 | 9 (try twins + `_filled` merged into base fns) | 10 (DrawOp constructors) | 9 |
 | bands.rs | 24 | 12 twins | 0 | 12 |
-| conversion.rs | 53 | 17 twins | 15 (builder + accessors) | 21 |
-| convolution.rs | 22 | 10 (twins + `logmat_with_precision`) | 3 (Kernel accessors) | 9 |
+| conversion.rs | 55 | 18 twins | 15 (builder + accessors) | 22 |
+| convolution.rs | 30 | 14 (twins + `logmat_with_precision`) | 3 (Kernel accessors) | 13 |
 | morphology.rs | 10 | 5 twins | 0 | 5 |
 | histogram.rs | 29 | 14 twins | 0 | 15 |
 | mosaicing.rs | 6 | 3 twins | 0 | 3 |
 | freqfilt.rs | 12 | 6 twins | 0 | 6 |
 | create.rs | 56 | 25 twins | 2 (SdfParams accessors) | 29 |
 | extract.rs | 19 | 8 twins | 0 | 11 |
-| matrix.rs | 6 | 3 twins | 0 | 3 |
+| matrix.rs | 8 | 4 twins | 0 | 4 |
 | raster_ops.rs (partial) | 2 | 0 | 0 | 2 |
-| **total** | **465** | | | **247** |
+| **total** | **496** | | | **254** |
