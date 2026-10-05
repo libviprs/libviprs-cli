@@ -100,3 +100,45 @@ fn every_snippet_slot_is_opened_and_closed() {
         "these @doc-snippet slots close without opening: {unopened:?}"
     );
 }
+
+/// `src/pipeline.rs`, where the pyramid driver lives since #66.
+fn pipeline_rs() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pipeline.rs");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "src/pipeline.rs must be readable at {}: {e}",
+            path.display()
+        )
+    })
+}
+
+/// The snippet slots describe the code that runs. Since #66 every archive,
+/// tree and object-store run goes through `src/pipeline.rs`, so the slots for
+/// the plan, the memory check, the engine config and those three sinks sit
+/// there, and `main.rs` keeps no copy of the driver they used to annotate.
+#[test]
+fn the_pyramid_driver_slots_sit_on_the_code_that_runs() {
+    let pipeline = ids_after(&pipeline_rs(), "@doc-snippet:begin slot=");
+    let main = ids_after(&main_rs(), "@doc-snippet:begin slot=");
+    for slot in [
+        "planner",
+        "memory-limit",
+        "engine-config",
+        "sink-fs",
+        "sink-pmtiles",
+        "sink-s3",
+    ] {
+        assert!(
+            pipeline.contains(slot),
+            "slot {slot} must annotate the pipeline, got {pipeline:?}"
+        );
+        assert!(
+            !main.contains(slot),
+            "slot {slot} is still on a main.rs copy of the driver"
+        );
+    }
+    assert!(
+        !main_rs().contains("not yet fully wired"),
+        "main.rs still carries the old s3 stub arm"
+    );
+}

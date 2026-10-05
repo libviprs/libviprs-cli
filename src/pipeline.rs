@@ -938,7 +938,12 @@ mod object_store {
     }
 
     impl LocalStore {
-        fn path_of(&self, key: &str) -> Result<PathBuf, SinkError> {
+        #[cfg(test)]
+        pub(super) fn for_tests(root: PathBuf) -> Self {
+            Self { root }
+        }
+
+        pub(super) fn path_of(&self, key: &str) -> Result<PathBuf, SinkError> {
             let rel = Path::new(key);
             if key.is_empty() || rel.components().any(|c| !matches!(c, Component::Normal(_))) {
                 return Err(SinkError::Other(format!(
@@ -1029,5 +1034,93 @@ mod object_store {
         _format: TileFormat,
     ) -> (Result<EngineResult, EngineError>, PathBuf) {
         unreachable!("prepare refuses an s3:// target in a build without the feature")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser as _;
+
+    fn pyramid(extra: &[&str]) -> PyramidArgs {
+        let mut argv = vec!["viprs", "in.png", "out"];
+        argv.extend_from_slice(extra);
+        PyramidArgs::try_parse_from(argv).expect("the flags under test parse")
+    }
+
+    #[test]
+    fn retries_alone_retries_then_fails() {
+        let args = pyramid(&["--retries", "3", "--retry-backoff-ms", "20"]);
+        match args.pipeline.failure_policy() {
+            Some(FailurePolicy::RetryThenFail(policy)) => {
+                assert_eq!(policy.max_retries, 3);
+                assert_eq!(policy.initial_backoff, Duration::from_millis(20));
+            }
+            other => panic!("--retries on its own must retry then fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fail_fast_alone_is_fail_fast_and_no_flag_keeps_on_failure() {
+        assert!(matches!(
+            pyramid(&["--fail-fast"]).pipeline.failure_policy(),
+            Some(FailurePolicy::FailFast)
+        ));
+        assert!(pyramid(&[]).pipeline.failure_policy().is_none());
+    }
+
+    #[test]
+    fn a_region_is_four_pixel_counts() {
+        assert_eq!(
+            parse_region("1,2,30,40"),
+            Ok(Region {
+                x: 1,
+                y: 2,
+                width: 30,
+                height: 40
+            })
+        );
+        assert_eq!(
+            parse_region(" 0 , 0 , 5 , 6 "),
+            Ok(Region {
+                x: 0,
+                y: 0,
+                width: 5,
+                height: 6
+            }),
+            "spaces around the numbers are fine"
+        );
+    }
+
+    #[test]
+    fn a_region_refuses_the_wrong_count_negatives_and_empty_sides() {
+        for bad in [
+            "1,2,3",
+            "1,2,3,4,5",
+            "",
+            "a,0,1,1",
+            "-1,0,1,1",
+            "0,0,0,5",
+            "0,0,5,0",
+        ] {
+            assert!(parse_region(bad).is_err(), "{bad:?} must be refused");
+        }
+        assert!(
+            parse_region("0,0,4294967296,1").is_err(),
+            "a side past u32 is refused, not wrapped"
+        );
+    }
+
+    #[cfg(any(feature = "s3", feature = "object-store-sink"))]
+    #[test]
+    fn the_stub_store_keeps_every_key_under_its_root() {
+        let store = object_store::LocalStore::for_tests(PathBuf::from("/srv/store/bucket"));
+        assert_eq!(
+            store.path_of("run/image_files/0/0_0.png").unwrap(),
+            PathBuf::from("/srv/store/bucket/run/image_files/0/0_0.png")
+        );
+        for key in ["", "../x", "a/../../x", "/etc/passwd"] {
+            assert!(store.path_of(key).is_err(), "{key:?} must be refused");
+        }
     }
 }
