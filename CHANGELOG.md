@@ -93,3 +93,7 @@ the `version` in `Cargo.toml`.
 - A `.svgz`, or a gzipped document named `.svg`, is refused saying the SVG
   renderer in this build has no gzip support, instead of failing as an XML
   parse error (#64).
+- `svgload` gives that same refusal for a gzipped document, by path or on
+  stdin. It used to tell a build without `svg` to rebuild with it, and a
+  build with it passed on usvg's "enable svgz cargo feature" parse error
+  (#74).

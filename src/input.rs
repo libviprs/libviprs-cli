@@ -69,14 +69,8 @@ pub fn decode_path(path: &Path, limits: DecodeLimits) -> Result<Raster> {
         read_stream(path, &limits).and_then(|bytes| decode_bytes(&bytes, limits))
     } else if names_svg(path) || head_is_svg(path) {
         let bytes = read_svg(path)?;
-        if bytes.starts_with(GZIP_MAGIC) {
-            // Before the feature check on purpose: rebuilding with `svg`
-            // would not help, so naming that feature would send the person
-            // the wrong way.
-            Err(CompressedSvg.into())
-        } else {
-            decode_svg(&bytes, SvgOptions::default(), limits)
-        }
+        refuse_compressed_svg(&bytes)
+            .and_then(|()| decode_svg(&bytes, SvgOptions::default(), limits))
     } else {
         decode_file_with_limits(path, limits).map_err(refusal_or_error)
     };
@@ -119,6 +113,19 @@ fn refusal_or_error(err: libviprs::source::SourceError) -> anyhow::Error {
     match missing_feature(&err) {
         Some(missing) => missing.into(),
         None => err.into(),
+    }
+}
+
+/// Refuse a gzip-compressed SVG with [`CompressedSvg`], before anything asks
+/// whether this build has the `svg` feature: rebuilding with `svg` would not
+/// help, so naming that feature would send the person the wrong way. Shared
+/// with `svgload` (libviprs-cli#65), so every route into the renderer gives
+/// the same answer.
+pub(crate) fn refuse_compressed_svg(bytes: &[u8]) -> Result<()> {
+    if bytes.starts_with(GZIP_MAGIC) {
+        Err(CompressedSvg.into())
+    } else {
+        Ok(())
     }
 }
 

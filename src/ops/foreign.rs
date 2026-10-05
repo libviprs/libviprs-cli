@@ -754,12 +754,17 @@ fn decode(name: &str, m: &ArgMatches) -> Result<Raster> {
             source(libviprs::decode_avif(&bytes, limits))?
         }
         "svgload" => {
-            require_decoder(cfg!(feature = "svg"), "svg", "SVG")?;
             let unlimited = m.get_flag("unlimited");
             // One byte past the core's ceiling is enough for it to refuse
             // with its own typed error; --unlimited reads the whole document.
             let ceiling = (!unlimited).then_some(libviprs::svg::MAX_INPUT_BYTES as u64 + 1);
             let bytes = read_input(spec, &limits, ceiling)?;
+            // The same order `input::decode_path` keeps: a gzipped document
+            // is refused for what it is before the feature check, which
+            // would otherwise tell a build without `svg` to rebuild with it,
+            // and the renderer in a build with it would fail it as XML.
+            crate::input::refuse_compressed_svg(&bytes)?;
+            require_decoder(cfg!(feature = "svg"), "svg", "SVG")?;
             let options = libviprs::SvgOptions::default()
                 .with_dpi(*m.get_one::<f64>("dpi").expect("defaulted"))
                 .with_scale(*m.get_one::<f64>("scale").expect("defaulted"))
@@ -1205,5 +1210,77 @@ mod tests {
             err.downcast_ref::<MissingEncoder>().is_some(),
             "the input was read first: {err:#}"
         );
+    }
+
+    /// A real gzip stream around `data`: one stored deflate block, so no
+    /// compressor is needed, with the CRC-32 and length trailer a gunzip
+    /// checks. A `.svgz` in the wild is exactly this shape with a compressed
+    /// block instead of a stored one.
+    fn gzip_stored(data: &[u8]) -> Vec<u8> {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        let crc = !crc;
+        let len = u16::try_from(data.len()).expect("fixture fits one stored block");
+        let mut out = vec![0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0x03];
+        out.push(0x01);
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(data);
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
+        out
+    }
+
+    const TINY_SVG: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg' width='3' height='2'>\
+        <rect width='3' height='2' fill='red'/></svg>";
+
+    /// `svgload` on a gzipped document gets the same refusal every other
+    /// command gets from `input::decode_path` (libviprs-cli#64): the renderer
+    /// has no gzip support, so say that, in a build with or without `svg`.
+    /// Rebuilding with `svg` would not help, so a build without it must not
+    /// send the person off to do that.
+    #[test]
+    fn svgload_refuses_a_gzipped_svgz_the_way_every_loader_does() {
+        let scratch = Scratch::new("svgz-svgload");
+        let gz = gzip_stored(TINY_SVG);
+        for name in ["in.svgz", "in.svg"] {
+            let input = scratch.file(name, &gz);
+            let out = scratch.path("out.png");
+            let m = parse(&["svgload", &input, &out]).unwrap();
+            let err = run("svgload", &m).expect_err(&format!("svgload decoded a gzipped {name}"));
+            assert!(
+                err.downcast_ref::<crate::input::CompressedSvg>().is_some(),
+                "{name}: expected the .svgz refusal, got {err:#}"
+            );
+            assert!(
+                !std::path::Path::new(&out).exists(),
+                "{name}: a refused load wrote {out}"
+            );
+        }
+    }
+
+    /// The fixture is a real gzip of a document that renders, so the refusal
+    /// above is about the gzip and nothing else.
+    #[cfg(feature = "svg")]
+    #[test]
+    fn the_svgz_fixture_holds_a_document_that_renders() {
+        let scratch = Scratch::new("svgz-plain");
+        let input = scratch.file("in.svg", TINY_SVG);
+        let out = scratch.path("out.png");
+        let m = parse(&["svgload", &input, &out]).unwrap();
+        run("svgload", &m).unwrap();
+        assert!(std::path::Path::new(&out).exists());
+        let gz = gzip_stored(TINY_SVG);
+        assert_eq!(&gz[..2], b"\x1f\x8b");
+        assert_eq!(&gz[15..15 + TINY_SVG.len()], TINY_SVG);
     }
 }
