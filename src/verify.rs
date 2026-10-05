@@ -22,20 +22,24 @@
 //!   it compare bytes: an encoded tile cannot be re-encoded bit for bit, so for
 //!   PNG and JPEG it falls back to the manifest digests above.
 //!
-//! # What the pyramid does not say about itself
+//! # Centring and dropped blanks
 //!
-//! Neither the manifest nor the archive metadata records `--centre` or
-//! `--drop-blanks` yet (the core tracking issue, libviprs#1161, lists both).
-//! The plan is rebuilt from what they do record, so a centred pyramid would be
-//! checked against the uncentred grid and every dropped blank would be a
-//! missing tile. Until the core records them, `verify` takes the same two
-//! flags, and a missing tile on a run without them says so.
+//! The manifest and the archive's `vnd.libviprs` metadata record whether the
+//! plan was centred and whether the run dropped its blank tiles
+//! (`GenerationSettings::centre` and `skip_blanks`, libviprs#1162), and the
+//! plan is rebuilt with both. A pyramid written before those fields existed
+//! reads them as `false`, so `--centre` and `--drop-blanks` stay as overrides
+//! for it. They only ever add: a flag the pyramid already records changes
+//! nothing, and no flag can make a pyramid that records centring or dropped
+//! blanks read as one that did not. A missing tile on a pyramid that records
+//! neither says which flag to try.
 //!
-//! Neither flag combines with `--source`. The core's re-render expects every
-//! planned tile on disk, so it cannot check a `--drop-blanks` tree, and it
-//! assumes the canvas is the top level, so it cannot lay a source out on a
-//! centred grid (in a debug build it trips an assertion). Both are refused
-//! with exit 2 rather than reported as damaged tiles.
+//! The re-render lays a source out on a centred grid (libviprs#1163), so
+//! `--source` checks a centred tree too. It still expects every planned tile
+//! on disk, so it cannot check a pyramid that dropped its blanks until
+//! libviprs#1174 lands: `--drop-blanks --source` is refused with exit 2, and
+//! `--source` on a tree whose manifest records dropped blanks exits 1 saying
+//! so, rather than listing every dropped blank as a missing tile.
 //!
 //! Every failure names the tile. A verify that says "corrupt" and not where is
 //! a verify somebody has to rerun by hand to use. A pyramid with thousands of
@@ -77,20 +81,20 @@ pub(crate) struct VerifyArgs {
     #[arg(long, value_name = "FILE")]
     pub(crate) source: Option<PathBuf>,
 
-    /// The pyramid was written with `--centre`.
+    /// The pyramid was written with `--centre`, for one that does not say so.
     ///
-    /// Centring is not recorded in the manifest or the archive yet, so verify
-    /// has to be told, or it checks the pyramid against the uncentred grid.
-    /// Cannot be combined with `--source`.
+    /// A pyramid records centring itself, so this is only for one written
+    /// before it did, which otherwise gets checked against the uncentred
+    /// grid. It can add centring, never take it away.
     #[arg(long)]
     pub(crate) centre: bool,
 
     /// The pyramid was written with `--drop-blanks`.
     ///
     /// A planned tile that is absent is then a dropped blank rather than a
-    /// missing tile; every tile that is there is still checked. Not recorded
-    /// in the manifest or the archive yet, so verify has to be told. Cannot
-    /// be combined with `--source`.
+    /// missing tile; every tile that is there is still checked. A pyramid
+    /// records this itself, so the flag is only for one written before it
+    /// did. Cannot be combined with `--source` yet (libviprs#1174).
     #[arg(long)]
     pub(crate) drop_blanks: bool,
 }
@@ -103,16 +107,8 @@ pub(crate) fn run(args: VerifyArgs) {
             usage_error(
                 "--drop-blanks cannot be combined with --source",
                 "the re-render expects every planned tile on disk, and a pyramid written \
-                 with --drop-blanks leaves its blank tiles out. Verify it without --source; \
-                 the manifest checksums still cover every tile it kept",
-            );
-        }
-        if args.centre {
-            usage_error(
-                "--centre cannot be combined with --source",
-                "the core's re-render cannot lay a source out on a centred grid yet (it \
-                 assumes the canvas is the top level). Verify a centred pyramid without \
-                 --source; the manifest checksums still cover every tile",
+                 with --drop-blanks leaves its blank tiles out (libviprs#1174). Verify it \
+                 without --source; the manifest checksums still cover every tile it kept",
             );
         }
         if is_pdf(source) {
@@ -127,12 +123,12 @@ pub(crate) fn run(args: VerifyArgs) {
             );
         }
     }
-    let flags = Flags {
+    let told = Flags {
         centre: args.centre,
         drop_blanks: args.drop_blanks,
     };
     if args.path.is_dir() {
-        verify_tree(&args.path, args.source.as_deref(), flags);
+        verify_tree(&args.path, args.source.as_deref(), told);
     } else if args.path.is_file() {
         if args.source.is_some() {
             usage_error(
@@ -140,17 +136,28 @@ pub(crate) fn run(args: VerifyArgs) {
                 "an archive is checked by reading every tile back and decoding it; drop --source",
             );
         }
-        verify_archive(&args.path, flags);
+        verify_archive(&args.path, told);
     } else {
         operational_error(&format!("{} does not exist", args.path.display()));
     }
 }
 
-/// What the pyramid was written with that it does not record.
+/// Whether the plan was centred and the run dropped its blank tiles.
 #[derive(Clone, Copy)]
 struct Flags {
     centre: bool,
     drop_blanks: bool,
+}
+
+impl Flags {
+    /// What the pyramid records, plus what the command line adds for one
+    /// written before it recorded them. Either side saying yes is a yes.
+    fn with_recorded(self, centre: bool, skip_blanks: bool) -> Self {
+        Self {
+            centre: self.centre || centre,
+            drop_blanks: self.drop_blanks || skip_blanks,
+        }
+    }
 }
 
 /// A `.pdf` by name or by its `%PDF-` header.
@@ -171,8 +178,8 @@ fn is_pdf(path: &Path) -> bool {
 /// The problems one run has found, up to [`MAX_PROBLEMS`].
 struct Problems {
     list: Vec<String>,
-    /// Whether a planned tile was missing, which on a pyramid verify was not
-    /// told about is the sign of `--drop-blanks` or `--centre`.
+    /// Whether a planned tile was missing, which on a pyramid that records
+    /// neither is the sign of an older `--drop-blanks` or `--centre` run.
     missing: bool,
     full: bool,
 }
@@ -220,13 +227,15 @@ impl Problems {
     }
 }
 
-/// The hint for a missing tile on a pyramid verify was not told about.
+/// The hint for a missing tile on a pyramid that does not record dropped
+/// blanks or centring.
 fn missing_hint(flags: Flags) {
     if !flags.drop_blanks || !flags.centre {
         eprintln!(
             "Hint: a pyramid written with --drop-blanks leaves blank tiles out, and one \
-             written with --centre sits on a different grid. Neither is recorded in the \
-             manifest or the archive yet, so pass the same flag to verify"
+             written with --centre sits on a different grid. This one records neither, \
+             which is what one written before libviprs recorded them looks like; if it \
+             was written with either, pass the same flag to verify"
         );
     }
 }
@@ -249,9 +258,22 @@ fn plan_for(
     }
 }
 
-fn verify_archive(path: &Path, flags: Flags) {
+fn verify_archive(path: &Path, told: Flags) {
     let reader = PmTilesPyramidReader::try_open(path)
         .unwrap_or_else(|e| operational_error(&format!("reading {}: {e}", path.display())));
+    // The archive's own generation block. An archive without one is refused
+    // just below for having no plan, so only its two flags matter here.
+    let flags = match reader.reader().metadata() {
+        Ok(meta) => match meta
+            .vnd_libviprs
+            .as_ref()
+            .and_then(|l| l.generation.as_ref())
+        {
+            Some(g) => told.with_recorded(g.centre, g.skip_blanks),
+            None => told,
+        },
+        Err(e) => operational_error(&format!("reading {}: {e}", path.display())),
+    };
     let desc = reader
         .describe()
         .unwrap_or_else(|e| operational_error(&format!("reading {}: {e}", path.display())));
@@ -387,7 +409,7 @@ fn read_manifest(dir: &Path) -> Option<Manifest> {
     }
 }
 
-fn verify_tree(dir: &Path, source: Option<&Path>, flags: Flags) {
+fn verify_tree(dir: &Path, source: Option<&Path>, told: Flags) {
     let Some(manifest) = read_manifest(dir) else {
         operational_error(&format!(
             "{} has no manifest.json, so there is no plan to verify it against. Write the tree \
@@ -398,6 +420,17 @@ fn verify_tree(dir: &Path, source: Option<&Path>, flags: Flags) {
     let m = manifest.as_v1();
     let g = &m.generation;
     let format: TileFormat = g.format;
+    let flags = told.with_recorded(g.centre, g.skip_blanks);
+    if source.is_some() && flags.drop_blanks {
+        // `run` already refused --drop-blanks with --source, so this is the
+        // manifest's say-so: the input decides it, hence exit 1.
+        operational_error(&format!(
+            "{} was written with --drop-blanks (its manifest says so), and the re-render \
+             cannot check a pyramid that left its blank tiles out yet (libviprs#1174). \
+             Verify it without --source; the manifest checksums still cover every tile it kept",
+            dir.display()
+        ));
+    }
     let plan = plan_for(
         dir,
         m.source.width,
@@ -520,8 +553,8 @@ fn rerender(
         }
         // The checkpoint records the hash of the plan the run used, with the
         // source file's digest folded in. So a different source file gives
-        // itself away here, and so does a centred tree verified without
-        // --centre.
+        // itself away here, and so does a centred tree whose manifest
+        // predates `centre`.
         Err(e @ EngineError::PlanHashMismatch { .. }) => format!(
             "{} was made from a different source than {}, or with a different plan ({e})",
             dir.display(),
@@ -532,9 +565,9 @@ fn rerender(
     eprintln!("Error: {problem}");
     if !flags.centre {
         eprintln!(
-            "Hint: a pyramid written with --centre sits on a different grid, which is not \
-             recorded in the manifest yet, and verify cannot re-render one; verify it with \
-             --centre and without --source"
+            "Hint: a pyramid written with --centre sits on a different grid. This tree's \
+             manifest does not record centring, which is what one written before libviprs \
+             recorded it looks like; if it was written with --centre, pass --centre"
         );
     }
     process::exit(1);
