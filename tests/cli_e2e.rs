@@ -240,6 +240,60 @@ fn with_svg_an_svg_input_decodes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An SVG saved without its extension still reaches the renderer: core
+/// sniffs it by content now (libviprs#1170), where the CLI used to do it
+/// itself (libviprs-cli#91), for the built-ins and the op harness alike.
+#[cfg(feature = "svg")]
+#[test]
+fn an_svg_without_its_extension_decodes() {
+    let dir = unique_dir("svg-no-ext");
+    let img = dir.join("drawing.img");
+    std::fs::write(
+        &img,
+        "<?xml version='1.0'?>\n<svg xmlns='http://www.w3.org/2000/svg' width='6' height='4'><rect width='6' height='4' fill='red'/></svg>",
+    )
+    .unwrap();
+    let out = run(&["info", img.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 0, "stderr:\n{stderr}");
+    assert!(stdout.contains("Dimensions: 6x4"), "got:\n{stdout}");
+    let png = dir.join("out.png");
+    let out = run(&["copy", img.to_str().unwrap(), png.to_str().unwrap()]);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(png.is_file());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Without `svg`, the same extensionless SVG is refused naming the feature,
+/// exit 1, rather than as an unrecognised format.
+#[cfg(not(feature = "svg"))]
+#[test]
+fn without_svg_an_svg_without_its_extension_is_refused_naming_the_feature() {
+    let dir = unique_dir("svg-no-ext-refusal");
+    let img = dir.join("drawing.img");
+    std::fs::write(
+        &img,
+        "<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'/>",
+    )
+    .unwrap();
+    let png = dir.join("out.png");
+    for args in [
+        vec!["info", img.to_str().unwrap()],
+        vec!["copy", img.to_str().unwrap(), png.to_str().unwrap()],
+    ] {
+        let out = run(&args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(code(&out), 1, "{args:?} stderr:\n{stderr}");
+        assert!(
+            stderr.contains("--features svg"),
+            "{args:?} must name the feature to rebuild with, got:\n{stderr}"
+        );
+    }
+    assert!(!png.exists(), "a refused load must write nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `viprs features --help` says what the list is and what it is not. It
 /// reports this crate's cargo features, not capabilities, and an `s3` build
 /// has the core's object-store sink without listing `object-store-sink`.

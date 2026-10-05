@@ -362,6 +362,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The error `decode_path` gives `bytes` saved as `name`, in a scratch
+    /// directory whose path says nothing about SVG.
+    fn refusal_for(tag: &str, name: &str, bytes: &[u8]) -> anyhow::Error {
+        let dir = scratch(tag);
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let err = decode_path(&path, DecodeLimits::default()).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        err
+    }
+
+    /// Asserts `err` came from the raster route, not the SVG renderer or the
+    /// missing-`svg` refusal.
+    fn assert_not_routed_to_svg(err: &anyhow::Error) {
+        let msg = format!("{err:#}");
+        assert!(
+            err.downcast_ref::<crate::features::MissingFeature>()
+                .is_none(),
+            "refused as a missing svg feature: {msg}"
+        );
+        assert!(!msg.to_lowercase().contains("svg"), "{msg}");
+    }
+
+    /// Core's sniff (libviprs#1170) wants the root element itself to be
+    /// `svg`, so a root that only starts with those letters is not one. The
+    /// CLI's own sniff claimed it (libviprs-cli#91).
+    #[test]
+    fn a_root_that_only_starts_with_svg_is_not_routed_to_the_renderer() {
+        let err = refusal_for("lookalike-root", "doc.xml", b"<svgish/>");
+        assert_not_routed_to_svg(&err);
+    }
+
+    /// The same for an `<svg` that only appears inside a comment.
+    #[test]
+    fn an_svg_inside_a_comment_is_not_routed_to_the_renderer() {
+        let err = refusal_for(
+            "commented-root",
+            "doc.xml",
+            b"<?xml version='1.0'?>\n<!-- <svg> -->\n<html/>",
+        );
+        assert_not_routed_to_svg(&err);
+    }
+
+    /// The content sniff is core's now; the CLI keeps only the extension
+    /// route and the `.svgz` refusal.
+    #[test]
+    fn the_svg_content_sniff_is_cores() {
+        // Spelled in pieces so this test does not match itself.
+        let src = include_str!("input.rs");
+        for name in [
+            ["fn looks_like", "_svg("].concat(),
+            ["const SVG_SNIFF", "_BYTES"].concat(),
+            ["fn head_is", "_svg("].concat(),
+        ] {
+            assert!(
+                !src.contains(&name),
+                "src/input.rs still has `{name}`; core sniffs SVG (libviprs-cli#91)"
+            );
+        }
+    }
+
     /// Without the feature an SVG is the typed refusal, never the generic
     /// decode error the content sniff would give it.
     #[cfg(not(feature = "svg"))]
