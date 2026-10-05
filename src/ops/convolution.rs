@@ -502,7 +502,7 @@ fn precision(m: &ArgMatches) -> Result<Precision> {
     match pos(m, "precision") {
         "integer" => Ok(Precision::Integer),
         "float" => Ok(Precision::Float),
-        other => bail!("unknown precision {other:?} (expected integer|float)"),
+        other => usage_bail!("unknown precision {other:?} (expected integer|float)"),
     }
 }
 
@@ -517,7 +517,7 @@ fn angle45(s: &str) -> Result<Angle45> {
         "d225" => Angle45::D225,
         "d270" => Angle45::D270,
         "d315" => Angle45::D315,
-        other => bail!("unknown angle {other:?} (expected d0|d45|…|d315)"),
+        other => usage_bail!("unknown angle {other:?} (expected d0|d45|…|d315)"),
     })
 }
 
@@ -526,7 +526,7 @@ fn combine(s: &str) -> Result<Combine> {
     match s {
         "max" => Ok(Combine::Max),
         "sum" => Ok(Combine::Sum),
-        other => bail!("unknown combine {other:?} (expected max|sum)"),
+        other => usage_bail!("unknown combine {other:?} (expected max|sum)"),
     }
 }
 

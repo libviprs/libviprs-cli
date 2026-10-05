@@ -194,7 +194,7 @@ fn run_morph(m: &ArgMatches) -> Result<()> {
     let out = match op {
         "erode" => raster.try_erode(&mask_refs)?, // @doc-flag: mask command=morph kind=param param_name=mask
         "dilate" => raster.try_dilate(&mask_refs)?,
-        other => bail!("unknown morph operation {other:?} (expected erode|dilate)"),
+        other => usage_bail!("unknown morph operation {other:?} (expected erode|dilate)"),
     };
     // @doc-snippet:end command=morph slot=apply
 
@@ -235,7 +235,7 @@ fn run_countlines(m: &ArgMatches) -> Result<()> {
     let direction = match pos(m, "DIRECTION") {
         "horizontal" => Direction::Horizontal,
         "vertical" => Direction::Vertical,
-        other => bail!("unknown direction {other:?} (expected horizontal|vertical)"),
+        other => usage_bail!("unknown direction {other:?} (expected horizontal|vertical)"),
     };
 
     // @doc-snippet:begin command=countlines slot=load imports=decode_file

@@ -218,7 +218,7 @@ fn parse_mode(s: &str) -> Result<CompositeMode> {
         "soft-light" => CompositeMode::SoftLight,
         "difference" => CompositeMode::Difference,
         "exclusion" => CompositeMode::Exclusion,
-        other => bail!(
+        other => usage_bail!(
             "unknown blend mode {other:?} (expected one of: {})",
             MODES.join("|")
         ),

@@ -349,7 +349,7 @@ fn build_ink(raster: &Raster, ink_str: &str) -> Result<Vec<u8>> {
         .split_whitespace()
         .map(|t| {
             t.parse::<i64>()
-                .map_err(|e| anyhow!("ink value {t:?} is not an integer: {e}"))
+                .map_err(|e| usage_err!("ink value {t:?} is not an integer: {e}"))
         })
         .collect::<Result<_>>()?;
     if values.len() != channels {

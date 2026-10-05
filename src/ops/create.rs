@@ -135,7 +135,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use libviprs::{Raster, SdfParams};
 
@@ -569,18 +569,18 @@ fn out_path(m: &ArgMatches) -> PathBuf {
     PathBuf::from(pos(m, "OUT"))
 }
 
-/// Require `v >= min`, else a typed exit-1 error (vips's declared minimum).
+/// Require `v >= min`, else a usage error (exit 2) (vips's declared minimum).
 fn require_min(name: &str, v: f64, min: f64) -> Result<f64> {
     if v < min {
-        bail!("{name} {v} is below the vips minimum {min}");
+        usage_bail!("{name} {v} is below the vips minimum {min}");
     }
     Ok(v)
 }
 
-/// Require `min <= v <= max`, else a typed exit-1 error.
+/// Require `min <= v <= max`, else a usage error (exit 2).
 fn require_range(name: &str, v: f64, min: f64, max: f64) -> Result<f64> {
     if v < min || v > max {
-        bail!("{name} {v} is outside the vips range {min}..={max}");
+        usage_bail!("{name} {v} is outside the vips range {min}..={max}");
     }
     Ok(v)
 }
@@ -601,7 +601,7 @@ fn parse_i64_vec(name: &str, s: &str) -> Result<Vec<i64>> {
     s.split_whitespace()
         .map(|t| {
             t.parse::<i64>()
-                .map_err(|e| anyhow!("{name} value {t:?} is not an integer: {e}"))
+                .map_err(|e| usage_err!("{name} value {t:?} is not an integer: {e}"))
         })
         .collect()
 }
@@ -611,7 +611,7 @@ fn parse_point(name: &str, s: &str) -> Result<[i64; 2]> {
     let v = parse_i64_vec(name, s)?;
     match v.as_slice() {
         [x, y] => Ok([*x, *y]),
-        _ => bail!(
+        _ => usage_bail!(
             "{name} must be two integers \"x y\", got {} value(s)",
             v.len()
         ),
@@ -884,7 +884,7 @@ fn run_sdf(m: &ArgMatches) -> Result<()> {
             let v = parse_i64_vec("--corners", s)?;
             match v.as_slice() {
                 [a, b, c, d] => Some([*a, *b, *c, *d]),
-                _ => bail!(
+                _ => usage_bail!(
                     "--corners must be four integers \"c0 c1 c2 c3\", got {}",
                     v.len()
                 ),
@@ -1049,7 +1049,7 @@ mod tests {
     #[test]
     fn fractal_dimension_out_of_range_is_a_typed_error() {
         // fractsurf's fractal dimension is bounded to vips's 2..3. An out-of-range
-        // value is a typed exit-1 error (validated before any raster is built),
+        // value is a usage error (exit 2) (validated before any raster is built),
         // never a panic. Dimensions are valid, so only the dimension check fires.
         let m = cmd("fractsurf")
             .try_get_matches_from(["fractsurf", "out.v", "16", "16", "5.0"])
@@ -1091,7 +1091,7 @@ mod tests {
     #[test]
     fn butterworth_order_below_one_is_a_typed_error() {
         // The Butterworth order's vips minimum is 1; a positive-but-too-small
-        // order (0.5, which clap admits as a value) becomes a typed exit-1 error
+        // order (0.5, which clap admits as a value) becomes a usage error (exit 2)
         // in the handler, never a panic. Uses a valid frequency/amplitude so
         // only the order check fires.
         let m = cmd("mask_butterworth")
@@ -1186,7 +1186,7 @@ mod tests {
     #[test]
     fn mask_param_above_vips_max_is_a_typed_error() {
         // Frequency cutoff / order share vips's 1e6 gdouble maximum; a larger
-        // value is a typed exit-1 error, matching vips's out-of-range refusal.
+        // value is a usage error (exit 2), matching vips's out-of-range refusal.
         let m = cmd("mask_ideal")
             .try_get_matches_from(["mask_ideal", "out.v", "16", "16", "1000001"])
             .unwrap();

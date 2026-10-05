@@ -49,7 +49,7 @@
 //! Handlers keep the §3 `load → try_op → save` shape and call only the panic-free
 //! `try_*` core APIs, so a bad input becomes exit 1 rather than an abort
 //! (`CLI_CONTRACT.md` §8). Every numeric range conversion (e.g. an out-of-range
-//! `--height`) yields a typed exit-1 error, never an `as`-cast abort (the bands
+//! `--height`) yields a usage error (exit 2), never an `as`-cast abort (the bands
 //! B2 lesson).
 //
 // @doc-command:begin name=shrink about="Shrink an image by integer or fractional factors with a box filter." \
@@ -94,7 +94,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use libviprs::{Interpolator, ReduceKernel, ResizeOptions};
 
@@ -371,7 +371,7 @@ pub fn commands() -> Vec<Command> {
                     // supports only centre-crop, so this flag accepts an OPTIONAL
                     // value (`--crop` alone == `--crop centre`, matching the bare
                     // form; `--crop none` == no crop) and rejects the unsupported
-                    // modes with a typed exit-1 in `run_thumbnail` rather than
+                    // modes with a usage error (exit 2) in `run_thumbnail` rather than
                     // silently accepting a value it cannot honour. This preserves
                     // vips's literal `--crop centre` syntax instead of erroring on
                     // it as an unexpected argument.
@@ -448,7 +448,7 @@ fn kernel_arg(m: &ArgMatches) -> Result<ReduceKernel> {
     let name = m
         .get_one::<String>("kernel")
         .expect("clap default lanczos3");
-    ReduceKernel::from_name(name).map_err(|e| anyhow!(e))
+    ReduceKernel::from_name(name).map_err(|e| usage_err!("{e}"))
 }
 
 /// Parse the interpolator nickname (clap already restricted it to
@@ -457,7 +457,7 @@ fn interpolate_arg(m: &ArgMatches) -> Result<Interpolator> {
     let name = m
         .get_one::<String>("interpolate")
         .expect("clap default bilinear");
-    Interpolator::from_name(name).map_err(|e| anyhow!(e))
+    Interpolator::from_name(name).map_err(|e| usage_err!("{e}"))
 }
 
 /// Parse a vips-style space-separated numeric vector (e.g. `"1.5 0 0 1.5"`).
@@ -466,11 +466,11 @@ fn parse_f64_vec(s: &str) -> Result<Vec<f64>> {
         .split_whitespace()
         .map(|t| {
             t.parse::<f64>()
-                .map_err(|e| anyhow!("value {t:?} is not a number: {e}"))
+                .map_err(|e| usage_err!("value {t:?} is not a number: {e}"))
         })
         .collect::<Result<_>>()?;
     if v.is_empty() {
-        bail!("expected a space-separated numeric vector, got an empty string");
+        usage_bail!("expected a space-separated numeric vector, got an empty string");
     }
     Ok(v)
 }
@@ -608,7 +608,7 @@ fn run_affine(m: &ArgMatches) -> Result<()> {
     let interpolate = interpolate_arg(m)?;
     let v = parse_f64_vec(pos(m, "MATRIX"))?;
     if v.len() != 4 {
-        bail!(
+        usage_bail!(
             "affine matrix must be exactly four numbers \"a b c d\", got {} value(s)",
             v.len()
         );
@@ -685,7 +685,7 @@ fn run_mapim(m: &ArgMatches) -> Result<()> {
 /// `thumbnail FILENAME OUT WIDTH [--height --crop --linear --export-profile]`
 /// — S1; the first arg is a source FILENAME (not a decoded raster). The core
 /// exposes three disjoint thumbnail entry points; the flags select between them
-/// and unsupported combinations are rejected with a typed exit-1 error rather
+/// and unsupported combinations are rejected with a usage error (exit 2) rather
 /// than silently ignored.
 fn run_thumbnail(m: &ArgMatches) -> Result<()> {
     let filename = PathBuf::from(pos(m, "FILENAME"));
@@ -694,12 +694,12 @@ fn run_thumbnail(m: &ArgMatches) -> Result<()> {
     let height = m.get_one::<u32>("height").copied();
     // `--crop` carries an optional VipsInteresting value; the core supports only
     // centre-crop, so map none→false and centre→true and reject every other vips
-    // mode with a typed exit-1 (never a silent accept-and-ignore).
+    // mode with a usage error (exit 2) (never a silent accept-and-ignore).
     let crop = match m.get_one::<String>("crop").map(String::as_str) {
         None => false,
         Some("centre" | "center") => true,
         Some("none") => false,
-        Some(other) => bail!(
+        Some(other) => usage_bail!(
             "--crop {other:?} is not supported: the core does centre-crop only \
              (`--crop` or `--crop centre`) or no crop (`--crop none`); vips's \
              entropy / attention / low / high / all crop modes are unavailable"
@@ -712,7 +712,7 @@ fn run_thumbnail(m: &ArgMatches) -> Result<()> {
         // The ICC export path is a square WIDTH box only; the other size / space
         // flags are not part of its core signature.
         if height.is_some() || crop || linear {
-            bail!(
+            usage_bail!(
                 "--export-profile fits a square WIDTH box and cannot be combined with \
                  --height / --crop / --linear"
             );
@@ -722,7 +722,9 @@ fn run_thumbnail(m: &ArgMatches) -> Result<()> {
         // Linear-light reduce is a square WIDTH box only (the core
         // `thumbnail_with_options` signature has no height / crop).
         if height.is_some() || crop {
-            bail!("--linear fits a square WIDTH box and cannot be combined with --height / --crop");
+            usage_bail!(
+                "--linear fits a square WIDTH box and cannot be combined with --height / --crop"
+            );
         }
         libviprs::Raster::try_thumbnail_with_options(&filename, width, true)?
     } else {
@@ -907,7 +909,7 @@ mod tests {
     #[test]
     fn thumbnail_rejects_an_unsupported_crop_mode() {
         // vips's entropy/attention/low/high/all crop modes are not core-backed;
-        // passing one is a typed exit-1 error, never a silent centre-crop.
+        // passing one is a usage error (exit 2), never a silent centre-crop.
         let m = cmd("thumbnail")
             .try_get_matches_from([
                 "thumbnail",
@@ -937,7 +939,7 @@ mod tests {
 
     #[test]
     fn thumbnail_rejects_incompatible_flag_combinations() {
-        // --linear cannot carry --crop; the combination is a typed exit-1 error,
+        // --linear cannot carry --crop; the combination is a usage error (exit 2),
         // never a silent ignore (the core linear path is a square WIDTH box).
         let m = cmd("thumbnail")
             .try_get_matches_from(["thumbnail", "in.png", "out.png", "16", "--linear", "--crop"])

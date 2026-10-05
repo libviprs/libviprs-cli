@@ -532,7 +532,7 @@ fn encode(format: &str, raster: &Raster, m: &ArgMatches) -> Result<Vec<u8>> {
         "jp2k" => {
             let tile = |id: &str| {
                 NonZeroU32::new(*m.get_one::<u32>(id).expect("defaulted"))
-                    .ok_or_else(|| anyhow!("--{id} must be at least 1"))
+                    .ok_or_else(|| usage_err!("--{id} must be at least 1"))
             };
             let options = libviprs::jp2k::SaveOptions::default()
                 .with_tile_width(tile("tile-width")?)
@@ -699,7 +699,7 @@ fn decode(name: &str, m: &ArgMatches) -> Result<Raster> {
         "tiffload" => {
             if spec == "-" {
                 if page != 0 {
-                    bail!("tiffload --page needs a file: stdin gives the first page only");
+                    usage_bail!("tiffload --page needs a file: stdin gives the first page only");
                 }
                 let bytes = read_input(spec, &limits, None)?;
                 expect_magic(&bytes, &[b"II*\0", b"MM\0*"], "TIFF", spec)?;
@@ -797,7 +797,7 @@ fn decode(name: &str, m: &ArgMatches) -> Result<Raster> {
         ))?,
         "analyzeload" => {
             if spec == "-" {
-                bail!("analyzeload needs a file: an Analyze image is a .hdr/.img pair");
+                usage_bail!("analyzeload needs a file: an Analyze image is a .hdr/.img pair");
             }
             source(libviprs::decode_analyze_file(Path::new(spec), limits))?
         }

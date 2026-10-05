@@ -26,7 +26,7 @@
 //!
 //! * `extract_area`/`crop`'s `LEFT`/`TOP` accept vips's full signed gint range
 //!   (`-100000000..=100000000`) at parse but the core geometry is `u32`-only, so
-//!   a negative coordinate becomes a **typed exit-1 error** rather than a
+//!   a negative coordinate becomes a **usage error (exit 2)** rather than a
 //!   `u32::try_from` abort (the bands B2 lesson); `WIDTH`/`HEIGHT` carry vips's
 //!   `extract_area` bounds `1..=100000000` (the smaller crop-dim cap, NOT the
 //!   `1e9` canvas cap embed/gravity use).
@@ -80,7 +80,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use libviprs::{CompassDirection, Extend, SmartcropInteresting};
 
@@ -289,7 +289,7 @@ fn extract_area_command(name: &'static str) -> Command {
         .arg(Arg::new("IN").required(true).help("Input image"))
         .arg(Arg::new("OUT").required(true).help("Output image"))
         // vips's LEFT/TOP are signed gint (`-1e8..=1e8`); the core geometry is
-        // u32-only, so a negative coordinate is a typed exit-1 error at the
+        // u32-only, so a negative coordinate is a usage error (exit 2) at the
         // conversion, not a u32::try_from abort (bands B2 lesson).
         .arg(area_coord_arg("LEFT", "Left edge of the extract area"))
         .arg(area_coord_arg("TOP", "Top edge of the extract area"))
@@ -399,7 +399,9 @@ fn pos<'a>(m: &'a ArgMatches, id: &str) -> &'a str {
 fn area_coord(m: &ArgMatches, id: &str) -> Result<u32> {
     let v = *m.get_one::<i64>(id).expect("required positional");
     u32::try_from(v).map_err(|_| {
-        anyhow!("{id} {v} must be >= 0 (the core extract geometry has no negative-coordinate form)")
+        usage_err!(
+            "{id} {v} must be >= 0 (the core extract geometry has no negative-coordinate form)"
+        )
     })
 }
 
@@ -409,11 +411,13 @@ fn parse_f64_vec(s: &str) -> Result<Vec<f64>> {
         .split_whitespace()
         .map(|t| {
             t.parse::<f64>()
-                .map_err(|e| anyhow!("background value {t:?} is not a number: {e}"))
+                .map_err(|e| usage_err!("background value {t:?} is not a number: {e}"))
         })
         .collect::<Result<_>>()?;
     if v.is_empty() {
-        bail!("--background expected at least one value (a space-separated vector like \"128\")");
+        usage_bail!(
+            "--background expected at least one value (a space-separated vector like \"128\")"
+        );
     }
     Ok(v)
 }
@@ -428,7 +432,7 @@ fn extend_of(m: &ArgMatches) -> Result<Extend> {
         Some("mirror") => Extend::Mirror,
         Some("white") => Extend::White,
         Some("background") => Extend::Background,
-        other => bail!("unknown extend mode {other:?}"),
+        other => usage_bail!("unknown extend mode {other:?}"),
     })
 }
 
@@ -499,7 +503,7 @@ fn run_gravity(m: &ArgMatches) -> Result<()> {
     let out_path = PathBuf::from(pos(m, "OUT"));
     let direction: CompassDirection = pos(m, "DIRECTION")
         .parse()
-        .map_err(|e| anyhow!("invalid direction: {e}"))?;
+        .map_err(|e| usage_err!("invalid direction: {e}"))?;
     let width = *m.get_one::<u32>("WIDTH").expect("required");
     let height = *m.get_one::<u32>("HEIGHT").expect("required");
     let extend = extend_of(m)?;
@@ -658,7 +662,7 @@ fn interesting_of(m: &ArgMatches) -> Result<SmartcropInteresting> {
             Some("low") => SmartcropInteresting::Low,
             Some("high") => SmartcropInteresting::High,
             Some("all") => SmartcropInteresting::All,
-            other => bail!("unknown interesting strategy {other:?}"),
+            other => usage_bail!("unknown interesting strategy {other:?}"),
         },
     )
 }
@@ -718,7 +722,7 @@ mod tests {
     #[test]
     fn extract_area_negative_coord_is_error_not_panic() {
         // vips's LEFT/TOP admit the signed gint range at parse; the core geometry
-        // is u32-only, so a negative coordinate must become a typed exit-1 error,
+        // is u32-only, so a negative coordinate must become a usage error (exit 2),
         // NEVER a u32::try_from panic/abort (exit 101) — CLI_CONTRACT.md §8. The
         // coordinate is range-checked before any image load, so a dummy path is
         // fine.

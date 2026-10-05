@@ -7,7 +7,8 @@
 //! names, enum spellings, and input value bounds mirror vips 8.18.4 exactly
 //! (verified against `vips <op>` usage, 2026-07-19). Every handler keeps the §3
 //! `load → try_op → save` shape, calls the panic-free core APIs, and turns a bad
-//! user input into a typed exit-1 error rather than a process abort
+//! user input into a typed error (exit 2 for a value refused on the command
+//! line alone, exit 1 for one the input decides) rather than a process abort
 //! (`CLI_CONTRACT.md` §8) — including the `clamp` `min > max` case, which the
 //! core `clamp` would otherwise `assert!`-panic on.
 //!
@@ -27,7 +28,7 @@
 //! | `math2_const IN OUT pow "c"`     | `math2_const`     | S1 | EXACT-AFTER-CAST | power, scalar exponent |
 //! | `abs IN OUT`                     | `abs`             | S1 | EXACT | \|v\| (meaningful on float `.v`) |
 //! | `sign IN OUT`                    | `sign`            | S1 | EXACT-AFTER-CAST | −1/0/1 (float in → signed out) |
-//! | `clamp IN OUT [--min] [--max]`   | `clamp`           | S1 | EXACT | clip to [min,max]; NaN/inverted bounds → typed exit 1 |
+//! | `clamp IN OUT [--min] [--max]`   | `clamp`           | S1 | EXACT | clip to [min,max]; NaN/inverted bounds → usage error, exit 2 |
 //! | `round IN OUT rint\|ceil\|floor` | `round`           | S1 | EXACT | rounding mode enum — all three modes match vips (rint is now half-to-even, core #494) |
 //! | `hough_line IN OUT`              | `hough_line`      | S1 | GOLDEN-ONLY | 256×256 accumulator; binning now vips-exact (core #495) but Gray16-vs-uint format/saturation remains (see below) |
 //! | `hough_circle IN OUT MIN MAX`    | `hough_circle`    | S1 | GOLDEN-ONLY | scale-1 accumulator; core vote model diverges from vips. MIN/MAX are REQUIRED positionals (an intentional deviation — vips exposes them as optional `--min-radius`/`--max-radius`) |
@@ -516,11 +517,11 @@ fn parse_f64_vec(s: &str) -> Result<Vec<f64>> {
         .split_whitespace()
         .map(|t| {
             t.parse::<f64>()
-                .map_err(|e| anyhow!("constant {t:?} is not a number: {e}"))
+                .map_err(|e| usage_err!("constant {t:?} is not a number: {e}"))
         })
         .collect::<Result<_>>()?;
     if v.is_empty() {
-        bail!("expected at least one constant (a space-separated vector like \"10 20\")");
+        usage_bail!("expected at least one constant (a space-separated vector like \"10 20\")");
     }
     Ok(v)
 }
@@ -530,7 +531,7 @@ fn parse_f64_vec(s: &str) -> Result<Vec<f64>> {
 fn parse_scalar_const(m: &ArgMatches, id: &str, what: &str) -> Result<f64> {
     let v = parse_f64_vec(pos(m, id))?;
     if v.len() != 1 {
-        bail!(
+        usage_bail!(
             "{what} takes a single scalar constant, got {} values ({:?}); \
              per-band vector constants are not core-backed",
             v.len(),
@@ -698,7 +699,7 @@ fn run_linear(m: &ArgMatches) -> Result<()> {
     // without an intermediate cast). Reject a per-band vector rather than fake
     // it (honest subset; see the wave report open question).
     if a.len() != 1 || b.len() != 1 {
-        bail!(
+        usage_bail!(
             "linear takes a single scalar a and b (broadcast across bands); got a={a:?}, b={b:?}. \
              Per-band vector coefficients are not core-backed."
         );
@@ -729,7 +730,9 @@ fn run_math2_const(m: &ArgMatches) -> Result<()> {
     let exp = parse_scalar_const(m, "C", "math2_const")?;
     let out = match pos(m, "MATH2") {
         "pow" => raster.try_pow_const(exp)?,
-        other => bail!("unsupported math2_const operation {other:?} (only pow is core-backed)"),
+        other => {
+            usage_bail!("unsupported math2_const operation {other:?} (only pow is core-backed)")
+        }
     };
     io::save(&out, &out_path)?;
     Ok(())
@@ -759,7 +762,7 @@ fn run_clamp(m: &ArgMatches) -> Result<()> {
     let max = m.get_one::<f64>("max").copied();
     // The core `clamp` asserts `min <= max` and would PANIC (abort) on a bad
     // pair. Resolve the effective bounds with vips's defaults (0, 1) and reject
-    // any pair that is not ordered `lo <= hi` as a typed exit-1 error first
+    // any pair that is not ordered `lo <= hi` as a usage error (exit 2) first
     // (CLI_CONTRACT.md §8). The guard is written as `!(lo <= hi)` rather than
     // `lo > hi` so a NaN bound is ALSO rejected: clap's f64 value_parser accepts
     // "nan"/"NaN", and `NaN > hi` is false (so a bare `>` would let NaN slip
@@ -774,7 +777,7 @@ fn run_clamp(m: &ArgMatches) -> Result<()> {
     // while still admitting an ordered ±inf pair.
     let ordered = lo <= hi;
     if !ordered {
-        bail!("clamp: --min {lo} is not <= --max {hi}");
+        usage_bail!("clamp: --min {lo} is not <= --max {hi}");
     }
     io::save(&raster.clamp(min, max), &out_path)
 }
@@ -787,7 +790,7 @@ fn run_round(m: &ArgMatches) -> Result<()> {
         "rint" => raster.rint(),
         "ceil" => raster.ceil(),
         "floor" => raster.floor(),
-        other => bail!("unknown round mode {other:?} (expected rint|ceil|floor)"),
+        other => usage_bail!("unknown round mode {other:?} (expected rint|ceil|floor)"),
     };
     io::save(&out, &out_path)
 }

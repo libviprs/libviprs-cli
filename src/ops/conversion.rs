@@ -35,7 +35,7 @@
 //! panic-free `try_*` core APIs (or the genuinely-infallible `byteswap` /
 //! `identity` constructors, which cannot fail on any input), so a bad input
 //! becomes exit 1 rather than an abort (`CLI_CONTRACT.md` §8). Every numeric
-//! range conversion (`--band`/`--exponent`) yields a typed exit-1 error, never an
+//! range conversion (`--band`/`--exponent`) yields a usage error (exit 2), never an
 //! `as`-cast panic (the bands B2 lesson). The two variadic commands (`arrayjoin`,
 //! `switch`) go through [`io::inputs_and_out`], THE shared S2 idiom; `ifthenelse`
 //! takes three FIXED inputs so it uses plain positionals instead.
@@ -208,7 +208,7 @@ fn interpretation_from_str(s: &str) -> Result<Interpretation> {
         "hsv" => Interpretation::Hsv,
         "oklab" => Interpretation::OkLab,
         "oklch" => Interpretation::OkLch,
-        other => bail!("unknown interpretation {other:?}"),
+        other => usage_bail!("unknown interpretation {other:?}"),
     })
 }
 
@@ -655,22 +655,22 @@ fn parse_f64_vec(s: &str) -> Result<Vec<f64>> {
         .split_whitespace()
         .map(|t| {
             t.parse::<f64>()
-                .map_err(|e| anyhow!("value {t:?} is not a number: {e}"))
+                .map_err(|e| usage_err!("value {t:?} is not a number: {e}"))
         })
         .collect::<Result<_>>()?;
     if v.is_empty() {
-        bail!("expected at least one value (a space-separated vector like \"255 0 0\")");
+        usage_bail!("expected at least one value (a space-separated vector like \"255 0 0\")");
     }
     Ok(v)
 }
 
 /// vips clamps `gamma`'s exponent to `[1e-6, 1000]` and REJECTS anything outside
 /// it (a GObject property range). Mirror that surface: an out-of-range or
-/// non-finite exponent is a typed usage error (exit 1), never silently accepted
+/// non-finite exponent is a typed usage error (exit 2), never silently accepted
 /// (adversarial-review conversion finding 6).
 fn check_gamma_exponent(e: f64) -> Result<()> {
     if !e.is_finite() || !(1e-6..=1000.0).contains(&e) {
-        bail!("--exponent {e} out of range (vips accepts a finite value in 1e-6..=1000)");
+        usage_bail!("--exponent {e} out of range (vips accepts a finite value in 1e-6..=1000)");
     }
     Ok(())
 }
@@ -734,7 +734,7 @@ fn run_cast(m: &ArgMatches) -> Result<()> {
         "uchar" => 1,
         "ushort" => 2,
         "float" => 4,
-        other => bail!("unsupported cast format {other:?} (expected uchar|ushort|float)"),
+        other => usage_bail!("unsupported cast format {other:?} (expected uchar|ushort|float)"),
     };
     let target = PixelFormat::with_channels(channels, bytes)
         .ok_or_else(|| anyhow!("no {fmt_name} format exists for a {channels}-band image"))?;
@@ -762,7 +762,7 @@ fn run_flip(m: &ArgMatches) -> Result<()> {
     let out = match dir {
         "horizontal" => raster.try_fliphor()?,
         "vertical" => raster.try_flipver()?,
-        other => bail!("unknown flip direction {other:?} (expected horizontal|vertical)"),
+        other => usage_bail!("unknown flip direction {other:?} (expected horizontal|vertical)"),
     };
     // @doc-snippet:end command=flip slot=apply
 
@@ -782,7 +782,7 @@ fn run_rot(m: &ArgMatches) -> Result<()> {
         "d90" => Angle::D90,
         "d180" => Angle::D180,
         "d270" => Angle::D270,
-        other => bail!("unknown rotation angle {other:?} (expected d0|d90|d180|d270)"),
+        other => usage_bail!("unknown rotation angle {other:?} (expected d0|d90|d180|d270)"),
     };
 
     // @doc-snippet:begin command=rot slot=load imports=decode_file
@@ -813,7 +813,7 @@ fn run_rot45(m: &ArgMatches) -> Result<()> {
         "d225" => Angle45::D225,
         "d270" => Angle45::D270,
         "d315" => Angle45::D315,
-        other => bail!("unknown rot45 angle {other:?}"),
+        other => usage_bail!("unknown rot45 angle {other:?}"),
     };
 
     // @doc-snippet:begin command=rot45 slot=load imports=decode_file
@@ -859,7 +859,7 @@ fn run_msb(m: &ArgMatches) -> Result<()> {
     let out_path = PathBuf::from(pos(m, "OUT"));
     // vips default band is -1 (= all bands). With the `-1..` value_parser the
     // only negative clap admits is -1, which maps to the core's `None`. A
-    // positive band beyond `u32::MAX` is a typed exit-1 error — NOT a
+    // positive band beyond `u32::MAX` is a usage error (exit 2) — NOT a
     // `u32::try_from` panic/abort (exit 101), per CLI_CONTRACT.md §8.
     let band_raw = *m.get_one::<i64>("band").expect("clap default -1");
     let band: Option<u32> = if band_raw < 0 {
@@ -867,7 +867,7 @@ fn run_msb(m: &ArgMatches) -> Result<()> {
     } else {
         Some(
             u32::try_from(band_raw)
-                .map_err(|_| anyhow!("--band {band_raw} out of range (max {})", u32::MAX))?,
+                .map_err(|_| usage_err!("--band {band_raw} out of range (max {})", u32::MAX))?,
         )
     };
 
@@ -941,7 +941,7 @@ fn run_join(m: &ArgMatches) -> Result<()> {
     let direction = match pos(m, "DIRECTION") {
         "horizontal" => JoinDirection::Horizontal,
         "vertical" => JoinDirection::Vertical,
-        other => bail!("unknown direction {other:?} (expected horizontal|vertical)"),
+        other => usage_bail!("unknown direction {other:?} (expected horizontal|vertical)"),
     };
     let expand = m.get_flag("expand");
     let shim = *m.get_one::<u32>("shim").expect("clap default 0");
@@ -949,7 +949,7 @@ fn run_join(m: &ArgMatches) -> Result<()> {
         Some(s) => Some(parse_f64_vec(s)?),
         None => None,
     };
-    let align: Align = pos(m, "align").parse()?;
+    let align: Align = pos(m, "align").parse().map_err(|e| usage_err!("{e}"))?;
 
     // @doc-snippet:begin command=join slot=load imports=decode_file
     let left = io::load(&in1_path, &limits)?;
@@ -1045,7 +1045,7 @@ fn run_gamma(m: &ArgMatches) -> Result<()> {
     // A missing flag maps to the core default (1/2.4). vips clamps gamma's
     // exponent to [1e-6, 1000] and REJECTS anything outside that (a GObject
     // property range); mirror that surface exactly so an out-of-range or
-    // non-finite exponent is a typed usage error (exit 1) rather than silently
+    // non-finite exponent is a typed usage error (exit 2) rather than silently
     // accepted (adversarial-review conversion finding 6). The core independently
     // rejects the non-positive / non-finite end too, but catching it here keeps
     // the whole admissible range in lock-step with vips.
