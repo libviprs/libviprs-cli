@@ -153,7 +153,7 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 
 `--memory-budget` streams a fresh run into a tile tree. Into an archive or an object store, or with `--resume` or `--verify`, the run uses the monolithic engine and says so on stderr. `--trace-level` output goes to stderr too, so stdout carries nothing but `--events`.
 
-Ctrl-C stops any pyramid run at the next tile and exits 130. A tile tree it leaves behind finishes with the same command plus `--resume`, to exactly the bytes an uninterrupted run writes.
+Ctrl-C stops any pyramid run at the next tile and exits 130. A tile tree it leaves behind finishes with the same command plus `--resume`, to exactly the bytes an uninterrupted run writes. The resume checks the input file's BLAKE3 against the one the job started from, so a different image (even one the same size) is refused with exit 1 instead of finishing the tree with tiles from both.
 
 See the [pyramid command page](https://libviprs.org/cli/#pyramid) for the complete flag list (including `--memory-budget` and other tuning knobs) and an interactive Rust program generator.
 

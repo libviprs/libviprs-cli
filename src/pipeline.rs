@@ -829,8 +829,9 @@ pub(crate) fn conclude(
             process::exit(EXIT_INTERRUPTED);
         }
         Err(e @ EngineError::PlanHashMismatch { .. }) => operational_error(&format!(
-            "{e}\nHint: --resume needs the flags the interrupted run used; with different \
-             ones, run without --resume to start over"
+            "{e}\nHint: --resume needs the input file and the flags the interrupted run \
+             used; with a different input or different flags, run without --resume to \
+             start over"
         )),
         Err(e) => operational_error(&format!("generating pyramid: {e}")),
     };
@@ -884,12 +885,19 @@ pub(crate) fn run(args: PyramidArgs, cancel: CancelToken) {
 
     let Prepared { raster, plan } = prepare(&args, layout);
 
-    let source_hash = args.pipeline.manifest_source_hash.then(|| {
-        hash_source_file(Path::new(&args.input)).unwrap_or_else(|e| {
-            operational_error(&format!("hashing {} for the manifest: {e}", args.input))
-        })
-    });
-    let config = engine_config(&args);
+    // Every tree run from a file hands the run its source digest. The core
+    // folds it into the plan hash, so `--resume` refuses a checkpoint made
+    // from a different image even when its size matches, and it is the digest
+    // the manifest records under `--manifest-source-hash`. A run that started
+    // without one could not be resumed by a run with one, so it is not left to
+    // that flag. Stdin leaves no file to hash.
+    let mut config = engine_config(&args);
+    if matches!(target, Target::Tree(_)) && args.input != "-" {
+        let digest = hash_source_file(Path::new(&args.input)).unwrap_or_else(|e| {
+            operational_error(&format!("hashing {} for the resume check: {e}", args.input))
+        });
+        config = config.with_source_content_hash(digest);
+    }
     let events = EventPrinter::new(args.pipeline.events);
 
     let run = Run {
@@ -931,14 +939,6 @@ pub(crate) fn run(args: PyramidArgs, cancel: CancelToken) {
         Resumable::Yes
     };
     conclude(result, &output, start, resumable, &events);
-
-    // Only a run that finished whole gets the digest: a cancelled, failed or
-    // holed run exited in `conclude` above.
-    if let Some(hash) = &source_hash
-        && let Err(e) = record_source_hash(&output, hash)
-    {
-        operational_error(&format!("recording the source hash in the manifest: {e}"));
-    }
 }
 
 /// The PMTiles sink with the writer options the flags ask for.
@@ -989,38 +989,6 @@ fn resume_policy(args: &PyramidArgs) -> ResumePolicy {
 /// `SourceMetadata::bytes_hash` ("the raw source bytes").
 fn hash_source_file(path: &Path) -> std::io::Result<String> {
     Ok(ChecksumAlgo::Blake3.hash(&std::fs::read(path)?))
-}
-
-/// Put the source digest into both copies of the manifest the sink wrote.
-///
-/// `ManifestBuilder::include_source_hash` is recorded by the core and never
-/// read: `FsSink` writes `bytes_hash: null` whatever the builder says. Until
-/// that is fixed there, the digest is filled in here, after the run has
-/// finished, in the two places the sink puts the manifest. Remove this, and
-/// let the builder do it, once the source-hash item on the core tracking issue
-/// (libviprs#1161) lands.
-fn record_source_hash(dir: &Path, hash: &str) -> std::io::Result<()> {
-    let mut paths = vec![dir.join("manifest.json")];
-    if let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) {
-        let mut sibling = name.to_os_string();
-        sibling.push(".manifest.json");
-        paths.push(parent.join(sibling));
-    }
-    for path in paths.into_iter().filter(|p| p.is_file()) {
-        let bytes = std::fs::read(&path)?;
-        let mut value: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if let Some(source) = value.get_mut("source").and_then(|s| s.as_object_mut()) {
-            source.insert("bytes_hash".to_string(), serde_json::Value::from(hash));
-        }
-        // Pretty, like the core writes it.
-        let text = serde_json::to_vec_pretty(&value)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &path)?;
-    }
-    Ok(())
 }
 
 /// Everything a run needs once the sink is built.

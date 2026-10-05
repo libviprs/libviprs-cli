@@ -93,6 +93,15 @@ the `version` in `Cargo.toml`.
 
 ### Fixed
 
+- `pyramid --resume` refuses a checkpoint made from a different input file,
+  even one with the same size, with the plan-hash mismatch (exit 1) and a
+  hint that the input has to match. Every tile-tree run from a file now
+  hands the core the BLAKE3 of the file's bytes, which the core folds into
+  the plan hash and records as the manifest's `source.bytes_hash` under
+  `--manifest-source-hash`; the CLI no longer patches `manifest.json` after
+  the run. A tree run reads its input once more to hash it, and a checkpoint
+  left by an earlier `viprs` (which carried no digest) can't be resumed by
+  this one (#86).
 - `pyramid`, `plan` and `test-image` refuse a zero `--tile-size`, `--dpi`,
   `--page`, width or height, an `--overlap` as wide as the tile, a JPEG
   `--quality` outside 1 to 100, and `plan`'s missing `--height` as usage
