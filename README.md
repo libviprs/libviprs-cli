@@ -306,7 +306,7 @@ The password comes from, in order:
 
 ### `viprs geo`
 
-`viprs geo pixel-to-geo X Y`, `geo-to-pixel X Y` and `tile-center COL ROW --tile-size N` map points through a transform given as `--geo-origin X,Y --geo-scale X,Y` (the same pair `viprs pyramid` takes, through the same parser) or as the six affine coefficients `--affine a,b,c,d,e,f`. Each prints `x,y`; `geo-to-pixel` exits 1 for a transform that cannot be inverted. A value that isn't a finite number (NaN, `inf`, or something like `1e400` that overflows) is a usage error, exit 2, on `geo` and `pyramid` alike.
+`viprs geo pixel-to-geo X Y`, `geo-to-pixel X Y` and `tile-center COL ROW --tile-size N` map points through a transform given as `--geo-origin X,Y --geo-scale X,Y` (the same pair `viprs pyramid` takes, through the same parser) or as the six affine coefficients `--affine a,b,c,d,e,f`. Each prints `x,y`; `geo-to-pixel` exits 1 for a transform that cannot be inverted. A value that isn't a finite number (NaN, `inf`, or something like `1e400` that overflows) is a usage error, exit 2, on `geo` and `pyramid` alike. So is a value that starts with `--`, which is a forgotten value swallowing the next flag (a negative number like `-122.4,37.7` is fine, spaced or joined with `=`), and on `pyramid` either of `--geo-origin` / `--geo-scale` without the other.
 
 ### `viprs verify`
 

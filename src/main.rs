@@ -224,12 +224,14 @@ struct PyramidArgs {
     #[arg(long, default_value = "64")]
     buffer_size: usize,
 
-    /// Geo-reference origin as "longitude,latitude" (top-left pixel).
-    #[arg(long, allow_hyphen_values = true)]
+    /// Geo-reference origin as "longitude,latitude" (top-left pixel). Needs
+    /// `--geo-scale`.
+    #[arg(long, requires = "geo_scale", allow_hyphen_values = true)]
     geo_origin: Option<String>,
 
     /// Geo-reference pixel scale as "scale_x,scale_y" (degrees per pixel).
-    #[arg(long, allow_hyphen_values = true)]
+    /// Needs `--geo-origin`.
+    #[arg(long, requires = "geo_origin", allow_hyphen_values = true)]
     geo_scale: Option<String>,
 
     /// Use PDFium for PDF rendering (required for vector PDFs).
@@ -816,6 +818,9 @@ fn main() {
     // ∪ hidden `__dump-commands` (`CLI_CONTRACT.md` §6). Dispatch on the matched
     // subcommand: built-ins deserialize through the derive `Cli`; op families
     // route to their `run()`.
+    // Before clap, which would report an extra positional ahead of the
+    // swallowed flag, or take the flag silently when nothing follows it.
+    pdf_geo_plan::refuse_swallowed_flag(&std::env::args_os().collect::<Vec<_>>());
     let matches = ops::assembled_cli().get_matches();
 
     match matches.subcommand() {

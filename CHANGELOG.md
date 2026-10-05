@@ -87,6 +87,11 @@ the `version` in `Cargo.toml`.
   `--quality` outside 1 to 100, and `plan`'s missing `--height` as usage
   mistakes (exit 2) before reading anything. They used to exit 1 after
   decoding the input, and quality 0 or 101 was taken as given (#81).
+- A `--geo-origin`, `--geo-scale` or `--affine` with its value left out no
+  longer takes the next flag as the value. `pyramid --geo-origin --centre`
+  used to exit 0 having applied neither; it now exits 2 naming `--centre`.
+  `pyramid` also refuses one of `--geo-origin` / `--geo-scale` without the
+  other, which it used to drop without a word (#75).
 - A FIFO or `<(...)` input decodes. It used to be opened by the SVG sniff,
   which ate its first 4 KB, and then reopened by a decoder that seeks; it is
   now read once and decoded from its bytes (#64).
