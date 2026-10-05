@@ -744,6 +744,183 @@ fn manifest_source_hash_refuses_stdin() {
 }
 
 // ---------------------------------------------------------------------------
+// --resume refuses a checkpoint made from a different source (#86)
+// ---------------------------------------------------------------------------
+
+/// 1024x1024, so a 32-pixel tile gives well over a thousand tiles to stop
+/// part way through. `flip` inverts every pixel: the same size, the same
+/// header, the same byte count, and different bytes.
+fn square(path: &Path, flip: bool) {
+    write_ppm(path, 1024, 1024, |x, y| {
+        let p = [(x * 7) as u8, (y * 13) as u8, (x ^ y) as u8];
+        if flip { p.map(|c| !c) } else { p }
+    });
+}
+
+/// Start a one-worker, checkpoint-every-tile tree run of `input` into `tree`,
+/// Ctrl-C it once `after` tiles are reported done, and require that it stopped
+/// with 130 and left a checkpoint for `--resume` to find.
+#[cfg(unix)]
+fn interrupt_tree_run(input: &Path, tree: &Path, after: usize) {
+    use std::io::{BufRead as _, BufReader};
+    use std::sync::mpsc::{self, RecvTimeoutError};
+
+    let mut child = viprs()
+        .args([
+            "pyramid",
+            s(input),
+            s(tree),
+            "--storage",
+            "directory",
+            "--tile-size",
+            "32",
+            "--concurrency",
+            "1",
+            "--checkpoint-every",
+            "1",
+            "--events",
+            "json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id().to_string();
+    let lines = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in lines.lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let (mut done, mut signalled) = (0usize, false);
+    loop {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => {
+                done += usize::from(line.contains("\"tile_completed\""));
+                if done >= after && !signalled {
+                    let kill = Command::new("kill").args(["-INT", &pid]).status().unwrap();
+                    assert!(kill.success(), "kill -INT {pid} failed");
+                    signalled = true;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = child.kill();
+                panic!("the run was still going after 300 s ({done} tiles reported)");
+            }
+        }
+    }
+    let status = child.wait().unwrap();
+    assert!(
+        signalled,
+        "the run finished before {after} tiles, so it was never interrupted"
+    );
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "a Ctrl-C'd run must exit 130, got {status}"
+    );
+    assert!(
+        files_with(tree, ".libviprs-job.json")
+            .iter()
+            .any(|p| p.is_file()),
+        "the interrupted run left no checkpoint, so there is nothing to resume"
+    );
+}
+
+/// `--resume` against a different image of the same size must be refused by
+/// the plan-hash check, before it touches the tree, rather than finish the
+/// job with tiles from two images. The digest of the source file is what
+/// tells them apart: the geometry, the flags and the byte count all match.
+/// The control is the resume with the image the job was started from, which
+/// must still go through.
+#[cfg(unix)]
+#[test]
+fn resume_refuses_a_different_source_of_the_same_size() {
+    let dir = unique_dir("resume-other-source");
+    let input = dir.join("input.ppm");
+    let other = dir.join("other.ppm");
+    square(&input, false);
+    square(&other, true);
+    assert_eq!(
+        std::fs::metadata(&input).unwrap().len(),
+        std::fs::metadata(&other).unwrap().len()
+    );
+    let tree = dir.join("tree");
+    interrupt_tree_run(&input, &tree, 20);
+    let tiles_before = files_with(&tree, ".png").len();
+
+    let resume = |source: &Path| {
+        run(&[
+            "pyramid",
+            s(source),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--tile-size",
+            "32",
+            "--concurrency",
+            "1",
+            "--resume",
+        ])
+    };
+    let refused = resume(&other);
+    let err = stderr(&refused);
+    assert_eq!(
+        code(&refused),
+        1,
+        "--resume with a different source of the same size must fail, not stitch two \
+         images into one tree:\n{err}"
+    );
+    assert!(err.contains("plan hash mismatch"), "{err}");
+    assert!(
+        err.contains("input"),
+        "the hint must say the input has to be the one the job started from:\n{err}"
+    );
+    assert_eq!(
+        files_with(&tree, ".png").len(),
+        tiles_before,
+        "a refused resume wrote tiles"
+    );
+
+    ok(&resume(&input), "--resume with the job's own source");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The source digest is the core's to record now (libviprs#1164): the CLI
+/// hands it to the run and the manifest builder, and no longer patches
+/// `manifest.json` after the sink has written it.
+#[test]
+fn the_cli_does_not_patch_the_manifest_after_the_run() {
+    let source = pipeline_rs();
+    assert!(
+        !source.contains("fn record_source_hash"),
+        "src/pipeline.rs still rewrites the manifest's bytes_hash itself"
+    );
+    assert!(
+        source.contains("with_source_content_hash"),
+        "src/pipeline.rs does not hand the source digest to the run"
+    );
+}
+
+/// The `src/pipeline.rs` this crate is built from.
+fn pipeline_rs() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pipeline.rs");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "src/pipeline.rs must be readable at {}: {e}",
+            path.display()
+        )
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Memory: the estimate counts what the flags cost, and the dedupe window
 // stops at what the plan can use
 // ---------------------------------------------------------------------------
