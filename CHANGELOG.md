@@ -16,6 +16,14 @@ the `version` in `Cargo.toml`.
   `object-store-sink` and `full`, each forwarding to the core feature of the
   same name, and `viprs features [--json]` to list what a binary was built
   with (#64).
+- A `*save` and a `*load` command for every codec libviprs ships, spelled
+  the way vips spells them (`jpegsave`, `webpload`, `svgload` and the rest),
+  with the codec options the core can honour as flags. Every loader takes
+  the five `--max-*` limits and reads stdin for `-` (#65).
+- The op commands write `.webp`, `.gif`, `.jxl`, the JPEG 2000 suffixes,
+  `.fits`, `.hdr`, `.csv` and `.mat` through the core's own extension table.
+  A `.jxl` or `.jp2` save in a build without that feature is refused, naming
+  the feature (#65).
 - `sobel`, `scharr`, `prewitt`, `canny`, `matrixmultiply`, `remainder` and
   `join` (#67).
 

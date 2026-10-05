@@ -90,6 +90,31 @@ impl fmt::Display for MissingFeature {
 
 impl std::error::Error for MissingFeature {}
 
+/// The save-side twin of [`MissingFeature`]: an encode that failed only
+/// because this build left out the feature the format needs (libviprs-cli#65).
+#[derive(Debug)]
+pub struct MissingEncoder {
+    /// The cargo feature, as `--features` spells it.
+    pub feature: &'static str,
+    /// The format, as a person would call it.
+    pub format: &'static str,
+}
+
+impl fmt::Display for MissingEncoder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "this viprs was built without the `{feature}` feature, so it cannot encode {format}; \
+             rebuild it with `--features {feature}` (or `--features full`), and run \
+             `viprs features` to see what this build has",
+            feature = self.feature,
+            format = self.format,
+        )
+    }
+}
+
+impl std::error::Error for MissingEncoder {}
+
 /// The [`MissingFeature`] behind a core decode error, if that is what it is.
 ///
 /// Matched on the core's typed `FeatureNotEnabled` variants, never on the

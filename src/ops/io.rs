@@ -300,16 +300,45 @@ pub fn save(raster: &Raster, path: &Path) -> Result<()> {
                 .with_context(|| format!("failed to write {}", path.display()))?;
             Ok(())
         }
+        // Every other container the core can write goes through its own
+        // extension table (`Raster::save_stripped`), so the suffix picks the
+        // same encoder here that it picks in the library (libviprs-cli#65).
+        // The four palette/lossless raster containers get the integer cast
+        // first, like `.png`; the other four carry float as it is.
+        "webp" | "gif" | "jxl" | "jp2" | "j2k" | "jpt" | "j2c" | "jpc" => {
+            let prepared = to_integer_encodable(raster)?;
+            save_through_core(prepared.as_ref(), path, &ext)
+        }
+        "fits" | "fit" | "fts" | "hdr" | "csv" | "mat" => save_through_core(raster, path, &ext),
         "" => bail!(
             "output path {} has no extension; use .png / .tif / .ppm (integer) or .v \
              (float / multiband / Fourier)",
             path.display()
         ),
         other => bail!(
-            "unsupported output extension .{other}; differential sinks are .png / .tif / .ppm \
-             (integer) and .v (float / multiband / Fourier)"
+            "unsupported output extension .{other}; viprs writes .png / .tif / .ppm / .pgm / \
+             .pnm / .v / .webp / .gif / .jxl / .jp2 / .fits / .hdr / .csv / .mat, and .jpg \
+             through jpegsave"
         ),
     }
+}
+
+/// Write `raster` through the core's extension table, naming the cargo
+/// feature when this build left out the encoder the suffix asks for.
+fn save_through_core(raster: &Raster, path: &Path, ext: &str) -> Result<()> {
+    let gated = match ext {
+        "jxl" => Some(("jxl", "JPEG XL", cfg!(feature = "jxl"))),
+        "jp2" | "j2k" | "jpt" | "j2c" | "jpc" => {
+            Some(("jp2k", "JPEG 2000", cfg!(feature = "jp2k")))
+        }
+        _ => None,
+    };
+    if let Some((feature, format, false)) = gated {
+        return Err(crate::features::MissingEncoder { feature, format }.into());
+    }
+    raster
+        .save_stripped(path)
+        .with_context(|| format!("failed to save {}", path.display()))
 }
 
 /// The integer bit depth an interpretation saves to on vips's integer sinks
@@ -422,7 +451,7 @@ fn cast_float_to_integer_round_even(raster: &Raster) -> Result<Raster> {
 /// a **float** raster (PNM is integer-only; a caller wanting cast-on-save uses
 /// `.png`), a **Fourier** raster (non-displayable), and any band count other
 /// than 1 or 3 (PNM has no 2-band or alpha/RGBA form, and no multiband form).
-fn encode_pnm(raster: &Raster) -> Result<Vec<u8>> {
+pub(crate) fn encode_pnm(raster: &Raster) -> Result<Vec<u8>> {
     let fmt = raster.format();
     if fmt.is_float() {
         bail!(
@@ -527,7 +556,7 @@ fn needs_srgb_conversion(interp: Interpretation) -> bool {
 /// Float / non-displayable rasters the caller would rather keep losslessly
 /// belong in a `.v` sink; this path is only reached once an integer sink was
 /// explicitly requested.
-fn to_integer_encodable(raster: &Raster) -> Result<std::borrow::Cow<'_, Raster>> {
+pub(crate) fn to_integer_encodable(raster: &Raster) -> Result<std::borrow::Cow<'_, Raster>> {
     use std::borrow::Cow;
     if needs_srgb_conversion(raster.interpretation()) {
         // Interpretation-aware conversion (#36): a Fourier / complex raster is
