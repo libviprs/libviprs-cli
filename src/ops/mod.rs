@@ -21,6 +21,24 @@
 //! a built-in to the owning family's `run()` via [`dispatch`]. There are **no**
 //! per-op enum arms and the pyramid code is never rewritten.
 
+/// Build a [`UsageError`] as an `anyhow::Error`, with `format!` arguments.
+///
+/// Declared ahead of the family modules so every one of them can use it
+/// without an import (macro_rules scoping is textual).
+macro_rules! usage_err {
+    ($($arg:tt)*) => {
+        ::anyhow::Error::new($crate::ops::UsageError(format!($($arg)*)))
+    };
+}
+
+/// `bail!` for a usage mistake: return early with a [`UsageError`], which
+/// `main` turns into exit 2 instead of exit 1.
+macro_rules! usage_bail {
+    ($($arg:tt)*) => {
+        return Err(usage_err!($($arg)*))
+    };
+}
+
 // Wave-1 reference family (real) + shared harness.
 pub mod dump;
 pub mod io;
@@ -48,6 +66,38 @@ pub mod mosaicing;
 pub mod resample;
 
 use clap::{ArgMatches, Command};
+
+/// An op refusing what was typed rather than what it was given to work on
+/// (`CLI_CONTRACT.md` §8, README "Exit codes"): exit 2, the same as a value
+/// clap or a built-in refuses.
+///
+/// The test for whether a refusal is one of these is whether the command line
+/// alone decides it. `clamp --min 200 --max 50`, a vector positional that
+/// doesn't parse, an output extension nothing here writes, or two flags that
+/// can't go together are all wrong whatever the input holds, so retyping is
+/// the fix. Anything that needs the image (or the matrix file, or the core op)
+/// to decide stays an ordinary error and exits 1, because there the command
+/// line was fine and it's the data or the library that said no.
+///
+/// Handlers build one with `usage_bail!` / `usage_err!` (declared at the top
+/// of this module), and `main` finds it anywhere in the error's chain, so a
+/// `.context(..)` on top doesn't turn it back into a 1.
+#[derive(Debug)]
+pub struct UsageError(pub String);
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UsageError {}
+
+/// Whether an op error is a usage mistake (exit 2) rather than an operational
+/// failure (exit 1). See [`UsageError`].
+pub fn is_usage_error(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<UsageError>())
+}
 
 /// The six `CLI_CONTRACT.md` §3 command shapes, rendered to the frozen
 /// SCHEMA_V2 §3.1 strings via [`Shape::as_str`].

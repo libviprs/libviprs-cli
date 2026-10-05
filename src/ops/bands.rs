@@ -59,7 +59,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command, value_parser};
 use libviprs::Raster;
 
@@ -277,11 +277,11 @@ fn parse_f64_vec(s: &str) -> Result<Vec<f64>> {
         .split_whitespace()
         .map(|t| {
             t.parse::<f64>()
-                .map_err(|e| anyhow!("constant {t:?} is not a number: {e}"))
+                .map_err(|e| usage_err!("constant {t:?} is not a number: {e}"))
         })
         .collect::<Result<_>>()?;
     if v.is_empty() {
-        bail!("expected at least one constant (a space-separated vector like \"10 20\")");
+        usage_bail!("expected at least one constant (a space-separated vector like \"10 20\")");
     }
     Ok(v)
 }
@@ -403,7 +403,7 @@ fn run_bandrank(m: &ArgMatches) -> Result<()> {
     // vips default index is -1 (= median). With the `-1..` value_parser the only
     // negative clap admits is -1, which maps to the core's `None` (median); a
     // non-negative index selects that sorted position. A positive index beyond
-    // `u32::MAX` is a typed exit-1 error — NOT a `u32::try_from` panic/abort
+    // `u32::MAX` is a usage error (exit 2) — NOT a `u32::try_from` panic/abort
     // (exit 101), per CLI_CONTRACT.md §8.
     let index_raw = *m.get_one::<i64>("index").expect("clap default -1");
     let index: Option<u32> = if index_raw < 0 {
@@ -411,7 +411,7 @@ fn run_bandrank(m: &ArgMatches) -> Result<()> {
     } else {
         Some(
             u32::try_from(index_raw)
-                .map_err(|_| anyhow!("--index {index_raw} out of range (max {})", u32::MAX))?,
+                .map_err(|_| usage_err!("--index {index_raw} out of range (max {})", u32::MAX))?,
         )
     };
 
@@ -454,7 +454,7 @@ fn run_bandbool(m: &ArgMatches) -> Result<()> {
         "and" => raster.try_bandand()?,
         "or" => raster.try_bandor()?,
         "eor" => raster.try_bandeor()?,
-        other => bail!("unknown bandbool operation {other:?} (expected and|or|eor)"),
+        other => usage_bail!("unknown bandbool operation {other:?} (expected and|or|eor)"),
     };
     // @doc-snippet:end command=bandbool slot=apply
 
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn bandrank_huge_index_is_error_not_panic() {
         // A positive --index beyond u32::MAX parses (the `-1..` bound only floors
-        // the value) but must convert to a typed exit-1 error, NEVER a
+        // the value) but must convert to a usage error (exit 2), NEVER a
         // u32::try_from panic/abort (exit 101) — CLI_CONTRACT.md §8. The index is
         // range-checked before any image is loaded, so dummy paths are fine.
         let m = cmd("bandrank")

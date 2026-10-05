@@ -59,7 +59,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command, value_parser};
 use libviprs::Raster;
 
@@ -213,11 +213,11 @@ fn run_invertlut(m: &ArgMatches) -> Result<()> {
     let in_path = PathBuf::from(pos(m, "IN"));
     let out_path = PathBuf::from(pos(m, "OUT"));
     // Clap's `1..=1000000` bound guarantees a positive, u32-representable value;
-    // the narrowing is still a typed exit-1 error, never an unchecked `as` cast
+    // the narrowing is still a usage error (exit 2), never an unchecked `as` cast
     // that could abort (CLI_CONTRACT.md §8 / the bands B2 lesson).
     let size_raw = *m.get_one::<i64>("size").expect("clap default 256");
     let size = u32::try_from(size_raw)
-        .map_err(|_| anyhow!("--size {size_raw} is out of range (expected 1..=1000000)"))?;
+        .map_err(|_| usage_err!("--size {size_raw} is out of range (expected 1..=1000000)"))?;
 
     // @doc-snippet:begin command=invertlut slot=load imports=decode_file
     let matrix = load_matrix(&in_path)?;

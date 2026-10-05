@@ -64,7 +64,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command, value_parser};
 use libviprs::{ArithmeticError, Raster};
 
@@ -619,7 +619,7 @@ fn run_relational(m: &ArgMatches) -> Result<()> {
         "lesseq" => left.try_less_eq(&right)?,
         "more" => left.try_more_than(&right)?,
         "moreeq" => left.try_more_eq(&right)?,
-        other => bail!("unknown relational operator {other:?}"),
+        other => usage_bail!("unknown relational operator {other:?}"),
     };
     io::save(&out, &PathBuf::from(pos(m, "OUT")))?;
     Ok(())
@@ -638,7 +638,7 @@ fn run_relational_const(m: &ArgMatches) -> Result<()> {
         "lesseq" => raster.less_eq_const(c),
         "more" => raster.more_than_const(c),
         "moreeq" => raster.more_eq_const(c),
-        other => bail!("unknown relational operator {other:?}"),
+        other => usage_bail!("unknown relational operator {other:?}"),
     };
     io::save(&out, &PathBuf::from(pos(m, "OUT")))?;
     Ok(())
@@ -655,7 +655,7 @@ fn run_boolean(m: &ArgMatches) -> Result<()> {
         "and" => left.try_bitand(&right)?,
         "or" => left.try_bitor(&right)?,
         "eor" => left.try_bitxor(&right)?,
-        other => bail!("unknown boolean operator {other:?} (expected and|or|eor)"),
+        other => usage_bail!("unknown boolean operator {other:?} (expected and|or|eor)"),
     };
     io::save(&out, &PathBuf::from(pos(m, "OUT")))?;
     Ok(())
@@ -668,7 +668,7 @@ fn run_boolean_const(m: &ArgMatches) -> Result<()> {
     reject_float("boolean_const", &raster)?;
     let c = *m.get_one::<i64>("C").expect("required positional");
     // and|or|eor take an i64 mask; lshift|rshift take a u32 shift count. A
-    // negative or too-large shift is a typed exit-1 error, NEVER a panic
+    // negative or too-large shift is a usage error (exit 2), NEVER a panic
     // (bands B2 lesson): u32::try_from surfaces the range fault.
     let out = match pos(m, "OP") {
         "and" => raster.bitand_const(c),
@@ -676,7 +676,7 @@ fn run_boolean_const(m: &ArgMatches) -> Result<()> {
         "eor" => raster.bitxor_const(c),
         "lshift" => raster.lshift(shift_count(c)?),
         "rshift" => raster.rshift(shift_count(c)?),
-        other => bail!("unknown boolean operator {other:?}"),
+        other => usage_bail!("unknown boolean operator {other:?}"),
     };
     io::save(&out, &PathBuf::from(pos(m, "OUT")))?;
     Ok(())
@@ -687,7 +687,7 @@ fn run_boolean_const(m: &ArgMatches) -> Result<()> {
 /// §8).
 fn shift_count(c: i64) -> Result<u32> {
     u32::try_from(c)
-        .map_err(|_| anyhow!("shift count {c} is out of range (must be 0..={})", u32::MAX))
+        .map_err(|_| usage_err!("shift count {c} is out of range (must be 0..={})", u32::MAX))
 }
 
 /// `scale IN OUT [--log]` — S1 linear/log stretch to uchar.
@@ -766,7 +766,7 @@ fn run_math(m: &ArgMatches) -> Result<()> {
         "asinh" => raster.asinh(),
         "acosh" => raster.acosh(),
         "atanh" => raster.atanh(),
-        other => bail!("unknown math operation {other:?}"),
+        other => usage_bail!("unknown math operation {other:?}"),
     };
     io::save(&out, &PathBuf::from(pos(m, "OUT")))?;
     Ok(())
@@ -781,7 +781,7 @@ fn run_math2(m: &ArgMatches) -> Result<()> {
         "atan2" => left.try_atan2(&right)?,
         "pow" => left.try_pow(&right)?,
         "wop" => left.try_wop(&right)?,
-        other => bail!("unknown math2 operation {other:?} (expected atan2|pow|wop)"),
+        other => usage_bail!("unknown math2 operation {other:?} (expected atan2|pow|wop)"),
     };
     io::save(&out, &PathBuf::from(pos(m, "OUT")))?;
     Ok(())
@@ -805,7 +805,7 @@ fn run_complex(m: &ArgMatches) -> Result<()> {
         "polar" => raster.try_polar()?,
         "rect" => raster.try_rect()?,
         "conj" => raster.try_conj()?,
-        other => bail!("unknown complex operation {other:?} (expected polar|rect|conj)"),
+        other => usage_bail!("unknown complex operation {other:?} (expected polar|rect|conj)"),
     };
     io::save(&out, &PathBuf::from(pos(m, "OUT")))?;
     Ok(())
@@ -818,7 +818,7 @@ fn run_complexget(m: &ArgMatches) -> Result<()> {
     let out = match pos(m, "OP") {
         "real" => raster.try_real()?,
         "imag" => raster.try_imag()?,
-        other => bail!("unknown complexget operation {other:?} (expected real|imag)"),
+        other => usage_bail!("unknown complexget operation {other:?} (expected real|imag)"),
     };
     io::save(&out, &PathBuf::from(pos(m, "OUT")))?;
     Ok(())

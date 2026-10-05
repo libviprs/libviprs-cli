@@ -80,7 +80,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command, value_parser};
 use libviprs::Raster;
 
@@ -387,14 +387,14 @@ fn run_hist_find(m: &ArgMatches) -> Result<()> {
     let in_path = PathBuf::from(pos(m, "IN"));
     let out_path = PathBuf::from(pos(m, "OUT"));
     // -1 (the default) = all bands. A non-negative band selects one band; the
-    // i64 → u32 conversion is a typed exit-1 error, never a `try_from` abort.
+    // i64 → u32 conversion is a usage error (exit 2), never a `try_from` abort.
     let band_raw = *m.get_one::<i64>("band").expect("clap default -1");
     let band: Option<u32> = if band_raw < 0 {
         None
     } else {
         Some(
             u32::try_from(band_raw)
-                .map_err(|_| anyhow!("--band {band_raw} out of range (max {})", u32::MAX))?,
+                .map_err(|_| usage_err!("--band {band_raw} out of range (max {})", u32::MAX))?,
         )
     };
 

@@ -362,6 +362,11 @@ fn run_pdf_extract(args: PdfExtractArgs) {
     };
 
     if let Err(e) = ops::io::save(&raster, &args.output) {
+        // An output extension nothing here writes is decided by the path
+        // alone, so it's a usage mistake on this built-in too (#78).
+        if ops::is_usage_error(&e) {
+            usage_error(&format!("{e:#}"), "");
+        }
         operational_error(&format!("{e:#}"));
     }
     eprintln!(

@@ -56,13 +56,13 @@ One contract for every command, built-ins and ops alike:
 | Code | Meaning |
 |---|---|
 | `0` | Success. |
-| `1` | Operational failure: an input that cannot be read or decoded, an I/O error, an op that refuses its input or a value it was given, a check that found a problem (`verify`, `pmtiles verify`), a pyramid that skipped tiles under `--skip-failed`, or a feature this build left out (the message names the `--features` flag to rebuild with). |
-| `2` | Usage mistake: an unknown flag, a missing or conflicting argument (including a required mode flag such as `webpsave`'s `--lossless`), a value clap or the built-in commands refuse, or a combination of flags that has no meaning. Nothing is written. |
+| `1` | Operational failure: an input that cannot be read or decoded, an I/O error, an op that refuses its input (or a value only the input can rule out), a check that found a problem (`verify`, `pmtiles verify`), a pyramid that skipped tiles under `--skip-failed`, or a feature this build left out (the message names the `--features` flag to rebuild with). |
+| `2` | Usage mistake: an unknown flag, a missing or conflicting argument (including a required mode flag such as `webpsave`'s `--lossless`), a value clap, a built-in or an op refuses on the command line alone, or a combination of flags that has no meaning. Nothing is written. |
 | `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself; any other command dies by the signal, which a shell reports as 130 too. |
 
 A missing feature is a 1 rather than a 2 on purpose: the command line was fine, this binary just cannot do it, and rebuilding fixes it where retyping would not.
 
-The op commands (`gamma`, `clamp`, `linear` and the rest of the vips nicknames) leave to clap what clap can check, so a flag value that isn't a number, or isn't one of the listed choices, is a 2. A value the op checks itself is a 1 today, the same as the op failing: a space-separated vector argument that doesn't parse (`linear`'s `"1 1 1"`), `clamp --min 200 --max 50`, or a `gamma --exponent` outside vips's range. Moving those to 2 is tracked in #78.
+The op commands (`gamma`, `clamp`, `linear` and the rest of the vips nicknames) draw the line by asking whether the command line alone decides it. A value clap can't parse is a 2, and so is one the op parses and then refuses before the input could matter: `clamp --min 200 --max 50` or a NaN bound, a `gamma --exponent` outside vips's range, a space-separated vector argument that doesn't parse or has the wrong length (`linear`'s `"2 3"`), a negative `extract_area` coordinate, two flags that can't go together (`thumbnail --linear --height`), a value vips takes that viprs never does (`thumbnail --crop attention`, `merge --mblend 5`), an output extension nothing here writes, or `-` where the op needs a real file. Those print a hint pointing at the op's `--help`. A refusal that needs the image, a matrix file or the core op to decide stays a 1, even when it's about something you typed: an `--ink` with the wrong number of values for the image's bands, `add` on two images of different sizes, or an `invertlut --size` the core caps lower than vips does.
 
 ## Commands
 

@@ -332,26 +332,255 @@ fn a_missing_required_mode_flag_exits_2_and_writes_nothing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An op that refuses a value it parsed is a 1 today, and the README says
-/// so. This cell is here so the table and the binary cannot drift apart
-/// silently: whoever moves these to 2 changes both.
+/// Run `viprs` with stdin closed, so a cell that names `-` as its input can't
+/// hang waiting on the terminal.
+fn run_no_stdin(args: &[&str]) -> Output {
+    viprs()
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("the viprs binary must be spawnable")
+}
+
+/// One op command line that clap accepts and the op then refuses on the
+/// command line alone. `{IN}` is a 16x16 RGB PNG and `{OUT}` a path stem in
+/// the cell's own scratch dir.
+struct Refusal {
+    args: &'static [&'static str],
+    needle: &'static str,
+}
+
+const USAGE_REFUSALS: &[Refusal] = &[
+    Refusal {
+        args: &["clamp", "{IN}", "{OUT}.png", "--min", "200", "--max", "50"],
+        needle: "is not <=",
+    },
+    Refusal {
+        args: &["clamp", "{IN}", "{OUT}.png", "--min", "nan", "--max", "200"],
+        needle: "is not <=",
+    },
+    Refusal {
+        args: &["clamp", "{IN}", "{OUT}.png", "--min", "0", "--max", "nan"],
+        needle: "is not <=",
+    },
+    Refusal {
+        args: &["gamma", "{IN}", "{OUT}.png", "--exponent", "5000"],
+        needle: "out of range",
+    },
+    Refusal {
+        args: &["linear", "{IN}", "{OUT}.v", "2 3", "1 1"],
+        needle: "single scalar",
+    },
+    Refusal {
+        args: &["linear", "{IN}", "{OUT}.v", "two", "1"],
+        needle: "not a number",
+    },
+    Refusal {
+        args: &["remainder_const", "{IN}", "{OUT}.png", "3 4"],
+        needle: "single scalar",
+    },
+    Refusal {
+        args: &["bandjoin_const", "{IN}", "{OUT}.png", "10 x"],
+        needle: "not a number",
+    },
+    Refusal {
+        args: &[
+            "embed",
+            "{IN}",
+            "{OUT}.png",
+            "0",
+            "0",
+            "32",
+            "32",
+            "--extend",
+            "background",
+            "--background",
+            "red",
+        ],
+        needle: "not a number",
+    },
+    Refusal {
+        args: &["extract_area", "{IN}", "{OUT}.png", "-1", "0", "2", "2"],
+        needle: "must be >= 0",
+    },
+    Refusal {
+        args: &["affine", "{IN}", "{OUT}.png", "1 0 0"],
+        needle: "four numbers",
+    },
+    Refusal {
+        args: &[
+            "thumbnail",
+            "{IN}",
+            "{OUT}.png",
+            "8",
+            "--linear",
+            "--height",
+            "8",
+        ],
+        needle: "cannot be combined",
+    },
+    Refusal {
+        args: &["thumbnail", "{IN}", "{OUT}.png", "8", "--crop", "attention"],
+        needle: "not supported",
+    },
+    Refusal {
+        args: &["fractsurf", "{OUT}.v", "16", "16", "5.0"],
+        needle: "outside the vips range",
+    },
+    Refusal {
+        args: &[
+            "sdf",
+            "{OUT}.v",
+            "16",
+            "16",
+            "rounded-box",
+            "--corners",
+            "1 2",
+        ],
+        needle: "four integers",
+    },
+    Refusal {
+        args: &["sdf", "{OUT}.v", "16", "16", "circle", "--a", "8"],
+        needle: "two integers",
+    },
+    Refusal {
+        args: &[
+            "draw_rect",
+            "{IN}",
+            "{OUT}.png",
+            "0",
+            "0",
+            "4",
+            "4",
+            "--ink",
+            "red green blue",
+        ],
+        needle: "not an integer",
+    },
+    Refusal {
+        args: &["boolean_const", "{IN}", "{OUT}.png", "lshift", "--", "-1"],
+        needle: "shift count",
+    },
+    Refusal {
+        args: &[
+            "merge",
+            "{IN}",
+            "{IN}",
+            "{OUT}.png",
+            "horizontal",
+            "0",
+            "0",
+            "--mblend",
+            "5",
+        ],
+        needle: "--mblend",
+    },
+    Refusal {
+        args: &["copy", "{IN}", "{OUT}.jpg"],
+        needle: "banned",
+    },
+    Refusal {
+        args: &["copy", "{IN}", "{OUT}.xyz"],
+        needle: "unsupported output extension",
+    },
+    Refusal {
+        args: &["copy", "{IN}", "{OUT}"],
+        needle: "no extension",
+    },
+    Refusal {
+        args: &["tiffload", "-", "{OUT}.png", "--page", "1"],
+        needle: "needs a file",
+    },
+    Refusal {
+        args: &["analyzeload", "-", "{OUT}.png"],
+        needle: "needs a file",
+    },
+];
+
+/// Every op refusal the command line alone decides is a usage mistake, exit 2
+/// through the same path the built-ins use (README "Exit codes", #78): the
+/// message, a hint naming the op's `--help`, and nothing written.
 #[test]
-fn an_op_refusing_a_value_it_parsed_exits_1() {
-    let dir = unique_dir("clamp-inverted");
+fn an_op_refusing_a_value_it_parsed_exits_2() {
+    let dir = unique_dir("op-usage-refusals");
     let png = make_input(&dir, 16, 16);
+    let mut failures = Vec::new();
+    for (i, case) in USAGE_REFUSALS.iter().enumerate() {
+        let stem = dir.join(format!("out{i}"));
+        let stem = stem.to_str().unwrap();
+        let args: Vec<String> = case
+            .args
+            .iter()
+            .map(|a| {
+                a.replace("{IN}", png.to_str().unwrap())
+                    .replace("{OUT}", stem)
+            })
+            .collect();
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = run_no_stdin(&argv);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let op = case.args[0];
+        let written: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| *n == format!("out{i}") || n.starts_with(&format!("out{i}.")))
+            .collect();
+        if code(&out) != 2
+            || !stderr.contains(case.needle)
+            || !stderr.contains(&format!("viprs {op} --help"))
+            || !written.is_empty()
+        {
+            failures.push(format!(
+                "{argv:?}: exit {}, wrote {written:?}, stderr:\n{stderr}",
+                code(&out)
+            ));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        failures.is_empty(),
+        "{} of {} refusals were not a clean exit 2:\n{}",
+        failures.len(),
+        USAGE_REFUSALS.len(),
+        failures.join("\n")
+    );
+}
+
+/// The other half of the line: a refusal that needs the input to decide is an
+/// operational failure and stays a 1, even when it's about a value the user
+/// typed (the ink count has to match the image's bands).
+#[test]
+fn an_op_refusing_its_input_still_exits_1() {
+    let dir = unique_dir("op-operational-refusals");
+    let png = make_input(&dir, 16, 16);
+    let other_dir = dir.join("other");
+    std::fs::create_dir_all(&other_dir).unwrap();
+    let other = make_input(&other_dir, 8, 8);
+    let missing = dir.join("missing.png");
     let res = dir.join("out.png");
-    let out = run(&[
-        "clamp",
+    let (p, o, m, r) = (
         png.to_str().unwrap(),
+        other.to_str().unwrap(),
+        missing.to_str().unwrap(),
         res.to_str().unwrap(),
-        "--min",
-        "200",
-        "--max",
-        "50",
-    ]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(code(&out), 1, "stderr:\n{stderr}");
-    assert!(!res.exists());
+    );
+    let cases: [(&[&str], &str); 3] = [
+        (&["clamp", m, r, "--min", "0", "--max", "1"], "missing.png"),
+        (
+            &["draw_rect", p, r, "0", "0", "4", "4", "--ink", "1 2"],
+            "band",
+        ),
+        (&["add", p, o, r], "mismatch"),
+    ];
+    for (args, needle) in cases {
+        let out = run(args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(code(&out), 1, "{args:?} stderr:\n{stderr}");
+        assert!(stderr.contains(needle), "{args:?} stderr:\n{stderr}");
+        assert!(!stderr.contains("Hint:"), "{args:?} stderr:\n{stderr}");
+        assert!(!res.exists(), "{args:?} wrote {}", res.display());
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

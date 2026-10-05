@@ -845,11 +845,15 @@ fn main() {
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
         Some((name, sub)) => {
-            // Op failure → exit 1 (`CLI_CONTRACT.md` §8); usage errors already
-            // exited 2 inside clap parsing above.
+            // `CLI_CONTRACT.md` §8: clap already exited 2 for what it checks.
+            // A value the op refuses on the command line alone comes back as
+            // an `ops::UsageError` and is a 2 as well; everything else (the
+            // input, a matrix file, the core op) is an operational failure, 1.
             if let Err(e) = ops::dispatch(name, sub) {
-                eprintln!("Error: {e:#}");
-                process::exit(1);
+                if ops::is_usage_error(&e) {
+                    usage_error(&format!("{e:#}"), &format!("see 'viprs {name} --help'"));
+                }
+                operational_error(&format!("{e:#}"));
             }
         }
         None => {

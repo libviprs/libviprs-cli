@@ -55,6 +55,15 @@ the `version` in `Cargo.toml`.
 
 ### Changed
 
+- An op command that refuses a value on the command line alone now exits 2,
+  the same as clap and the built-ins, with a hint naming the op's `--help`.
+  That covers inverted or NaN `clamp` bounds, a `gamma --exponent` out of
+  range, vector arguments that don't parse or have the wrong length, a
+  negative `extract_area` coordinate, conflicting `thumbnail` flags, an
+  unsupported `--crop` or `--mblend`, an output extension nothing writes and
+  `-` where a file is needed. A refusal the input decides is still exit 1
+  (#78).
+
 - A feature this build left out exits 1 everywhere. `--trace-level`,
   `packfile://` and `s3://` used to exit 2 for it while a missing codec exited
   1. The README's "Exit codes" section now holds the whole contract (#64), and

@@ -189,7 +189,7 @@ pub fn inputs_and_out(m: &ArgMatches, id: &str) -> Result<(Vec<PathBuf>, PathBuf
         .map(PathBuf::from)
         .collect();
     if vals.len() < 2 {
-        bail!(
+        usage_bail!(
             "the {id} argument needs at least two values (one or more inputs \
              followed by the output path), got {}",
             vals.len()
@@ -250,7 +250,7 @@ pub fn save(raster: &Raster, path: &Path) -> Result<()> {
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
-        "jpg" | "jpeg" => bail!(
+        "jpg" | "jpeg" => usage_bail!(
             ".jpg/.jpeg is banned as a differential output sink (lossy encoding). \
              Use .png for integer rasters, or .v for float / multiband / Fourier rasters."
         ),
@@ -310,12 +310,12 @@ pub fn save(raster: &Raster, path: &Path) -> Result<()> {
             save_through_core(prepared.as_ref(), path, &ext)
         }
         "fits" | "fit" | "fts" | "hdr" | "csv" | "mat" => save_through_core(raster, path, &ext),
-        "" => bail!(
+        "" => usage_bail!(
             "output path {} has no extension; use .png / .tif / .ppm (integer) or .v \
              (float / multiband / Fourier)",
             path.display()
         ),
-        other => bail!(
+        other => usage_bail!(
             "unsupported output extension .{other}; viprs writes .png / .tif / .ppm / .pgm / \
              .pnm / .v / .webp / .gif / .jxl / .jp2 / .fits / .hdr / .csv / .mat, and .jpg \
              through jpegsave"

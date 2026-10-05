@@ -41,14 +41,14 @@
 //! public `try_merge` fixes the blend width at the libvips default of 10 (its
 //! rustdoc: "`mblend` is fixed at the libvips default of 10 on the public
 //! surface"); there is no core API to vary it. The flag is therefore surfaced
-//! for vips parity with its default of 10, but any *other* value is a typed
-//! exit-1 error rather than a silently-ignored flag (the `add` 16-bit lesson:
+//! for vips parity with its default of 10, but any *other* value is a usage
+//! error (exit 2) rather than a silently-ignored flag (the `add` 16-bit lesson:
 //! never emit a wrong "success" for an input the core cannot honour). The
 //! differential only ever uses the default.
 //!
 //! **Deliberate divergence from the oracle (adversarial-review finding 2):**
 //! `vips merge --mblend N` *succeeds* and produces a valid, different blend for
-//! any in-range N, whereas `viprs merge --mblend N` (N != 10) *exits 1*. This is
+//! any in-range N, whereas `viprs merge --mblend N` (N != 10) *exits 2*. This is
 //! a real, intentional CLI-surface divergence — the loud-fail is correct, but it
 //! means no differential can (or does) cover what vips actually does at a
 //! non-default mblend, since the core cannot reproduce it. Flagged here and in
@@ -166,7 +166,7 @@ pub fn commands() -> Vec<Command> {
                         .default_value("10")
                         // vips's own bounds; the core, however, only supports the
                         // default 10 (see the module header) — a non-default value
-                        // is a typed exit-1 error, not a silently-ignored flag.
+                        // is a usage error (exit 2), not a silently-ignored flag.
                         .value_parser(value_parser!(i32).range(MBLEND_MIN..=MBLEND_MAX))
                         .help(
                             "Maximum blend width (vips default 10; the core fixes this at 10, \
@@ -248,7 +248,7 @@ fn direction(m: &ArgMatches) -> Result<MergeDirection> {
     match pos(m, "DIRECTION") {
         "horizontal" => Ok(MergeDirection::Horizontal),
         "vertical" => Ok(MergeDirection::Vertical),
-        other => bail!("unknown direction {other:?} (expected horizontal|vertical)"),
+        other => usage_bail!("unknown direction {other:?} (expected horizontal|vertical)"),
     }
 }
 
@@ -263,11 +263,11 @@ fn run_merge(m: &ArgMatches) -> Result<()> {
     let dy = *m.get_one::<i32>("DY").expect("required positional");
 
     // The core public surface fixes mblend at the vips default 10 and offers no
-    // API to vary it. Reject any other value with a typed exit-1 error rather
+    // API to vary it. Reject any other value with a usage error (exit 2) rather
     // than silently ignoring it (never emit a wrong "success"; `add` 16-bit).
     let mblend = *m.get_one::<i32>("mblend").expect("clap default 10");
     if mblend != DEFAULT_MBLEND {
-        bail!(
+        usage_bail!(
             "--mblend {mblend} is not supported: the core fixes the blend width at the \
              vips default {DEFAULT_MBLEND}"
         );
@@ -430,9 +430,9 @@ mod tests {
     }
 
     #[test]
-    fn merge_nondefault_mblend_is_exit1_not_ignored() {
+    fn merge_nondefault_mblend_is_refused_not_ignored() {
         // clap accepts any in-range mblend, but the handler rejects a non-default
-        // value with a typed error (exit 1), never a silent success.
+        // value with a usage error (exit 2), never a silent success.
         let m = cmd("merge")
             .try_get_matches_from([
                 "merge",

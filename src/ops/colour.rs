@@ -349,7 +349,7 @@ fn pos<'a>(m: &'a ArgMatches, id: &str) -> &'a str {
 /// clap) into an [`Interpretation`]. Any name outside the core's `FromStr`
 /// surface becomes a typed exit-1 error rather than a panic.
 fn parse_space(s: &str) -> Result<Interpretation> {
-    Interpretation::from_str(s).map_err(|e| anyhow::anyhow!("unknown colour space {s:?}: {e}"))
+    Interpretation::from_str(s).map_err(|e| usage_err!("unknown colour space {s:?}: {e}"))
 }
 
 /// Map the `--intent` flag to the core [`Intent`].
@@ -360,7 +360,9 @@ fn intent_of(m: &ArgMatches) -> Result<Intent> {
         "saturation" => Intent::Saturation,
         "absolute" => Intent::Absolute,
         other => {
-            bail!("unknown intent {other:?} (expected perceptual|relative|saturation|absolute)")
+            usage_bail!(
+                "unknown intent {other:?} (expected perceptual|relative|saturation|absolute)"
+            )
         }
     })
 }
@@ -450,7 +452,7 @@ fn run_icc_import(m: &ArgMatches) -> Result<()> {
     let pcs = match pos_flag(m, "pcs") {
         "lab" => Pcs::Lab,
         "xyz" => Pcs::Xyz,
-        other => bail!("unknown pcs {other:?} (expected lab|xyz)"),
+        other => usage_bail!("unknown pcs {other:?} (expected lab|xyz)"),
     };
 
     // @doc-snippet:begin command=icc_import slot=load imports=decode_file
