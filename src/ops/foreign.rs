@@ -754,12 +754,17 @@ fn decode(name: &str, m: &ArgMatches) -> Result<Raster> {
             source(libviprs::decode_avif(&bytes, limits))?
         }
         "svgload" => {
-            require_decoder(cfg!(feature = "svg"), "svg", "SVG")?;
             let unlimited = m.get_flag("unlimited");
             // One byte past the core's ceiling is enough for it to refuse
             // with its own typed error; --unlimited reads the whole document.
             let ceiling = (!unlimited).then_some(libviprs::svg::MAX_INPUT_BYTES as u64 + 1);
             let bytes = read_input(spec, &limits, ceiling)?;
+            // The same order `input::decode_path` keeps: a gzipped document
+            // is refused for what it is before the feature check, which
+            // would otherwise tell a build without `svg` to rebuild with it,
+            // and the renderer in a build with it would fail it as XML.
+            crate::input::refuse_compressed_svg(&bytes)?;
+            require_decoder(cfg!(feature = "svg"), "svg", "SVG")?;
             let options = libviprs::SvgOptions::default()
                 .with_dpi(*m.get_one::<f64>("dpi").expect("defaulted"))
                 .with_scale(*m.get_one::<f64>("scale").expect("defaulted"))
