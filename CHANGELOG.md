@@ -55,6 +55,14 @@ the `version` in `Cargo.toml`.
 
 ### Changed
 
+- `csvload` and `matrixload` decode through the core's
+  `Raster::csv_load_with_limits` / `matrix_load_with_limits` (libviprs#1168),
+  which check the grid against `--max-coord`, `--max-pixels` and
+  `--max-alloc-bytes` before building it. The CLI used to measure and price
+  the grid itself at three copies (csv) or two (matrix); the core builds it
+  once, so a grid up to the full `--max-alloc-bytes` now loads where it used
+  to be refused. Refusals still name the flag to raise and still exit 1; the
+  byte size they report is the one grid (#90).
 - The stub store an `s3://` sink writes through under the hidden
   `--object-store-root DIR` is the core's `DirectoryObjectStore` now, with
   the same `DIR/bucket/key` layout and the same tile bytes; the CLI's private
