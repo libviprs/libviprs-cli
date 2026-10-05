@@ -224,12 +224,24 @@ struct PyramidArgs {
     #[arg(long, default_value = "64")]
     buffer_size: usize,
 
-    /// Geo-reference origin as "longitude,latitude" (top-left pixel).
-    #[arg(long, allow_hyphen_values = true)]
+    /// Geo-reference origin as "longitude,latitude" (top-left pixel). Needs
+    /// `--geo-scale`.
+    #[arg(
+        long,
+        requires = "geo_scale",
+        allow_hyphen_values = true,
+        value_parser = pdf_geo_plan::not_a_flag
+    )]
     geo_origin: Option<String>,
 
     /// Geo-reference pixel scale as "scale_x,scale_y" (degrees per pixel).
-    #[arg(long, allow_hyphen_values = true)]
+    /// Needs `--geo-origin`.
+    #[arg(
+        long,
+        requires = "geo_origin",
+        allow_hyphen_values = true,
+        value_parser = pdf_geo_plan::not_a_flag
+    )]
     geo_scale: Option<String>,
 
     /// Use PDFium for PDF rendering (required for vector PDFs).

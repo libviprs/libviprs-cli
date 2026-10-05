@@ -446,7 +446,8 @@ struct TransformArgs {
         long,
         value_name = "X,Y",
         requires = "geo_scale",
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        value_parser = not_a_flag
     )]
     geo_origin: Option<String>,
 
@@ -456,7 +457,8 @@ struct TransformArgs {
         long,
         value_name = "X,Y",
         requires = "geo_origin",
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        value_parser = not_a_flag
     )]
     geo_scale: Option<String>,
 
@@ -466,7 +468,8 @@ struct TransformArgs {
         long,
         value_name = "A,B,C,D,E,F",
         conflicts_with_all = ["geo_origin", "geo_scale"],
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        value_parser = not_a_flag
     )]
     affine: Option<String>,
 }
@@ -515,6 +518,25 @@ fn finite_f64(text: &str) -> Result<f64, String> {
         Ok(v) if v.is_finite() => Ok(v),
         Ok(v) => Err(format!("{v} is not a finite number")),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The value of a number-list flag (`--geo-origin`, `--geo-scale`,
+/// `--affine`), refused when it is another flag.
+///
+/// Those flags take values that start with `-` (`-122.4,37.7`), so clap hands
+/// them whatever comes next, and a bare `--geo-origin` with its value
+/// forgotten would take the following flag as the value and that flag would
+/// never apply. Nothing that starts with `--` is a number, so refusing it
+/// here costs no real value and names the flag that would have vanished.
+pub(crate) fn not_a_flag(value: &str) -> Result<String, String> {
+    if value.starts_with("--") {
+        Err(format!(
+            "{value:?} looks like a flag, not a value; give the value after the flag, or \
+             join the two with = (--flag=VALUE)"
+        ))
+    } else {
+        Ok(value.to_owned())
     }
 }
 
