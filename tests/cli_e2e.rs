@@ -1920,7 +1920,7 @@ fn pmtiles_pack_refuses_format_raw() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
     assert!(
-        stderr.contains("raw"),
+        stderr.contains("--format raw"),
         "the refusal must name the format, got:\n{stderr}"
     );
     assert!(!packed.exists());
@@ -1947,7 +1947,9 @@ fn pmtiles_pack_round_trips_a_centred_tree_with_centre() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("centre") && stdout.contains("yes"),
+        stdout
+            .lines()
+            .any(|l| l.trim_start().starts_with("centre") && l.trim_end().ends_with("yes")),
         "the effective plan must say the grid is centred, got:\n{stdout}"
     );
 
@@ -2065,9 +2067,11 @@ fn pmtiles_pack_warns_about_absent_and_unvisited_tiles() {
         "holes alone must not fail the pack, stderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    // Matched on whole phrases, because the temp directory's own name carries
+    // "warnings" and a bare word would match the path.
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("warning") && stderr.contains("absent"),
+        stderr.contains("Warning: 1 of the") && stderr.contains("absent from the tree"),
         "the absent tile must be warned about, got:\n{stderr}"
     );
     assert!(
@@ -2105,8 +2109,11 @@ fn pmtiles_pack_refuses_a_symlinked_tile() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    // "is a symlink", not just "symlink": the temp directory's own name
+    // carries the word, so the bare word matched the path and passed with the
+    // guard switched off.
     assert!(
-        stderr.contains("symlink"),
+        stderr.contains("is a symlink"),
         "the refusal must say why, got:\n{stderr}"
     );
     assert!(!packed.exists());
