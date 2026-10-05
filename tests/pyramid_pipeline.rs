@@ -429,21 +429,63 @@ fn verify_reads_skip_blanks_from_a_tree() {
     let told = run(&["verify", s(&tree), "--drop-blanks"]);
     assert_eq!(code(&told), 0, "{}", stderr(&told));
 
-    // The re-render still wants every planned tile on disk until the core
-    // can skip a dropped blank (libviprs#1174). That is the pyramid's doing,
-    // not the command line's, so it exits 1 and says so instead of listing
-    // every dropped blank as a missing tile.
-    let rerender = run(&["verify", s(&tree), "--source", s(&input)]);
-    assert_eq!(code(&rerender), 1, "{}", stderr(&rerender));
-    assert!(
-        stderr(&rerender).contains("re-render") && stderr(&rerender).contains("blank"),
-        "{}",
-        stderr(&rerender)
+    // The re-render accepts a dropped blank now (libviprs#1174), so --source
+    // checks a --drop-blanks tree too, with or without the flag.
+    for told in [&[][..], &["--drop-blanks"][..]] {
+        let mut args = vec!["verify", s(&tree), "--source", s(&input)];
+        args.extend_from_slice(told);
+        let rerender = run(&args);
+        assert_eq!(code(&rerender), 0, "{told:?}: {}", stderr(&rerender));
+        assert!(
+            stdout(&rerender).contains("a re-render of the source"),
+            "{told:?}: {}",
+            stdout(&rerender)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A raw `--drop-blanks` tree, so the re-render compares bytes, and a kept
+/// tile that goes missing is still named with `--source`.
+#[test]
+fn verify_re_renders_a_raw_drop_blanks_tree_and_still_catches_a_lost_tile() {
+    let dir = unique_dir("verify-drop-raw");
+    let input = half_blank(&dir);
+    let tree = dir.join("raw");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--format",
+            "raw",
+            "--tile-size",
+            "64",
+            "--drop-blanks",
+            "--checksum",
+        ]),
+        "the raw --drop-blanks tree",
     );
+    let rerender = run(&["verify", s(&tree), "--source", s(&input)]);
+    assert_eq!(code(&rerender), 0, "{}", stderr(&rerender));
+
+    // The top level's top-left tile is gradient, so the run kept it.
+    let top = std::fs::read_dir(&tree)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .max()
+        .expect("the tree has numbered level directories");
+    let kept = tree.join(top.to_string()).join("0_0.raw");
+    std::fs::remove_file(&kept).expect("the top-left tile was kept");
+    let lost = run(&["verify", s(&tree), "--source", s(&input)]);
+    assert_eq!(code(&lost), 1, "{}", stderr(&lost));
     assert!(
-        !stderr(&rerender).contains("is missing"),
+        stderr(&lost).contains(&format!("{top}/0_0.raw")),
         "{}",
-        stderr(&rerender)
+        stderr(&lost)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -457,6 +499,8 @@ fn verify_takes_drop_blanks_for_a_tree_that_does_not_record_it() {
 
     let told = run(&["verify", s(&tree), "--drop-blanks"]);
     assert_eq!(code(&told), 0, "{}", stderr(&told));
+    let rerender = run(&["verify", s(&tree), "--drop-blanks", "--source", s(&input)]);
+    assert_eq!(code(&rerender), 0, "{}", stderr(&rerender));
 
     let untold = run(&["verify", s(&tree)]);
     assert_eq!(code(&untold), 1, "{}", stderr(&untold));
@@ -522,7 +566,7 @@ fn verify_reads_centre_from_an_archive() {
 }
 
 #[test]
-fn verify_refuses_the_re_renders_it_cannot_do() {
+fn verify_refuses_the_re_renders_it_cannot_do_and_no_longer_drop_blanks() {
     let dir = unique_dir("verify-refuse");
     let input = off_grid(&dir);
     let tree = dir.join("tree");
@@ -540,14 +584,10 @@ fn verify_refuses_the_re_renders_it_cannot_do() {
         "the tree",
     );
 
-    // The core's re-render wants every planned tile on disk.
+    // --drop-blanks with --source is no longer refused (libviprs#1174): on a
+    // tree that dropped nothing it is the plain re-render.
     let dropped = run(&["verify", s(&tree), "--drop-blanks", "--source", s(&input)]);
-    assert_eq!(code(&dropped), 2, "{}", stderr(&dropped));
-    assert!(
-        stderr(&dropped).contains("re-render"),
-        "{}",
-        stderr(&dropped)
-    );
+    assert_eq!(code(&dropped), 0, "{}", stderr(&dropped));
 
     // A PDF needs the page, DPI and render mode the pyramid used, and verify
     // has none of them.
