@@ -135,6 +135,187 @@ fn test_image_then_info_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
+// `viprs features` and the missing-feature refusal (#64)
+// ---------------------------------------------------------------------------
+
+/// What `viprs features` must print for the configuration this test binary was
+/// compiled in. Integration tests build with the package's features, so
+/// `cfg!` here answers for the binary under test too.
+fn expected_features() -> Vec<&'static str> {
+    [
+        ("avif", cfg!(feature = "avif")),
+        ("jp2k", cfg!(feature = "jp2k")),
+        ("jxl", cfg!(feature = "jxl")),
+        ("object-store-sink", cfg!(feature = "object-store-sink")),
+        ("packfile", cfg!(feature = "packfile")),
+        ("pdfium", cfg!(feature = "pdfium")),
+        ("pdfium-static", cfg!(feature = "pdfium-static")),
+        ("s3", cfg!(feature = "s3")),
+        ("svg", cfg!(feature = "svg")),
+        ("tracing", cfg!(feature = "tracing")),
+    ]
+    .into_iter()
+    .filter(|(_, on)| *on)
+    .map(|(name, _)| name)
+    .collect()
+}
+
+#[test]
+fn features_lists_what_this_build_was_compiled_with() {
+    let out = run(&["features"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let listed: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(listed, expected_features());
+
+    let out = run(&["features", "--json"]);
+    assert_eq!(code(&out), 0);
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("features --json prints JSON");
+    let listed: Vec<&str> = json["features"]
+        .as_array()
+        .expect("a `features` array")
+        .iter()
+        .map(|v| v.as_str().expect("feature names are strings"))
+        .collect();
+    assert_eq!(listed, expected_features());
+}
+
+/// Without `svg`, an SVG input is refused naming the feature, through both the
+/// built-in `info` and the op harness. Before #64 it never reached the SVG
+/// decoder at all and failed as an unrecognised format.
+#[cfg(not(feature = "svg"))]
+#[test]
+fn without_svg_an_svg_input_is_refused_naming_the_feature() {
+    let dir = unique_dir("svg-refusal");
+    let svg = dir.join("in.svg");
+    std::fs::write(
+        &svg,
+        "<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'/>",
+    )
+    .unwrap();
+    let png = dir.join("out.png");
+    for args in [
+        vec!["info", svg.to_str().unwrap()],
+        vec!["copy", svg.to_str().unwrap(), png.to_str().unwrap()],
+    ] {
+        let out = run(&args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(code(&out), 1, "{args:?} stderr:\n{stderr}");
+        assert!(
+            stderr.contains("`svg`") && stderr.contains("--features svg"),
+            "{args:?} must name the feature to rebuild with, got:\n{stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{stderr}");
+    }
+    assert!(!png.exists(), "a refused load must write nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "svg")]
+#[test]
+fn with_svg_an_svg_input_decodes() {
+    let dir = unique_dir("svg-decode");
+    let svg = dir.join("in.svg");
+    std::fs::write(
+        &svg,
+        "<svg xmlns='http://www.w3.org/2000/svg' width='5' height='3'><rect width='5' height='3' fill='red'/></svg>",
+    )
+    .unwrap();
+    let out = run(&["info", svg.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("Dimensions: 5x3"), "got:\n{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `viprs features --help` says what the list is and what it is not. It
+/// reports this crate's cargo features, not capabilities, and an `s3` build
+/// has the core's object-store sink without listing `object-store-sink`.
+#[test]
+fn features_help_says_it_lists_cargo_features_not_capabilities() {
+    let out = run(&["features", "--help"]);
+    assert_eq!(code(&out), 0);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("cargo features") && stdout.contains("not a list of capabilities"),
+        "the help must say what the list is, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("object-store-sink"),
+        "the help must say an `s3` build has the object-store sink unlisted, got:\n{stdout}"
+    );
+}
+
+// The exit-code contract (README, "Exit codes"): a usage mistake is 2, an
+// operational failure is 1, and a feature this build left out is an
+// operational failure, whichever flag reached it. These three used to exit 2
+// while a missing codec exited 1.
+
+#[cfg(not(feature = "tracing"))]
+#[test]
+fn trace_level_without_the_tracing_feature_exits_1() {
+    let dir = unique_dir("no-tracing");
+    let png = make_input(&dir, 64, 64);
+    let tree = dir.join("tree");
+    let out = run(&[
+        "pyramid",
+        png.to_str().unwrap(),
+        tree.to_str().unwrap(),
+        "--storage",
+        "directory",
+        "--trace-level",
+        "info",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 1, "stderr:\n{stderr}");
+    assert!(stderr.contains("--features tracing"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(not(feature = "packfile"))]
+#[test]
+fn packfile_sink_without_the_packfile_feature_exits_1() {
+    let dir = unique_dir("no-packfile");
+    let png = make_input(&dir, 64, 64);
+    let tar = dir.join("out.tar");
+    let sink = format!("packfile://{}", tar.display());
+    let out = run(&["pyramid", png.to_str().unwrap(), "--sink", &sink]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 1, "stderr:\n{stderr}");
+    assert!(stderr.contains("--features packfile"), "{stderr}");
+    assert!(!tar.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(not(feature = "s3"))]
+#[test]
+fn s3_sink_without_the_s3_feature_exits_1() {
+    let dir = unique_dir("no-s3");
+    let png = make_input(&dir, 64, 64);
+    let out = run(&[
+        "pyramid",
+        png.to_str().unwrap(),
+        "--sink",
+        "s3://bucket/prefix",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 1, "stderr:\n{stderr}");
+    assert!(stderr.contains("--features s3"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
 // PMTiles: the default storage flip and the `viprs pmtiles` group (#54)
 // ---------------------------------------------------------------------------
 //

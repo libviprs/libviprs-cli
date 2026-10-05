@@ -39,6 +39,14 @@ use libviprs::pdf::render_page_pdfium;
 /// additive under `src/ops/`.
 mod ops;
 
+/// `viprs features`, and the refusal a format gets when its cargo feature was
+/// left out of this build (libviprs-cli#64).
+mod features;
+
+/// The single decode path every command loads an input through: SVG routing
+/// and the missing-feature refusal (libviprs-cli#64).
+mod input;
+
 /// Upper bound, in megabytes, accepted for `--memory-limit` and
 /// `--memory-budget`. Values above this are rejected at parse time. The cap is
 /// 16 Ti MB, so the byte conversion (`mb * 1024 * 1024`) tops out at 2^54,
@@ -84,6 +92,17 @@ enum Command {
     /// A container utility rather than a vips operation, so it lives here as a
     /// first-class built-in and never under `src/ops/` or in `OP_MAP.md`.
     Pmtiles(PmtilesArgs),
+
+    /// List the cargo features this binary was built with, one per line.
+    ///
+    /// These are this crate's cargo features, not a list of capabilities. A
+    /// feature that brings another with it is listed under its own name only:
+    /// an `s3` build has the core's object-store sink (the core's `s3` is an
+    /// alias for `object-store-sink`) and lists `s3`, not `object-store-sink`.
+    ///
+    /// A format whose feature is missing is refused with a message naming the
+    /// feature to rebuild with; this is how to check before trying.
+    Features(features::FeaturesArgs),
 }
 
 #[derive(Parser)]
@@ -739,7 +758,7 @@ fn main() {
     let matches = ops::assembled_cli().get_matches();
 
     match matches.subcommand() {
-        Some(("pyramid" | "info" | "plan" | "test-image" | "pmtiles", _)) => {
+        Some(("pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features", _)) => {
             let cli = Cli::from_arg_matches(&matches)
                 .expect("a built-in subcommand deserializes through the derive Cli");
             match cli.command {
@@ -748,6 +767,7 @@ fn main() {
                 Command::Plan(args) => run_plan(args),
                 Command::TestImage(args) => run_test_image(args),
                 Command::Pmtiles(args) => run_pmtiles(args),
+                Command::Features(args) => features::run(args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
@@ -1018,7 +1038,9 @@ fn maybe_init_tracing(level: &Option<String>) {
         eprintln!(
             "Error: --trace-level requires libviprs-cli built with the `tracing` feature (rebuild with `--features tracing`)."
         );
-        process::exit(2);
+        // A feature this build left out is an operational failure, not a
+        // usage mistake (README, "Exit codes").
+        process::exit(1);
     }
 }
 
@@ -1453,7 +1475,7 @@ fn run_pyramid_s3(
     #[cfg(not(feature = "s3"))]
     {
         eprintln!("Error: s3:// sink requires the `s3` feature — rebuild with `--features s3`.");
-        process::exit(2);
+        process::exit(1);
     }
 }
 
@@ -2486,7 +2508,7 @@ fn run_pyramid_packfile(
         eprintln!(
             "Error: packfile:// sink requires the `packfile` feature — rebuild with `--features packfile`."
         );
-        process::exit(2);
+        process::exit(1);
     }
 }
 
@@ -2525,7 +2547,7 @@ fn run_info(args: InfoArgs) {
             }
         }
     } else {
-        match libviprs::decode_file(path) {
+        match input::decode_path_default(path) {
             Ok(raster) => {
                 println!("Image: {}", path.display());
                 println!("Dimensions: {}x{}", raster.width(), raster.height());
@@ -2536,7 +2558,7 @@ fn run_info(args: InfoArgs) {
                 );
             }
             Err(e) => {
-                eprintln!("Error reading image: {e}");
+                eprintln!("Error reading image: {e:#}");
                 process::exit(1);
             }
         }
@@ -2676,10 +2698,10 @@ fn resolve_plan_dimensions(args: &PlanArgs) -> (u32, u32) {
             }
         }
     } else {
-        match libviprs::decode_file(&path) {
+        match input::decode_path_default(&path) {
             Ok(raster) => (raster.width(), raster.height()),
             Err(e) => {
-                eprintln!("Error reading image: {e}");
+                eprintln!("Error reading image: {e:#}");
                 process::exit(1);
             }
         }
@@ -2695,10 +2717,10 @@ fn load_source(args: &PyramidArgs) -> Raster {
             eprintln!("Error reading stdin: {e}");
             process::exit(1);
         }
-        match libviprs::decode_bytes(&buf) {
+        match input::decode_bytes_default(&buf) {
             Ok(r) => return r,
             Err(e) => {
-                eprintln!("Error decoding image from stdin: {e}");
+                eprintln!("Error decoding image from stdin: {e:#}");
                 process::exit(1);
             }
         }
@@ -2822,10 +2844,10 @@ fn load_source(args: &PyramidArgs) -> Raster {
         }
     } else {
         eprintln!("Decoding {}...", path.display());
-        match libviprs::decode_file(&path) {
+        match input::decode_path_default(&path) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Error decoding image: {e}");
+                eprintln!("Error decoding image: {e:#}");
                 process::exit(1);
             }
         }

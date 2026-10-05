@@ -47,6 +47,27 @@ jobs:
       - run: cargo clippy --all-targets --features tracing -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features packfile -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features s3 -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      # The features #64 forwards from the core, one cell each for the same
+      # reason as the three above: each gates code (the four decoders' refusal
+      # arms in src/input.rs and src/features.rs, and the core's own bodies)
+      # that no other cell compiles. `full` is the union a user is most likely
+      # to build, so it gets a cell too. `pdfium-static` lints without a static
+      # libpdfium because clippy never links.
+      - run: cargo clippy --all-targets --features avif -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features svg -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features jxl -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features jp2k -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      - run: cargo clippy --all-targets --features object-store-sink -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      # The core compiles out the only caller of its `resolve_pdfium_path` under
+      # `pdfium-static`, so the job-wide `RUSTFLAGS: -Dwarnings` makes the core
+      # itself fail with dead_code before this crate is even checked. Clearing
+      # it for this one cell keeps `-D warnings` on the flags after `--`, which
+      # clippy applies to this crate only. Drop the override once the core
+      # gates that function on `not(pdfium-static)` too.
+      - run: cargo clippy --all-targets --features pdfium-static -- -D warnings -W clippy::incompatible_msrv -W deprecated
+        env:
+          RUSTFLAGS: ''
+      - run: cargo clippy --all-targets --features full -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --no-default-features -- -D warnings -W clippy::incompatible_msrv -W deprecated
 
   # 1.97 is the core's MSRV, and this crate is a thin driver for it, so the
@@ -113,3 +134,11 @@ jobs:
       # then missing from the binary the other repository drives, which is how
       # `viprs pmtiles` could have been green here and absent there.
       - run: cargo test --no-default-features
+      # Every other cell runs the tests with the codec features off, so the
+      # SVG unit test, the decoders' feature-on arms and the object-store code
+      # were linted by the job above and executed by nothing. `full` turns all
+      # of them on and needs nothing installed: every codec behind it is pure
+      # Rust, and `pdfium` binds libpdfium at runtime, which no test here
+      # reaches. `pdfium-static` stays out because it needs a static
+      # libpdfium.a to link.
+      - run: cargo test --features full

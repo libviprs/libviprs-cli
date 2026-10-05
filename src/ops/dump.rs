@@ -29,7 +29,7 @@ pub fn command() -> Command {
 /// Commands are emitted sorted by name; the hidden `__dump-commands` command is
 /// itself excluded. Family/shape/oracle-class come from each family's
 /// [`metas()`](super::commands); the built-in pyramid/info/plan/test-image/
-/// pmtiles commands carry `family: "builtin"` with `null` shape / oracle class
+/// pmtiles/features commands carry `family: "builtin"` with `null` shape / oracle class
 /// (they are not ops).
 ///
 /// # Command groups

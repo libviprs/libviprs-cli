@@ -21,6 +21,47 @@ Full reference, including a flag-by-flag interactive program generator, lives at
 cargo install --path .
 ```
 
+### Cargo features
+
+`viprs` forwards every capability-bearing feature of the core crate under the same name. Only `pdfium` is on by default.
+
+| Feature | What it turns on |
+|---|---|
+| `pdfium` (default) | `--render` for vector PDFs, binding `libpdfium.so` at runtime |
+| `pdfium-static` | PDFium linked at build time instead; needs a static `libpdfium.a` and `PDFIUM_STATIC_LIB_PATH` |
+| `avif` | AVIF decoding |
+| `svg` | SVG rasterising |
+| `jxl` | JPEG XL decoding |
+| `jp2k` | JPEG 2000 decoding |
+| `object-store-sink` | the core's injected-backend object-store sink |
+| `s3` | the `s3://` sink arm (the core treats `s3` as a deprecated alias for `object-store-sink`) |
+| `packfile` | the `packfile://` tar/zip sink |
+| `tracing` | `--trace-level` span output |
+| `full` | all of the above except `pdfium-static` |
+
+```bash
+# Everything a runtime-pdfium build can have
+cargo install --path . --features full
+
+# One extra decoder
+cargo install --path . --features avif
+```
+
+A format whose feature was left out is refused with exit 1 and a message naming the feature to rebuild with, never a generic "unsupported format". [`viprs features`](#viprs-features) says what a given binary has.
+
+## Exit codes
+
+One contract for every command, built-ins and ops alike:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Operational failure: an input that cannot be read or decoded, an I/O error, a check that found a problem, or a feature this build left out (the message names the `--features` flag to rebuild with). |
+| `2` | Usage mistake: an unknown flag, a missing or conflicting argument, a value out of range, or a combination of flags that has no meaning. Nothing is read or written. |
+| `130` | Interrupted by Ctrl-C (SIGINT). A process killed by the signal is reported as 130 by the shell too. |
+
+A missing feature is a 1 rather than a 2 on purpose: the command line was fine, this binary just cannot do it, and rebuilding fixes it where retyping would not.
+
 ## Commands
 
 Each command below links to its section on the CLI docs page. Flag rows link to per-flag anchors with longer descriptions, defaults, and worked examples.
@@ -159,6 +200,18 @@ viprs pmtiles extract plan.pmtiles ./tiles
 `extract` reproduces exactly what `viprs pyramid --storage directory --layout xyz` writes for the same input, so an archive somebody hands you turns into the tree existing tools already serve. Tiles stored under a deduplicating run get written out once per coordinate.
 
 There is no `webp` in `--format`, and there will not be one until the core crate's `TileFormat` grows the variant. PMTiles v3 defines a WebP tile type and `viprs pmtiles info` reports it when somebody else's archive carries one, but nothing this CLI writes can contain one and the flag is not going to say otherwise.
+
+### `viprs features`
+
+Print the cargo features this binary was built with, one per line, in alphabetical order. `--json` prints `{"features": [...]}` instead. It always exits 0, and a `--no-default-features` build prints nothing.
+
+```bash
+$ viprs features
+pdfium
+
+$ viprs features --json
+{"features":["pdfium"]}
+```
 
 ## PDF Handling
 

@@ -265,7 +265,14 @@ pub static FAMILIES: &[Family] = &[
 /// The frozen derived built-ins that live in `main.rs` (`CLI_CONTRACT.md` §6),
 /// plus the hidden `__dump-commands`. Used by the registry-consistency check so
 /// a family can never shadow a built-in name.
-pub const BUILTIN_COMMANDS: &[&str] = &["pyramid", "info", "plan", "test-image", "pmtiles"];
+pub const BUILTIN_COMMANDS: &[&str] = &[
+    "pyramid",
+    "info",
+    "plan",
+    "test-image",
+    "pmtiles",
+    "features",
+];
 
 /// Assemble the full `viprs` CLI: the frozen derived commands unioned with
 /// every family's commands and the hidden `__dump-commands`.
@@ -403,6 +410,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn builtin_commands_include_features() {
+        // `viprs features` reports the build, not an image, so it is a
+        // built-in like `pmtiles`, and the list is what stops an op family
+        // ever claiming the name (#64).
+        assert!(
+            BUILTIN_COMMANDS.contains(&"features"),
+            "features must be declared as a builtin, got {BUILTIN_COMMANDS:?}"
+        );
     }
 
     #[test]
