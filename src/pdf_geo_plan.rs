@@ -166,20 +166,42 @@ fn pdf_error_in<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a Pd
     None
 }
 
-/// Exit 1 for a failed PDF call. A missing password and a wrong one get their
-/// own messages; anything else keeps `context` and the library's wording.
-fn pdf_failure(context: &str, path: &Path, err: &(dyn std::error::Error + 'static)) -> ! {
+/// The message for a missing or a wrong password, if `err` is one of those.
+fn password_failure_message(
+    path: &Path,
+    err: &(dyn std::error::Error + 'static),
+) -> Option<String> {
     match pdf_error_in(err) {
-        Some(PdfError::PasswordRequired) => operational_error(&format!(
+        Some(PdfError::PasswordRequired) => Some(format!(
             "{} is encrypted and a password is needed (pass --password)",
             path.display()
         )),
-        Some(PdfError::WrongPassword) => operational_error(&format!(
+        Some(PdfError::WrongPassword) => Some(format!(
             "wrong password for {} (the --password given does not open it)",
             path.display()
         )),
-        _ => operational_error(&format!("{context}: {err}")),
+        _ => None,
     }
+}
+
+/// Exit 1 for a failed PDF call. A missing password and a wrong one get their
+/// own messages; anything else keeps `context` and the library's wording.
+fn pdf_failure(context: &str, path: &Path, err: &(dyn std::error::Error + 'static)) -> ! {
+    match password_failure_message(path, err) {
+        Some(message) => operational_error(&message),
+        None => operational_error(&format!("{context}: {err}")),
+    }
+}
+
+/// Where the password comes from. Not wired up yet: only `flag` is read.
+#[allow(dead_code)]
+fn resolve_password(
+    flag: Option<&str>,
+    _file: Option<&Path>,
+    _env: Option<std::ffi::OsString>,
+    _stdin: &mut dyn std::io::Read,
+) -> Result<Option<String>, String> {
+    Ok(flag.map(str::to_owned))
 }
 
 fn require_file(path: &Path) {
@@ -629,5 +651,136 @@ pub fn run_plan_query(q: &PlanQueryArgs, plan: &PyramidPlan, layout: Layout) {
             Some(r) => println!("{},{},{},{}", r.x, r.y, r.width, r.height),
             None => operational_error(&format!("tile {spec} is out of range for this plan")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libviprs::SourceError;
+
+    fn no_stdin() -> std::io::Empty {
+        std::io::empty()
+    }
+
+    fn temp_file(tag: &str, contents: &[u8]) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("viprs-pgp-unit-{}-{tag}", std::process::id()));
+        std::fs::write(&path, contents).expect("the temp file must be writable");
+        path
+    }
+
+    #[test]
+    fn a_password_file_gives_its_contents_without_the_trailing_newline() {
+        let lf = temp_file("lf", b"s3cret pass\n");
+        let crlf = temp_file("crlf", b"s3cret pass\r\n");
+        let bare = temp_file("bare", b"s3cret pass");
+        for path in [&lf, &crlf, &bare] {
+            assert_eq!(
+                resolve_password(None, Some(path), None, &mut no_stdin()),
+                Ok(Some("s3cret pass".to_owned())),
+                "{}",
+                path.display()
+            );
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn a_password_file_keeps_everything_but_one_trailing_newline() {
+        // Spaces are legal in a password, and only the one newline an editor
+        // or `echo` adds is not part of it.
+        let path = temp_file("spaces", b"  two words  \n\n");
+        assert_eq!(
+            resolve_password(None, Some(&path), None, &mut no_stdin()),
+            Ok(Some("  two words  \n".to_owned()))
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_password_file_of_dash_reads_stdin() {
+        let mut stdin: &[u8] = b"from-stdin\n";
+        assert_eq!(
+            resolve_password(None, Some(Path::new("-")), None, &mut stdin),
+            Ok(Some("from-stdin".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_environment_is_the_fallback_when_no_flag_is_given() {
+        assert_eq!(
+            resolve_password(None, None, Some("from-env".into()), &mut no_stdin()),
+            Ok(Some("from-env".to_owned()))
+        );
+        // An empty variable is the same as an unset one.
+        assert_eq!(
+            resolve_password(None, None, Some("".into()), &mut no_stdin()),
+            Ok(None)
+        );
+        assert_eq!(
+            resolve_password(None, None, None, &mut no_stdin()),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_flag_or_a_file_wins_over_the_environment() {
+        assert_eq!(
+            resolve_password(
+                Some("from-flag"),
+                None,
+                Some("from-env".into()),
+                &mut no_stdin()
+            ),
+            Ok(Some("from-flag".to_owned()))
+        );
+        let path = temp_file("over-env", b"from-file\n");
+        assert_eq!(
+            resolve_password(None, Some(&path), Some("from-env".into()), &mut no_stdin()),
+            Ok(Some("from-file".to_owned()))
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_unreadable_password_file_is_an_error_naming_it_but_not_the_password() {
+        let missing = std::env::temp_dir().join("viprs-pgp-unit-no-such-file");
+        let err = resolve_password(None, Some(&missing), None, &mut no_stdin())
+            .expect_err("a missing password file must not be read as no password");
+        assert!(err.contains("viprs-pgp-unit-no-such-file"), "{err}");
+    }
+
+    #[test]
+    fn a_typed_source_error_gets_the_password_messages() {
+        let path = Path::new("locked.pdf");
+        let required = SourceError::Pdf(PdfError::PasswordRequired);
+        let message = password_failure_message(path, &required)
+            .expect("SourceError::Pdf(PasswordRequired) should be recognised");
+        assert!(message.contains("locked.pdf is encrypted and a password is needed"));
+
+        let wrong = SourceError::Pdf(PdfError::WrongPassword);
+        let message = password_failure_message(path, &wrong)
+            .expect("SourceError::Pdf(WrongPassword) should be recognised");
+        assert!(message.contains("wrong password for locked.pdf"));
+    }
+
+    #[test]
+    fn the_info_path_s_bare_pdf_error_gets_the_password_messages_too() {
+        let path = Path::new("locked.pdf");
+        assert!(
+            password_failure_message(path, &PdfError::PasswordRequired)
+                .is_some_and(|m| m.contains("is encrypted and a password is needed"))
+        );
+        assert!(
+            password_failure_message(path, &PdfError::WrongPassword)
+                .is_some_and(|m| m.contains("wrong password"))
+        );
+    }
+
+    #[test]
+    fn other_pdf_failures_keep_the_library_s_wording() {
+        let err = SourceError::Pdf(PdfError::PageOutOfRange { page: 9, total: 1 });
+        assert_eq!(password_failure_message(Path::new("a.pdf"), &err), None);
     }
 }
