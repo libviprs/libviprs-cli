@@ -50,8 +50,8 @@ the `version` in `Cargo.toml`.
   carries `"v":1` and a fixed event name (#66).
 - `viprs verify PATH` checks an archive or a tile tree and names every missing
   or damaged tile, up to 50. `--source FILE` re-renders a tree and compares;
-  `--centre` and `--drop-blanks` say what the pyramid was written with, since
-  neither the manifest nor the archive records it yet (#66).
+  `--centre` and `--drop-blanks` say what a pyramid that does not record it
+  was written with (#66, #85).
 
 ### Changed
 
@@ -87,6 +87,13 @@ the `version` in `Cargo.toml`.
   that crosses a symlink under the root is refused, so the run fails (exit 1)
   rather than write where the link points, and each object is staged through
   a uniquely named `.libviprs-part` file (#87).
+- `viprs verify` reads centring and dropped blanks from the manifest or the
+  archive metadata, so a pyramid written with `--centre` or `--drop-blanks`
+  verifies without repeating the flag. The flags stay as overrides for a
+  pyramid written before the core recorded them, and only ever add.
+  `--centre --source` and `--drop-blanks --source` are no longer refused: the
+  re-render checks a centred tree and one that dropped its blanks, and still
+  fails a missing tile whose re-render has content (#85).
 - An op command that refuses a value on the command line alone now exits 2,
   the same as clap and the built-ins, with a hint naming the op's `--help`.
   That covers inverted or NaN `clamp` bounds, a `gamma --exponent` out of
