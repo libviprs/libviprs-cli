@@ -1,14 +1,17 @@
 //! The one way `viprs` turns an input file into a [`Raster`].
 //!
-//! Two things are settled here that the core's content-sniffing
-//! [`decode_file_with_limits`] does not settle on its own (libviprs-cli#64):
+//! The core's [`decode_file_with_limits`] and `decode_bytes_with_limits` do
+//! the routing, SVG included: an SVG has no magic bytes, and the core sniffs
+//! it by content (`libviprs::looks_like_svg`, libviprs#1170) and rasterises
+//! it at the default options. The CLI used to carry its own copy of that
+//! sniff (libviprs-cli#91). What is still settled here:
 //!
-//! * **SVG.** The core sniffs raster containers by their magic bytes, and an
-//!   SVG document has none, so it never reaches [`decode_svg_with_limits`]
-//!   through that route and fails as an unrecognised format. It is routed
-//!   here instead, by extension or by an `<svg` root near the top of the file.
+//! * **The `.svg` / `.svgz` extension.** A file named as SVG goes straight to
+//!   [`decode_svg_with_limits`], and a gzipped one is refused for what it is
+//!   ([`CompressedSvg`]) rather than failing in the XML parser.
 //! * **A codec this build left out.** The core reports it as a typed
-//!   `FeatureNotEnabled`; this module turns that into a
+//!   `FeatureNotEnabled` (or, for SVG, its "enable the `svg` feature" I/O
+//!   error); this module turns that into a
 //!   [`MissingFeature`](crate::features::MissingFeature) naming the feature to
 //!   rebuild with, so the answer is never a generic "unsupported format".
 //!
@@ -25,12 +28,6 @@ use libviprs::source::{DecodeLimits, decode_file_with_limits};
 use libviprs::{SvgOptions, decode_svg_with_limits};
 
 use crate::features::missing_feature;
-
-/// How far into a file to look for an `<svg` root when the extension does not
-/// already say SVG. An XML declaration, a doctype and a licence comment fit
-/// comfortably; a document whose root starts later than this is not one a
-/// person meant to hand over without its extension.
-const SVG_SNIFF_BYTES: usize = 4096;
 
 /// The two bytes every gzip stream opens with, and so every `.svgz`.
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
@@ -65,9 +62,9 @@ pub fn decode_path(path: &Path, limits: DecodeLimits) -> Result<Raster> {
     let raster = if is_stream(path) {
         // A FIFO or `<(...)` can be read once and cannot seek, and the core's
         // file decoders seek. So read it once, here, and decode the bytes,
-        // which also gets it the same SVG sniff a regular file gets.
+        // which also gets it the core's SVG sniff, as a regular file does.
         read_stream(path, &limits).and_then(|bytes| decode_bytes(&bytes, limits))
-    } else if names_svg(path) || head_is_svg(path) {
+    } else if names_svg(path) {
         let bytes = read_svg(path)?;
         refuse_compressed_svg(&bytes)
             .and_then(|()| decode_svg(&bytes, SvgOptions::default(), limits))
@@ -102,9 +99,6 @@ pub fn decode_bytes_default(bytes: &[u8]) -> Result<Raster> {
 ///
 /// As [`decode_path`], without the path.
 pub fn decode_bytes(bytes: &[u8], limits: DecodeLimits) -> Result<Raster> {
-    if looks_like_svg(bytes) {
-        return decode_svg(bytes, SvgOptions::default(), limits);
-    }
     libviprs::source::decode_bytes_with_limits(bytes, limits).map_err(refusal_or_error)
 }
 
@@ -137,22 +131,7 @@ pub(crate) fn decode_svg(
     options: SvgOptions,
     limits: DecodeLimits,
 ) -> Result<Raster> {
-    match decode_svg_with_limits(bytes, options, limits) {
-        Ok(raster) => Ok(raster),
-        // Without the `svg` feature the core's only answer is this one
-        // `Unsupported` I/O error (`libviprs::svg`), so in that build it is
-        // the refusal and nothing else. With the feature on the arm is not
-        // compiled, and an `Unsupported` from the renderer stays what it is.
-        #[cfg(not(feature = "svg"))]
-        Err(libviprs::DecodeError::Io(e)) if e.kind() == std::io::ErrorKind::Unsupported => {
-            Err(crate::features::MissingFeature {
-                feature: "svg",
-                format: "SVG",
-            }
-            .into())
-        }
-        Err(e) => Err(e.into()),
-    }
+    decode_svg_with_limits(bytes, options, limits).map_err(refusal_or_error)
 }
 
 /// Read an SVG document, refusing one over the core's input ceiling before
@@ -195,75 +174,9 @@ fn read_stream(path: &Path, limits: &DecodeLimits) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Whether the first [`SVG_SNIFF_BYTES`] of a regular file open an SVG.
-///
-/// Only a regular file is sniffed. A FIFO or a `<(...)` process substitution
-/// can be read once, and a sniff that opened it would take its first 4 KB and
-/// leave the decoder, which opens it again, with the rest or with nothing to
-/// read at all; [`decode_path`] reads those once through [`read_stream`]
-/// before this is ever asked.
-fn head_is_svg(path: &Path) -> bool {
-    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
-        return false;
-    }
-    let Ok(file) = std::fs::File::open(path) else {
-        // Let the real decode report the open failure.
-        return false;
-    };
-    let mut head = Vec::with_capacity(SVG_SNIFF_BYTES);
-    if file
-        .take(SVG_SNIFF_BYTES as u64)
-        .read_to_end(&mut head)
-        .is_err()
-    {
-        return false;
-    }
-    looks_like_svg(&head)
-}
-
-/// Whether `bytes` open an SVG document: after an optional BOM and
-/// whitespace, either an `<svg` root straight away, or an XML prologue (`<?`,
-/// `<!`) with an `<svg` root somewhere in the first [`SVG_SNIFF_BYTES`].
-///
-/// Deliberately narrow. Every raster container the core sniffs starts with
-/// binary magic, so none of them can start with `<`, and a text format that
-/// is not SVG does not contain an `<svg` element.
-fn looks_like_svg(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(SVG_SNIFF_BYTES)];
-    let head = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
-    let start = head
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(head.len());
-    let head = &head[start..];
-    if head.starts_with(b"<svg") {
-        return true;
-    }
-    (head.starts_with(b"<?") || head.starts_with(b"<!")) && head.windows(4).any(|w| w == b"<svg")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_svg_root_is_recognised_with_or_without_a_prologue() {
-        assert!(looks_like_svg(b"<svg xmlns='http://www.w3.org/2000/svg'/>"));
-        assert!(looks_like_svg(b"  \n<svg/>"));
-        assert!(looks_like_svg(b"\xEF\xBB\xBF<svg/>"));
-        assert!(looks_like_svg(
-            b"<?xml version='1.0'?>\n<!-- licence -->\n<svg/>"
-        ));
-        assert!(looks_like_svg(b"<!DOCTYPE svg>\n<svg/>"));
-    }
-
-    #[test]
-    fn raster_magic_and_other_xml_are_not_svg() {
-        assert!(!looks_like_svg(b"\x89PNG\r\n\x1a\n"));
-        assert!(!looks_like_svg(b"\xff\x0a"));
-        assert!(!looks_like_svg(b"<?xml version='1.0'?><html/>"));
-        assert!(!looks_like_svg(b""));
-    }
 
     /// A unique scratch path for one test, under the system temp dir.
     fn scratch(tag: &str) -> std::path::PathBuf {
@@ -273,7 +186,7 @@ mod tests {
         dir
     }
 
-    /// A PNG comfortably over [`SVG_SNIFF_BYTES`], so a sniff that eats the
+    /// A PNG comfortably over the core's SVG sniff window, so a sniff that eats the
     /// head of a stream eats part of the image rather than all of it.
     fn noisy_png() -> Vec<u8> {
         let (w, h) = (64u32, 64u32);
@@ -287,7 +200,7 @@ mod tests {
         let raster = Raster::new(w, h, libviprs::PixelFormat::Rgb8, pixels).unwrap();
         let png = raster.encode_png(6).unwrap();
         assert!(
-            png.len() > SVG_SNIFF_BYTES,
+            png.len() > libviprs::SVG_SNIFF_BYTES,
             "the fixture must outgrow the sniff"
         );
         png

@@ -30,7 +30,7 @@ cargo install --path .
 | `pdfium` (default) | `--render` for vector PDFs, binding `libpdfium.so` at runtime |
 | `pdfium-static` | PDFium linked at build time instead; needs a static `libpdfium.a` and `PDFIUM_STATIC_LIB_PATH` |
 | `avif` | AVIF decoding |
-| `svg` | SVG rasterising |
+| `svg` | SVG rasterising: a `.svg` file, or any input whose root element is `svg` (the core sniffs it by content); a gzipped `.svgz` is refused |
 | `jxl` | JPEG XL decoding |
 | `jp2k` | JPEG 2000 decoding |
 | `object-store-sink` | the core's injected-backend object-store sink |
