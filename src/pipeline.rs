@@ -545,11 +545,15 @@ pub(crate) struct Prepared {
 /// Decode the input, build the plan and refuse a run that would not fit
 /// `--memory-limit`. Every driver starts here.
 ///
-/// A `--region` out of bounds is refused here too, after the decode: the core
-/// has no way to read an image's size without decoding it, so this is the
-/// earliest the bounds are known. Nothing has been written by then.
+/// A `--region` out of bounds is refused here too. Both checks run first on
+/// the input's header, before anything is decoded (libviprs-cli#93), and
+/// again on the decoded raster, which is the only check for an input whose
+/// header can't be read on its own (stdin, a PDF, a GIF and the other
+/// containers the core only describes by decoding). Nothing has been written
+/// by either point.
 pub(crate) fn prepare(args: &PyramidArgs, layout: Layout) -> Prepared {
     crate::maybe_init_tracing(&args.trace_level);
+    precheck_header(args, layout);
     let raster = crate::load_source(args);
     let (w, h) = (raster.width(), raster.height());
     eprintln!(
@@ -567,23 +571,7 @@ pub(crate) fn prepare(args: &PyramidArgs, layout: Layout) -> Prepared {
         );
     }
 
-    let (plan_w, plan_h) = match args.pipeline.region {
-        Some(r) => {
-            let fits = r.x.checked_add(r.width).is_some_and(|e| e <= w)
-                && r.y.checked_add(r.height).is_some_and(|e| e <= h);
-            if !fits {
-                usage_error(
-                    &format!(
-                        "--region {},{},{},{} falls outside the {w}x{h} input",
-                        r.x, r.y, r.width, r.height
-                    ),
-                    "x + width and y + height must stay within the image",
-                );
-            }
-            (r.width, r.height)
-        }
-        None => (w, h),
-    };
+    let (plan_w, plan_h) = region_extent(args, w, h);
 
     // @doc-snippet:begin slot=planner imports=PyramidPlanner,Layout
     let planner = match PyramidPlanner::new(
@@ -605,6 +593,98 @@ pub(crate) fn prepare(args: &PyramidArgs, layout: Layout) -> Prepared {
 
     let extra = ExtraMemory::of(args, &plan, raster.format());
     let peak_memory = planner.estimate_peak_memory().saturating_add(extra.total());
+    print_estimate(&planner, &extra, peak_memory, plan_w, plan_h);
+
+    // @doc-snippet:begin slot=memory-limit
+    // @doc-test: streaming_engine.rs::estimate_streaming_memory_reasonable:435
+    if args.memory_limit > 0 {
+        // @doc-flag: memory-limit kind=param param_name=memory-limit
+        let limit_bytes = crate::mb_to_bytes(args.memory_limit);
+        if peak_memory > limit_bytes {
+            over_memory_limit(peak_memory, args.memory_limit);
+        }
+    }
+    // @doc-snippet:end slot=memory-limit
+
+    eprintln!(
+        "Plan: {} levels, {} tiles, tile_size={}, overlap={}",
+        plan.level_count(),
+        plan.total_tile_count(),
+        args.tile_size,
+        args.overlap
+    );
+    Prepared { raster, plan }
+}
+
+/// The `--region` checks and the price, from the input's header alone
+/// (libviprs-cli#93), so a region outside the image or a run over
+/// `--memory-limit` is refused without spending the decode.
+///
+/// Returns without a word whenever the header can't be read on its own (see
+/// [`crate::input::probe_path`]), or the plan can't be built from it: the
+/// checks after the decode then run as they always have and say what's wrong.
+/// The decode's width and height are the header's, so a refusal here is the
+/// one the decode would have led to. The pixel format can differ in one known
+/// case (an Ultra HDR file with a greyscale base probes as `Gray8` and decodes
+/// as `Rgb8`), which can only make this price lower than the real one, so the
+/// check after the decode still catches it.
+fn precheck_header(args: &PyramidArgs, layout: Layout) {
+    if args.input == "-"
+        || Path::new(&args.input)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    {
+        return;
+    }
+    let Some(header) = crate::input::probe_path(Path::new(&args.input)) else {
+        return;
+    };
+    let (plan_w, plan_h) = region_extent(args, header.width, header.height);
+    if args.memory_limit == 0 {
+        return;
+    }
+    let Ok(planner) = PyramidPlanner::new(plan_w, plan_h, args.tile_size, args.overlap, layout)
+    else {
+        return;
+    };
+    let planner = planner.with_centre(args.centre);
+    let plan = planner.plan();
+    let extra = ExtraMemory::of(args, &plan, header.format);
+    let peak_memory = planner.estimate_peak_memory().saturating_add(extra.total());
+    if peak_memory > crate::mb_to_bytes(args.memory_limit) {
+        print_estimate(&planner, &extra, peak_memory, plan_w, plan_h);
+        over_memory_limit(peak_memory, args.memory_limit);
+    }
+}
+
+/// The extent the plan covers: the `--region` when there is one, which has to
+/// fit inside the `w` x `h` input (a usage error otherwise), or else the
+/// whole input.
+fn region_extent(args: &PyramidArgs, w: u32, h: u32) -> (u32, u32) {
+    let Some(r) = args.pipeline.region else {
+        return (w, h);
+    };
+    let fits = r.x.checked_add(r.width).is_some_and(|e| e <= w)
+        && r.y.checked_add(r.height).is_some_and(|e| e <= h);
+    if !fits {
+        usage_error(
+            &format!(
+                "--region {},{},{},{} falls outside the {w}x{h} input",
+                r.x, r.y, r.width, r.height
+            ),
+            "x + width and y + height must stay within the image",
+        );
+    }
+    (r.width, r.height)
+}
+
+fn print_estimate(
+    planner: &PyramidPlanner,
+    extra: &ExtraMemory,
+    peak_memory: u64,
+    plan_w: u32,
+    plan_h: u32,
+) {
     let (canvas_w, canvas_h) = planner.canvas_dimensions();
     eprintln!(
         "Memory estimate: {:.1} MB peak (canvas: {}x{}, source: {}x{})",
@@ -626,32 +706,17 @@ pub(crate) fn prepare(args: &PyramidArgs, layout: Layout) -> Prepared {
             mb(extra.dedupe_window)
         );
     }
+}
 
-    // @doc-snippet:begin slot=memory-limit
-    // @doc-test: streaming_engine.rs::estimate_streaming_memory_reasonable:435
-    if args.memory_limit > 0 {
-        // @doc-flag: memory-limit kind=param param_name=memory-limit
-        let limit_bytes = crate::mb_to_bytes(args.memory_limit);
-        if peak_memory > limit_bytes {
-            eprintln!(
-                "Error: estimated peak memory ({:.1} MB) exceeds --memory-limit ({} MB)",
-                mb(peak_memory),
-                args.memory_limit
-            );
-            eprintln!("Hint: reduce --dpi or image dimensions to lower memory usage");
-            process::exit(1);
-        }
-    }
-    // @doc-snippet:end slot=memory-limit
-
+/// Refuse a run whose estimate is over `--memory-limit`, with exit 1.
+fn over_memory_limit(peak_memory: u64, limit_mb: u64) -> ! {
     eprintln!(
-        "Plan: {} levels, {} tiles, tile_size={}, overlap={}",
-        plan.level_count(),
-        plan.total_tile_count(),
-        args.tile_size,
-        args.overlap
+        "Error: estimated peak memory ({:.1} MB) exceeds --memory-limit ({} MB)",
+        mb(peak_memory),
+        limit_mb
     );
-    Prepared { raster, plan }
+    eprintln!("Hint: reduce --dpi or image dimensions to lower memory usage");
+    process::exit(1);
 }
 
 fn mb(bytes: u64) -> f64 {
