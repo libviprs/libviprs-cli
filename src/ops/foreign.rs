@@ -869,4 +869,235 @@ mod tests {
         let err = require_lossless(&m, "webpsave").unwrap_err().to_string();
         assert!(err.contains("--lossless"), "{err}");
     }
+
+    fn command(name: &str) -> Command {
+        commands()
+            .into_iter()
+            .find(|c| c.get_name() == name)
+            .unwrap_or_else(|| panic!("no command {name}"))
+    }
+
+    fn parse(args: &[&str]) -> std::result::Result<ArgMatches, clap::Error> {
+        command(args[0]).try_get_matches_from(args)
+    }
+
+    /// A scratch directory of its own per test, removed when it drops.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(test: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("viprs-foreign-{test}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn file(&self, name: &str, bytes: &[u8]) -> String {
+            let path = self.0.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path.to_string_lossy().into_owned()
+        }
+
+        fn path(&self, name: &str) -> String {
+            self.0.join(name).to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A 2x2 RGB binary PPM, small enough to load through any limit.
+    const PPM_2X2: &[u8] = b"P6\n2 2\n255\n\x00\x10\x20\x30\x40\x50\x60\x70\x80\x90\xa0\xb0";
+
+    #[test]
+    fn csvload_prices_the_grid_against_max_alloc_bytes_before_decoding() {
+        // 20x20 floats is 1600 bytes a copy, so a 1000 byte budget cannot hold
+        // even one of the copies csv_load makes, while every axis and pixel
+        // limit is far away.
+        let scratch = Scratch::new("csv-price");
+        let row = vec!["1"; 20].join(",");
+        let csv = vec![row; 20].join("\n");
+        let input = scratch.file("grid.csv", csv.as_bytes());
+        let out = scratch.path("grid.v");
+        let m = parse(&["csvload", &input, &out, "--max-alloc-bytes", "1000"]).unwrap();
+        let err = run("csvload", &m).expect_err("a grid over budget loaded");
+        let err = format!("{err:#}");
+        assert!(err.contains("--max-alloc-bytes"), "{err}");
+    }
+
+    #[test]
+    fn csvload_prices_a_ragged_grid_at_the_padded_width() {
+        // One wide first row and short rows after it: csv_load pads every row
+        // to the first one's width, so the grid is 400 wide however few bytes
+        // the short rows take.
+        let scratch = Scratch::new("csv-ragged");
+        let mut csv = vec!["0"; 400].join(",");
+        csv.push_str(&"\n1".repeat(50));
+        let input = scratch.file("ragged.csv", csv.as_bytes());
+        let out = scratch.path("ragged.v");
+        let m = parse(&["csvload", &input, &out, "--max-alloc-bytes", "100000"]).unwrap();
+        let err = format!("{:#}", run("csvload", &m).expect_err("ragged bomb loaded"));
+        assert!(err.contains("--max-alloc-bytes"), "{err}");
+    }
+
+    #[test]
+    fn matrixload_prices_the_declared_grid_against_max_alloc_bytes() {
+        let scratch = Scratch::new("matrix-price");
+        let mut text = String::from("20 20\n");
+        for _ in 0..20 {
+            text.push_str(&vec!["1"; 20].join(" "));
+            text.push('\n');
+        }
+        let input = scratch.file("grid.mat.txt", text.as_bytes());
+        let out = scratch.path("grid.v");
+        let m = parse(&["matrixload", &input, &out, "--max-alloc-bytes", "1000"]).unwrap();
+        let err = format!("{:#}", run("matrixload", &m).expect_err("over budget"));
+        assert!(err.contains("--max-alloc-bytes"), "{err}");
+    }
+
+    #[test]
+    fn svg_input_over_the_alloc_budget_is_refused_not_truncated() {
+        // Under the 10 MB SVG ceiling but over a 100 byte budget: the reader
+        // used to stop at the budget and hand the parser half a document.
+        let scratch = Scratch::new("svg-budget");
+        let doc = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\">{}</svg>",
+            "<rect width=\"1\" height=\"1\"/>".repeat(20)
+        );
+        let input = scratch.file("doc.svg", doc.as_bytes());
+        let limits = DecodeLimits::default().with_max_alloc_bytes(100);
+        let ceiling = Some(libviprs::svg::MAX_INPUT_BYTES as u64 + 1);
+        let err = read_input(&input, &limits, ceiling)
+            .expect_err("a document over budget was read in part")
+            .to_string();
+        assert!(err.contains("--max-alloc-bytes"), "{err}");
+    }
+
+    #[test]
+    fn svg_input_under_both_ceilings_is_read_whole() {
+        let scratch = Scratch::new("svg-whole");
+        let input = scratch.file("doc.svg", &[b'x'; 300]);
+        let limits = DecodeLimits::default().with_max_alloc_bytes(1000);
+        let ceiling = Some(libviprs::svg::MAX_INPUT_BYTES as u64 + 1);
+        assert_eq!(read_input(&input, &limits, ceiling).unwrap().len(), 300);
+    }
+
+    #[test]
+    fn no_command_takes_stdout_as_its_output() {
+        for cmd in commands() {
+            let name = cmd.get_name().to_string();
+            let mut args = vec![name.clone(), "in.png".into(), "-".into()];
+            if name == "webpsave" || name == "jxlsave" || name == "jp2ksave" {
+                args.push("--lossless".into());
+            }
+            let err = cmd
+                .try_get_matches_from(&args)
+                .expect_err(&format!("{name} took - as OUT"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{name}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn loaders_still_take_stdin_as_their_input() {
+        assert!(parse(&["pngload", "-", "out.png"]).is_ok());
+    }
+
+    #[test]
+    fn lossless_only_savers_need_the_flag_to_parse() {
+        for name in ["webpsave", "jxlsave", "jp2ksave"] {
+            let err = parse(&[name, "a.png", "b.out"]).expect_err(name);
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{name}: {err}"
+            );
+            assert!(err.to_string().contains("--lossless"), "{name}: {err}");
+            assert!(parse(&[name, "a.png", "b.out", "--lossless"]).is_ok());
+        }
+    }
+
+    #[test]
+    fn svgload_refuses_a_dpi_or_scale_that_is_not_a_finite_positive_number() {
+        for bad in ["NaN", "inf", "-inf", "-1", "0"] {
+            for flag in ["--dpi", "--scale"] {
+                let arg = format!("{flag}={bad}");
+                let err = parse(&["svgload", "a.svg", "b.png", &arg])
+                    .expect_err(&format!("svgload took {arg}"));
+                assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation, "{arg}");
+            }
+        }
+        assert!(parse(&["svgload", "a.svg", "b.png", "--dpi=144", "--scale=0.5"]).is_ok());
+    }
+
+    #[test]
+    fn gifsave_dither_is_held_to_its_advertised_range() {
+        for bad in ["1.5", "-0.1", "NaN", "inf"] {
+            let arg = format!("--dither={bad}");
+            let err = parse(&["gifsave", "a.png", "b.gif", &arg])
+                .expect_err(&format!("gifsave took {arg}"));
+            assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation, "{arg}");
+        }
+        for good in ["0", "0.5", "1"] {
+            assert!(parse(&["gifsave", "a.png", "b.gif", &format!("--dither={good}")]).is_ok());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tiffsave_never_writes_through_a_name_beside_the_output() {
+        // The old route wrote `.OUT.<pid>.viprs-tmp` with File::create, which
+        // follows a symlink planted at that name. Plant one and check the file
+        // it points at comes through untouched.
+        let scratch = Scratch::new("tiff-symlink");
+        let input = scratch.file("in.ppm", PPM_2X2);
+        let victim = scratch.file("victim.txt", b"keep me");
+        let out = scratch.path("out.tif");
+        let planted = scratch
+            .0
+            .join(format!(".out.tif.{}.viprs-tmp", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
+        let m = parse(&["tiffsave", &input, &out]).unwrap();
+        run("tiffsave", &m).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
+        let written = std::fs::read(&out).unwrap();
+        assert!(written.starts_with(b"II*\0") || written.starts_with(b"MM\0*"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tiffsave_leaves_nothing_but_its_output_beside_it() {
+        let scratch = Scratch::new("tiff-clean");
+        let input = scratch.file("in.ppm", PPM_2X2);
+        let out = scratch.path("out.tif");
+        let m = parse(&["tiffsave", &input, &out, "--compression", "lzw"]).unwrap();
+        run("tiffsave", &m).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(&scratch.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["in.ppm", "out.tif"]);
+    }
+
+    #[cfg(not(feature = "jxl"))]
+    #[test]
+    fn a_missing_encoder_is_reported_before_the_input_is_read() {
+        let scratch = Scratch::new("enc-first");
+        let missing = scratch.path("not-there.png");
+        let out = scratch.path("out.jxl");
+        let m = parse(&["jxlsave", &missing, &out, "--lossless"]).unwrap();
+        let err = run("jxlsave", &m).expect_err("jxlsave ran without the jxl feature");
+        assert!(
+            err.downcast_ref::<MissingEncoder>().is_some(),
+            "the input was read first: {err:#}"
+        );
+    }
 }
