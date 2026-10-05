@@ -26,6 +26,16 @@ the `version` in `Cargo.toml`.
   the feature (#65).
 - `sobel`, `scharr`, `prewitt`, `canny`, `matrixmultiply`, `remainder` and
   `join` (#67).
+- `viprs pdf info|rotation|extract`, `viprs geo pixel-to-geo|geo-to-pixel|tile-center`
+  and the `viprs plan` query flags (`--estimate-memory`, `--dzi-manifest`,
+  `--properties-sidecar`, `--tile-path`, `--tile-rect`). `pdf info` and
+  `pdf extract` open an encrypted file with a password from
+  `--password-file PATH` (`-` for stdin), `--password` or
+  `VIPRS_PDF_PASSWORD`. `pdf extract` with no render option gives the
+  embedded image at its stored size, except for a file that needs a user
+  password, whose page is rendered at 72 DPI. `plan --layout` also takes
+  `zoomify` and `iiif`; `pyramid --layout` does not. A bad or non-finite
+  `--geo-origin`, `--geo-scale`, `--affine` or `--background` is exit 2 (#68).
 
 ### Changed
 
@@ -34,6 +44,9 @@ the `version` in `Cargo.toml`.
   1. The README's "Exit codes" section now holds the whole contract (#64).
 - `dECMC` is GOLDEN-ONLY rather than BOUNDED-TOL in `OP_MAP.md`, so its oracle
   class in `viprs __dump-commands --json` changes (#67).
+- `viprs pyramid` exits 2, not 1, for a malformed `--geo-origin` or
+  `--geo-scale`, and refuses a non-finite one, since it now shares
+  `viprs geo`'s parser (#68).
 
 ### Fixed
 

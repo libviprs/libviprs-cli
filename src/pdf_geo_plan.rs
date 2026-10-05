@@ -30,19 +30,28 @@
 //! open an encrypted file through pdfium. They answer an empty password with
 //! `PdfError::PasswordRequired` and a wrong one with `PdfError::WrongPassword`,
 //! and this module turns those two into the messages a person sees. Without a
-//! `--password` the same calls are made with an empty one, which is how a
-//! document that is encrypted gets reported as needing a password at all. The
-//! error comes back folded into an `io::Error` on the extract path, so
-//! [`pdf_error_in`] looks for the `PdfError` inside the chain rather than
-//! matching on text. A build without the `pdfium` feature cannot decrypt, so
+//! password the same calls are made with an empty one, which is how a
+//! document that needs one gets reported as needing it at all. The info call
+//! returns the `PdfError` itself and the extract call returns it as
+//! `SourceError::Pdf`, and [`password_failure_message`] matches both rather
+//! than reading text. A build without the `pdfium` feature cannot decrypt, so
 //! there the library's own "not available in this build" is what gets printed.
+//!
+//! The password comes from `--password`, `--password-file PATH` (`-` reads
+//! stdin) or the `VIPRS_PDF_PASSWORD` environment variable, in that order.
+//! `--password` is kept for convenience, but anything on the command line can
+//! be read by every user of the machine through `ps` or `/proc/PID/cmdline`
+//! and lands in shell history, so the help points at the other two. No message
+//! here ever prints the password.
 
+use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use libviprs::pdf::PdfError;
 use libviprs::{
-    GeoCoord, GeoTransform, Layout, PixelCoord, PixelFormat, PyramidPlan,
+    GeoCoord, GeoTransform, Layout, PixelCoord, PixelFormat, PyramidPlan, SourceError,
     extract_page_image_with_background, extract_page_image_with_password, pdf_info_with_password,
     planner::TileCoord,
 };
@@ -78,14 +87,89 @@ enum PdfCommand {
     Extract(PdfExtractArgs),
 }
 
+/// The environment variable a password is read from when neither
+/// `--password` nor `--password-file` is given.
+const PASSWORD_ENV: &str = "VIPRS_PDF_PASSWORD";
+
+/// Where an encrypted PDF's password comes from. With neither flag,
+/// `VIPRS_PDF_PASSWORD` is read; an empty or unset variable means no password.
+#[derive(clap::Args)]
+struct PasswordArgs {
+    /// Password for an encrypted PDF. Anything on the command line is visible
+    /// to every user of the machine through `ps` and /proc, and is kept in
+    /// shell history, so prefer --password-file or the VIPRS_PDF_PASSWORD
+    /// environment variable outside a throwaway shell.
+    #[arg(long, conflicts_with = "password_file")]
+    password: Option<String>,
+
+    /// Read the password from a file, or from stdin with `-`, keeping it off
+    /// the command line (and out of `ps`). One trailing newline is dropped;
+    /// everything else, spaces included, is the password. With neither this
+    /// nor --password, VIPRS_PDF_PASSWORD is used if set.
+    #[arg(long, value_name = "PATH")]
+    password_file: Option<PathBuf>,
+}
+
+impl PasswordArgs {
+    /// The password to open the file with, or `None` for none. Exits 1 if
+    /// `--password-file` cannot be read.
+    fn resolve(&self) -> Option<String> {
+        resolve_password(
+            self.password.as_deref(),
+            self.password_file.as_deref(),
+            std::env::var_os(PASSWORD_ENV),
+            &mut std::io::stdin().lock(),
+        )
+        .unwrap_or_else(|message| operational_error(&message))
+    }
+}
+
+/// Pick the password from the flag, then the file (`-` is `stdin`), then the
+/// environment value `env`. One trailing `\n` or `\r\n` is dropped from a file
+/// or stdin, since an editor or `echo` adds it and it is never part of the
+/// password. An empty environment value counts as unset. The error names the
+/// file that could not be read and never carries the password.
+fn resolve_password(
+    flag: Option<&str>,
+    file: Option<&Path>,
+    env: Option<OsString>,
+    stdin: &mut dyn Read,
+) -> Result<Option<String>, String> {
+    if let Some(password) = flag {
+        return Ok(Some(password.to_owned()));
+    }
+    if let Some(path) = file {
+        let mut text = String::new();
+        if path == Path::new("-") {
+            stdin.read_to_string(&mut text).map_err(|e| {
+                format!("cannot read the password from stdin (--password-file -): {e}")
+            })?;
+        } else {
+            text = std::fs::read_to_string(path)
+                .map_err(|e| format!("cannot read --password-file {}: {e}", path.display()))?;
+        }
+        if let Some(stripped) = text.strip_suffix('\n') {
+            let stripped = stripped.strip_suffix('\r').unwrap_or(stripped);
+            text.truncate(stripped.len());
+        }
+        return Ok(Some(text));
+    }
+    match env {
+        Some(value) if !value.is_empty() => value
+            .into_string()
+            .map(Some)
+            .map_err(|_| format!("{PASSWORD_ENV} is not valid UTF-8")),
+        _ => Ok(None),
+    }
+}
+
 #[derive(Parser)]
 struct PdfInfoArgs {
     /// The PDF to describe.
     input: PathBuf,
 
-    /// Password for an encrypted PDF.
-    #[arg(long)]
-    password: Option<String>,
+    #[command(flatten)]
+    password: PasswordArgs,
 }
 
 #[derive(Parser)]
@@ -110,23 +194,30 @@ struct PdfExtractArgs {
     #[arg(long, default_value = "1")]
     page: usize,
 
-    /// Password for an encrypted PDF. Cannot be combined with a render option,
-    /// because the render path takes no password.
-    #[arg(
-        long,
-        conflicts_with_all = ["dpi", "background", "render_budget"]
-    )]
-    password: Option<String>,
+    /// The password, for an encrypted PDF. None of these combine with a render
+    /// option, because the render path takes no password, and
+    /// VIPRS_PDF_PASSWORD is not read for a render.
+    #[command(flatten)]
+    password: PasswordArgs,
 
     /// Render the page through pdfium at this DPI (one PDF point is one pixel
     /// at 72).
-    #[arg(long, value_name = "DPI", value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(
+        long,
+        value_name = "DPI",
+        value_parser = clap::value_parser!(u32).range(1..),
+        conflicts_with_all = ["password", "password_file"]
+    )]
     dpi: Option<u32>,
 
     /// Render over a solid fill, as `r,g,b` or `r,g,b,a` with each channel
     /// 0..=255, instead of the default white. Renders at 72 DPI, so it cannot
     /// be combined with `--dpi`.
-    #[arg(long, value_name = "R,G,B[,A]", conflicts_with_all = ["dpi", "render_budget"])]
+    #[arg(
+        long,
+        value_name = "R,G,B[,A]",
+        conflicts_with_all = ["dpi", "render_budget", "password", "password_file"]
+    )]
     background: Option<String>,
 
     /// Pixel ceiling (width times height) for a render. If `--dpi` would go over
@@ -143,41 +234,27 @@ pub fn run_pdf(args: PdfArgs) {
     }
 }
 
-/// Find a [`PdfError`] in `err`, either as the error itself or anywhere down
-/// its source chain, including inside the `io::Error` that core wraps it in.
-///
-/// `io::Error::source` skips the error it wraps, so each link is also asked
-/// through `get_ref` for the wrapped value.
-fn pdf_error_in<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a PdfError> {
-    let mut current = Some(err);
-    while let Some(e) = current {
-        if let Some(pdf) = e.downcast_ref::<PdfError>() {
-            return Some(pdf);
-        }
-        if let Some(inner) = e
-            .downcast_ref::<std::io::Error>()
-            .and_then(std::io::Error::get_ref)
-            && let Some(pdf) = pdf_error_in(inner)
-        {
-            return Some(pdf);
-        }
-        current = e.source();
-    }
-    None
-}
-
 /// The message for a missing or a wrong password, if `err` is one of those.
+///
+/// `pdf_info_with_password` returns the [`PdfError`] itself and the extract
+/// calls return it as [`SourceError::Pdf`], so those are the two shapes looked
+/// for. Neither message carries the password.
 fn password_failure_message(
     path: &Path,
     err: &(dyn std::error::Error + 'static),
 ) -> Option<String> {
-    match pdf_error_in(err) {
-        Some(PdfError::PasswordRequired) => Some(format!(
-            "{} is encrypted and a password is needed (pass --password)",
+    let pdf = match err.downcast_ref::<SourceError>() {
+        Some(SourceError::Pdf(pdf)) => Some(pdf),
+        _ => err.downcast_ref::<PdfError>(),
+    };
+    match pdf? {
+        PdfError::PasswordRequired => Some(format!(
+            "{} is encrypted and a password is needed (pass --password-file, set \
+             {PASSWORD_ENV}, or pass --password)",
             path.display()
         )),
-        Some(PdfError::WrongPassword) => Some(format!(
-            "wrong password for {} (the --password given does not open it)",
+        PdfError::WrongPassword => Some(format!(
+            "wrong password for {} (the password given does not open it)",
             path.display()
         )),
         _ => None,
@@ -193,17 +270,6 @@ fn pdf_failure(context: &str, path: &Path, err: &(dyn std::error::Error + 'stati
     }
 }
 
-/// Where the password comes from. Not wired up yet: only `flag` is read.
-#[allow(dead_code)]
-fn resolve_password(
-    flag: Option<&str>,
-    _file: Option<&Path>,
-    _env: Option<std::ffi::OsString>,
-    _stdin: &mut dyn std::io::Read,
-) -> Result<Option<String>, String> {
-    Ok(flag.map(str::to_owned))
-}
-
 fn require_file(path: &Path) {
     if !path.exists() {
         operational_error(&format!("file not found: {}", path.display()));
@@ -213,7 +279,8 @@ fn require_file(path: &Path) {
 fn run_pdf_info(args: PdfInfoArgs) {
     require_file(&args.input);
     // An empty password is how the library is asked "is this one locked?".
-    let info = pdf_info_with_password(&args.input, args.password.as_deref().unwrap_or(""));
+    let password = args.password.resolve();
+    let info = pdf_info_with_password(&args.input, password.as_deref().unwrap_or(""));
     match info {
         Ok(info) => {
             println!("PDF: {}", args.input.display());
@@ -244,26 +311,25 @@ fn run_pdf_rotation(args: PdfRotationArgs) {
     }
 }
 
-/// Parse `--background` into the channel slice the library takes.
+/// Parse `--background` into the channel slice the library takes: 3 or 4
+/// finite channels, each 0..=255.
 fn parse_background(text: &str) -> Vec<f64> {
-    let channels: Vec<f64> = text
-        .split(',')
-        .map(|c| {
-            c.trim().parse::<f64>().unwrap_or_else(|_| {
-                usage_error(
-                    &format!("--background channel {c:?} is not a number"),
-                    "write it as r,g,b or r,g,b,a, for example 255,0,0",
-                )
-            })
-        })
-        .collect();
+    const HINT: &str =
+        "write it as r,g,b or r,g,b,a with each channel 0..=255, for example 255,0,0";
+    let channels = parse_finite_list(text, "background", HINT);
     if !(3..=4).contains(&channels.len()) {
         usage_error(
             &format!(
                 "--background needs 3 (r,g,b) or 4 (r,g,b,a) channels, got {}",
                 channels.len()
             ),
-            "write it as r,g,b or r,g,b,a, for example 255,0,0",
+            HINT,
+        );
+    }
+    if let Some(c) = channels.iter().find(|c| !(0.0..=255.0).contains(*c)) {
+        usage_error(
+            &format!("--background channel {c} is outside 0..=255"),
+            HINT,
         );
     }
     channels
@@ -284,11 +350,12 @@ fn run_pdf_extract(args: PdfExtractArgs) {
         extract_page_image_with_background(&args.input, page_u32, &bg)
             .unwrap_or_else(|e| pdf_failure("rendering with a background", &args.input, &e))
     } else if let Some(dpi) = args.dpi {
-        render_at_dpi(&args.input, args.page, dpi, args.render_budget)
+        render_at_dpi(&args.input, args.page, page_u32, dpi, args.render_budget)
     } else {
-        // With no --password this asks with an empty one, so an encrypted file
-        // is reported as needing a password instead of failing on its streams.
-        let pw = args.password.as_deref().unwrap_or("");
+        // With no password this asks with an empty one, so a file that needs
+        // one is reported as needing it instead of failing on its streams.
+        let password = args.password.resolve();
+        let pw = password.as_deref().unwrap_or("");
         extract_page_image_with_password(&args.input, page_u32, pw).unwrap_or_else(|e| {
             pdf_failure(&format!("extracting page {}", args.page), &args.input, &e)
         })
@@ -307,7 +374,13 @@ fn run_pdf_extract(args: PdfExtractArgs) {
 }
 
 #[cfg(feature = "pdfium")]
-fn render_at_dpi(path: &Path, page: usize, dpi: u32, budget: Option<u64>) -> libviprs::Raster {
+fn render_at_dpi(
+    path: &Path,
+    page: usize,
+    page_u32: u32,
+    dpi: u32,
+    budget: Option<u64>,
+) -> libviprs::Raster {
     match budget {
         Some(max_pixels) => {
             match libviprs::pdf::render_page_pdfium_budgeted(path, page, dpi, max_pixels) {
@@ -322,13 +395,13 @@ fn render_at_dpi(path: &Path, page: usize, dpi: u32, budget: Option<u64>) -> lib
                 Err(e) => operational_error(&format!("rendering within a budget: {e}")),
             }
         }
-        None => libviprs::extract_page_image_dpi(path, page as u32, f64::from(dpi))
+        None => libviprs::extract_page_image_dpi(path, page_u32, f64::from(dpi))
             .unwrap_or_else(|e| operational_error(&format!("rendering at {dpi} DPI: {e}"))),
     }
 }
 
 #[cfg(not(feature = "pdfium"))]
-fn render_at_dpi(_: &Path, _: usize, _: u32, _: Option<u64>) -> libviprs::Raster {
+fn render_at_dpi(_: &Path, _: usize, _: u32, _: u32, _: Option<u64>) -> libviprs::Raster {
     operational_error(
         "--dpi needs the `pdfium` feature, which was not compiled into this binary \
          (use a default-features build)",
@@ -401,10 +474,10 @@ struct TransformArgs {
 #[derive(Parser)]
 struct PixelToGeoArgs {
     /// Pixel column (fractional allowed).
-    #[arg(allow_negative_numbers = true)]
+    #[arg(allow_negative_numbers = true, value_parser = finite_f64)]
     x: f64,
     /// Pixel row (fractional allowed).
-    #[arg(allow_negative_numbers = true)]
+    #[arg(allow_negative_numbers = true, value_parser = finite_f64)]
     y: f64,
     #[command(flatten)]
     transform: TransformArgs,
@@ -413,10 +486,10 @@ struct PixelToGeoArgs {
 #[derive(Parser)]
 struct GeoToPixelArgs {
     /// Geographic x (longitude).
-    #[arg(allow_negative_numbers = true)]
+    #[arg(allow_negative_numbers = true, value_parser = finite_f64)]
     x: f64,
     /// Geographic y (latitude).
-    #[arg(allow_negative_numbers = true)]
+    #[arg(allow_negative_numbers = true, value_parser = finite_f64)]
     y: f64,
     #[command(flatten)]
     transform: TransformArgs,
@@ -435,22 +508,54 @@ struct TileCenterArgs {
     transform: TransformArgs,
 }
 
-fn parse_floats(text: &str, flag: &str, want: usize) -> Vec<f64> {
-    let values: Vec<f64> = text
-        .split(',')
-        .map(|v| {
-            v.trim().parse::<f64>().unwrap_or_else(|_| {
-                usage_error(&format!("--{flag} value {v:?} is not a number"), "")
-            })
+/// A geo coordinate positional: any finite number. NaN and the infinities
+/// parse as `f64` but cannot be mapped anywhere, so clap refuses them (exit 2).
+fn finite_f64(text: &str) -> Result<f64, String> {
+    match text.trim().parse::<f64>() {
+        Ok(v) if v.is_finite() => Ok(v),
+        Ok(v) => Err(format!("{v} is not a finite number")),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Parse `--{flag}` as comma-separated finite numbers, exiting 2 (with
+/// `hint`) for anything that is not one. NaN, `inf` and values like `1e400`
+/// that overflow to infinity are refused, since nothing downstream can use
+/// them. The one number-list parser behind `--affine`, `--geo-origin`,
+/// `--geo-scale` (here and on `viprs pyramid`) and `--background`.
+fn parse_finite_list(text: &str, flag: &str, hint: &str) -> Vec<f64> {
+    text.split(',')
+        .map(|v| match v.trim().parse::<f64>() {
+            Ok(n) if n.is_finite() => n,
+            Ok(_) => usage_error(
+                &format!("--{flag} value {v:?} is not a finite number"),
+                hint,
+            ),
+            Err(_) => usage_error(&format!("--{flag} value {v:?} is not a number"), hint),
         })
-        .collect();
+        .collect()
+}
+
+/// [`parse_finite_list`] for exactly `want` numbers.
+pub(crate) fn parse_floats(text: &str, flag: &str, want: usize) -> Vec<f64> {
+    let names = match want {
+        2 => "x,y",
+        6 => "a,b,c,d,e,f",
+        _ => "",
+    };
+    let hint = if names.is_empty() {
+        String::new()
+    } else {
+        format!("write it as {names}")
+    };
+    let values = parse_finite_list(text, flag, &hint);
     if values.len() != want {
         usage_error(
             &format!(
                 "--{flag} needs {want} comma-separated numbers, got {}",
                 values.len()
             ),
-            "",
+            &hint,
         );
     }
     values
@@ -494,6 +599,32 @@ pub fn run_geo(args: GeoArgs) {
 // ===========================================================================
 // viprs plan: query flags
 // ===========================================================================
+
+/// `viprs plan --layout`. It takes the three layouts `pyramid --layout`
+/// writes, plus `zoomify` and `iiif`, which only `plan` offers: it can answer
+/// their sidecar and tile-path questions, while `pyramid` has no cells for
+/// writing them and an archive cannot hold them. Kept apart from the
+/// pyramid's own enum so adding a plan layout never widens `pyramid --layout`.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum PlanLayoutArg {
+    DeepZoom,
+    Xyz,
+    Google,
+    Zoomify,
+    Iiif,
+}
+
+impl From<PlanLayoutArg> for Layout {
+    fn from(arg: PlanLayoutArg) -> Self {
+        match arg {
+            PlanLayoutArg::DeepZoom => Layout::DeepZoom,
+            PlanLayoutArg::Xyz => Layout::Xyz,
+            PlanLayoutArg::Google => Layout::Google,
+            PlanLayoutArg::Zoomify => Layout::Zoomify,
+            PlanLayoutArg::Iiif => Layout::Iiif,
+        }
+    }
+}
 
 /// Pixel formats `--estimate-memory` can be asked about.
 #[derive(Clone, Copy, ValueEnum)]
@@ -551,7 +682,17 @@ pub struct PlanQueryArgs {
 
     /// Print the Deep Zoom `.dzi` manifest for the given tile format (default
     /// `png`). Only `--layout deep-zoom` has one.
-    #[arg(long, value_name = "FORMAT", num_args = 0..=1, default_missing_value = "png")]
+    ///
+    /// Give the format with `=` (`--dzi-manifest=jpg`): a bare
+    /// `--dzi-manifest` means `png` and never takes the next word, so it
+    /// cannot swallow the input.
+    #[arg(
+        long,
+        value_name = "FORMAT",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "png"
+    )]
     dzi_manifest: Option<String>,
 
     /// Print a layout's in-directory sidecar for the given tile extension: the

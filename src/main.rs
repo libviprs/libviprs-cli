@@ -440,9 +440,10 @@ struct PlanArgs {
     #[arg(long, default_value = "0")]
     overlap: u32,
 
-    /// Tile layout format.
+    /// Tile layout format. Besides the three `pyramid` writes, `plan` takes
+    /// `zoomify` and `iiif` for its sidecar and tile-path queries.
     #[arg(long, default_value = "deep-zoom")]
-    layout: LayoutArg,
+    layout: pdf_geo_plan::PlanLayoutArg,
 
     /// DPI for PDF dimensions (only used when input is a PDF).
     #[arg(long, default_value = "72")]
@@ -479,8 +480,6 @@ enum LayoutArg {
     DeepZoom,
     Xyz,
     Google,
-    Zoomify,
-    Iiif,
 }
 
 impl From<LayoutArg> for Layout {
@@ -489,8 +488,6 @@ impl From<LayoutArg> for Layout {
             LayoutArg::DeepZoom => Layout::DeepZoom,
             LayoutArg::Xyz => Layout::Xyz,
             LayoutArg::Google => Layout::Google,
-            LayoutArg::Zoomify => Layout::Zoomify,
-            LayoutArg::Iiif => Layout::Iiif,
         }
     }
 }
@@ -2898,21 +2895,12 @@ fn build_geo_transform(args: &PyramidArgs, _w: u32, _h: u32) -> Option<GeoTransf
     // @doc-snippet:end slot=geo
 }
 
+/// `--geo-origin` / `--geo-scale` as an `x,y` pair, through the same parser
+/// `viprs geo` uses, so a bad or non-finite pair is a usage error (exit 2) on
+/// both commands.
 fn parse_coord_pair(s: &str, name: &str) -> (f64, f64) {
-    let parts: Vec<&str> = s.split(',').collect();
-    if parts.len() != 2 {
-        eprintln!("Invalid --{name}: expected \"x,y\", got \"{s}\"");
-        process::exit(1);
-    }
-    let x = parts[0].trim().parse::<f64>().unwrap_or_else(|e| {
-        eprintln!("Invalid --{name} x value \"{}\": {e}", parts[0]);
-        process::exit(1);
-    });
-    let y = parts[1].trim().parse::<f64>().unwrap_or_else(|e| {
-        eprintln!("Invalid --{name} y value \"{}\": {e}", parts[1]);
-        process::exit(1);
-    });
-    (x, y)
+    let v = pdf_geo_plan::parse_floats(s, name, 2);
+    (v[0], v[1])
 }
 
 #[cfg(test)]

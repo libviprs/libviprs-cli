@@ -158,11 +158,13 @@ Preview the pyramid layout (level count, tile counts, output bytes) without writ
 
 ```bash
 viprs plan 5000 --height 3000 --estimate-memory 256              # streaming peak memory in bytes for a 256 row strip
-viprs plan 5000 --height 3000 --dzi-manifest png                 # the .dzi XML (deep-zoom only)
+viprs plan 5000 --height 3000 --dzi-manifest=png                 # the .dzi XML (deep-zoom only; a bare --dzi-manifest means png)
 viprs plan 5000 --height 3000 --layout zoomify --properties-sidecar png   # ImageProperties.xml (zoomify) or info.json (iiif)
 viprs plan 5000 --height 3000 --tile-path 13,3,2 --tile-ext jpg  # where one tile goes, as LEVEL,COL,ROW
 viprs plan 5000 --height 3000 --overlap 4 --tile-rect 13,3,2     # x,y,width,height that tile reads from
 ```
+
+`plan --layout` takes `zoomify` and `iiif` as well as the three `pyramid` writes, so those sidecar and tile-path questions can be asked. `pyramid --layout` stays `deep-zoom`, `xyz` or `google`.
 
 ### [`viprs test-image`](https://libviprs.org/cli/#test-image)
 
@@ -253,11 +255,26 @@ Some things vips has are not here because the library itself refuses them: JPEG 
 
 ### `viprs pdf`
 
-`viprs pdf info FILE` lists pages and sizes, `viprs pdf rotation FILE --page N` prints a page's `/Rotate`, and `viprs pdf extract FILE OUT` writes one page as an image. With no render option `extract` pulls the page's largest embedded image at its stored size. `--dpi`, `--background R,G,B[,A]` and `--render-budget PIXELS` render through PDFium instead, so they need a default-features build and a libpdfium (see below). `--password` opens an encrypted file through PDFium, so like the render options it needs a default-features build and a libpdfium. An encrypted file with no password exits 1 saying it is encrypted and a password is needed (pass `--password`), and a wrong one exits 1 saying "wrong password". Both messages come from the library's typed errors, not from the CLI inspecting the file. A build without PDFium cannot decrypt, so there an encrypted file gets the library's own "not available in this build".
+`viprs pdf info FILE` lists pages and sizes, `viprs pdf rotation FILE --page N` prints a page's `/Rotate`, and `viprs pdf extract FILE OUT` writes one page as an image. `--dpi`, `--background R,G,B[,A]` (each channel 0 to 255) and `--render-budget PIXELS` render through PDFium, so they need a default-features build and a libpdfium (see below).
+
+With no render option, `extract` pulls the page's largest embedded image at its stored size. Encryption changes that only when the file needs a password to open:
+
+- An unencrypted file, or one with only an owner password (it opens without one and the owner password just restricts printing or copying), gives the embedded image at its stored size. For an owner-only file under AES-256 that takes PDFium, which decodes the image to 8 bits per sample.
+- A file that needs a user password is opened with it and the page is **rendered** at 72 DPI (one pixel per point, so an A4 page comes out 595x841), because its streams can't be read without decrypting. A 300 DPI scan comes back at 72 DPI on this route.
+
+A file that needs a password and gets none exits 1 saying a password is needed, and a wrong one exits 1 saying "wrong password". Both messages come from the library's typed errors, never echo the password, and a build without PDFium gets the library's own "not available in this build" instead. A password can't be combined with a render option, because the render path takes none.
+
+The password comes from, in order:
+
+1. `--password-file PATH`, or `--password-file -` to read it from stdin. One trailing newline is dropped.
+2. `--password TEXT`. Anything on the command line shows up in `ps` and `/proc` for every user of the machine and stays in shell history, so prefer the other two outside a throwaway shell.
+3. The `VIPRS_PDF_PASSWORD` environment variable, used when neither flag is given (an empty value counts as unset).
+
+`--password` and `--password-file` can't both be given (exit 2).
 
 ### `viprs geo`
 
-`viprs geo pixel-to-geo X Y`, `geo-to-pixel X Y` and `tile-center COL ROW --tile-size N` map points through a transform given as `--geo-origin X,Y --geo-scale X,Y` (the same pair `viprs pyramid` takes) or as the six affine coefficients `--affine a,b,c,d,e,f`. Each prints `x,y`; `geo-to-pixel` exits 1 for a transform that cannot be inverted.
+`viprs geo pixel-to-geo X Y`, `geo-to-pixel X Y` and `tile-center COL ROW --tile-size N` map points through a transform given as `--geo-origin X,Y --geo-scale X,Y` (the same pair `viprs pyramid` takes, through the same parser) or as the six affine coefficients `--affine a,b,c,d,e,f`. Each prints `x,y`; `geo-to-pixel` exits 1 for a transform that cannot be inverted. A value that isn't a finite number (NaN, `inf`, or something like `1e400` that overflows) is a usage error, exit 2, on `geo` and `pyramid` alike.
 
 ## PDF Handling
 
