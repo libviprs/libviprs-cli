@@ -147,9 +147,11 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | `--skip-failed` | all | Skip a tile that still fails and carry on; the run then exits 1 at the end, since the output has holes |
 | `--fail-fast` | all | Abort on the first failure (the default) |
 | `--checksum` / `--manifest-source-hash` | tree | Per-tile checksums (re-hashed before the run succeeds) and the BLAKE3 of the source file's bytes, in `manifest.json` |
-| `--region x,y,w,h` | all | Crop, then pyramid |
+| `--region x,y,w,h` | all | Crop, then pyramid. A region outside the image is exit 2, checked against the file's header before anything is decoded |
 | `--drop-blanks` | all | Leave blank tiles out altogether (`--skip-blank` writes a placeholder per blank tile instead; the two can't be combined) |
 | `--events none\|text\|json` | all | One line per engine event on stdout; each `json` line has `"v":1` and an `"event"` name |
+
+`--memory-limit MB` prices the run from the input's header before anything is decoded, so a run that won't fit is refused (exit 1) without spending the decode. A PNG, JPEG, TIFF, `.v`, Netpbm or SVG file is read that way; stdin, a PDF, a GIF and the formats libviprs parses itself are decoded first and checked after, as before.
 
 `--memory-budget` streams a fresh run into a tile tree. Into an archive or an object store, or with `--resume` or `--verify`, the run uses the monolithic engine and says so on stderr. `--trace-level` output goes to stderr too, so stdout carries nothing but `--events`.
 

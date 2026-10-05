@@ -23,8 +23,8 @@ use std::io::Read as _;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use libviprs::Raster;
 use libviprs::source::{DecodeLimits, decode_file_with_limits};
+use libviprs::{ImageHeader, Raster};
 use libviprs::{SvgOptions, decode_svg_with_limits};
 
 use crate::features::missing_feature;
@@ -82,6 +82,36 @@ pub fn decode_path(path: &Path, limits: DecodeLimits) -> Result<Raster> {
 /// As [`decode_path`].
 pub fn decode_path_default(path: &Path) -> Result<Raster> {
     decode_path(path, DecodeLimits::default())
+}
+
+/// What the header of the image at `path` declares, read without decoding it
+/// (libviprs-cli#93), or `None` when that can't be told in advance.
+///
+/// The file is routed the way [`decode_path`] routes it, so the size is the
+/// one the decode would give. `None` covers everything the probe can't answer
+/// for: a stream (it can be read only once, and the decode needs that read),
+/// a gzip-compressed SVG, a container the core can only describe by decoding
+/// it (`ProbeUnsupported`: GIF and the formats the core parses itself), and a
+/// header the probe can't read. The caller then decodes as it always has, and
+/// the decode reports its own error, word for word.
+///
+/// The geometry is not held to any `--max-*` limit here, on purpose: the
+/// caller wants the numbers even for an image the decode would refuse.
+pub fn probe_path(path: &Path) -> Option<ImageHeader> {
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    if names_svg(path) {
+        let bytes = read_svg(path).ok()?;
+        // A `.svg` name goes to the renderer whatever it holds, so only what
+        // the core also takes for SVG is asked for its size: the answer is
+        // then the renderer's and never some other container's.
+        if bytes.starts_with(GZIP_MAGIC) || !libviprs::looks_like_svg(&bytes) {
+            return None;
+        }
+        return libviprs::probe_bytes(&bytes).ok();
+    }
+    libviprs::probe_file(path).ok()
 }
 
 /// [`decode_bytes`] under the core's default limits.

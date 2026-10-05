@@ -63,6 +63,14 @@ the `version` in `Cargo.toml`.
   refused as a missing `svg` feature, and fails as an unrecognised format
   instead. A `.svg` / `.svgz` name still goes straight to the renderer, and
   `.svgz` is still refused (#91).
+- `viprs pyramid` reads the input's header before it decodes (libviprs#1173),
+  so an out-of-bounds `--region` is refused with exit 2 and a run over
+  `--memory-limit` with exit 1 without spending the decode. The messages are
+  the same as before. A file the header can't describe on its own (stdin, a
+  PDF, a GIF and the formats the core parses itself) is still decoded first
+  and checked after. A region outside an image too big to decode (over the
+  core's pixel ceiling, say) is now the region's usage error rather than the
+  decode's refusal (#93).
 - `csvload` and `matrixload` decode through the core's
   `Raster::csv_load_with_limits` / `matrix_load_with_limits` (libviprs#1168),
   which check the grid against `--max-coord`, `--max-pixels` and
