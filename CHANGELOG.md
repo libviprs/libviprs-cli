@@ -101,6 +101,10 @@ the `version` in `Cargo.toml`.
 
 ### Fixed
 
+- `cargo test --features object-store-sink` passes: the cell for the
+  missing-feature `s3://` refusal was gated on `s3` alone, so it ran against
+  the real sink in that build. It is gated on both features now, and
+  `tests/feature_gates.rs` refuses a cell gated on `s3` alone (#95).
 - `pyramid --resume` refuses a checkpoint made from a different input file,
   even one with the same size, with the plan-hash mismatch (exit 1) and a
   hint that the input has to match. Every tile-tree run from a file now

@@ -299,7 +299,9 @@ fn packfile_sink_without_the_packfile_feature_exits_1() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[cfg(not(feature = "s3"))]
+// Both features build the sink (src/pipeline.rs), so this is for a build
+// with neither (libviprs-cli#95).
+#[cfg(not(any(feature = "s3", feature = "object-store-sink")))]
 #[test]
 fn s3_sink_without_the_s3_feature_exits_1() {
     let dir = unique_dir("no-s3");
