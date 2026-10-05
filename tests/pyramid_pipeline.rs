@@ -454,6 +454,93 @@ fn verify_refuses_the_re_renders_it_cannot_do() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A plain tree written from a file, which is what #88 started handing the
+/// core a source digest for. The digest is folded into the plan hash the
+/// checkpoint records, so the re-render has to fold in the same one
+/// (libviprs-cli#99).
+fn plain_tree(dir: &Path, input: &Path) -> PathBuf {
+    let tree = dir.join("plain");
+    ok(
+        &run(&[
+            "pyramid",
+            s(input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--format",
+            "raw",
+            "--tile-size",
+            "64",
+            "--checksum",
+        ]),
+        "the plain tree",
+    );
+    tree
+}
+
+#[test]
+fn verify_source_passes_a_plain_tree_written_from_a_file_99() {
+    let dir = unique_dir("verify-99-file");
+    let input = off_grid(&dir);
+    let tree = plain_tree(&dir, &input);
+    let out = run(&["verify", s(&tree), "--source", s(&input)]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("a re-render of the source"),
+        "{}",
+        stdout(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A tree written from stdin carries no digest, so the re-render must not
+/// insist on one either.
+#[test]
+fn verify_source_passes_a_tree_written_from_stdin_99() {
+    let dir = unique_dir("verify-99-stdin");
+    let input = off_grid(&dir);
+    let tree = dir.join("from-stdin");
+    let out = viprs()
+        .args([
+            "pyramid",
+            "-",
+            s(&tree),
+            "--storage",
+            "directory",
+            "--format",
+            "raw",
+            "--tile-size",
+            "64",
+            "--checksum",
+        ])
+        .stdin(std::fs::File::open(&input).unwrap())
+        .output()
+        .unwrap();
+    ok(&out, "the stdin tree");
+    let out = run(&["verify", s(&tree), "--source", s(&input)]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A same-sized but different image is still caught, and the message says
+/// the source differs instead of only blaming --centre.
+#[test]
+fn verify_source_names_a_different_source_99() {
+    let dir = unique_dir("verify-99-other");
+    let input = off_grid(&dir);
+    let tree = plain_tree(&dir, &input);
+    let other = dir.join("other.ppm");
+    write_ppm(&other, 200, 100, |x, y| [y as u8, x as u8, 7]);
+    let out = run(&["verify", s(&tree), "--source", s(&other)]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("made from a different"),
+        "{}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--source` decodes through the same input path as every other command,
 /// so a format this build left out is refused naming its feature.
 #[cfg(not(feature = "svg"))]

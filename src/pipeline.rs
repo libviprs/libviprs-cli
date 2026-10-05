@@ -1052,7 +1052,7 @@ fn resume_policy(args: &PyramidArgs) -> ResumePolicy {
 
 /// The BLAKE3 of the source file's bytes, the way the core documents
 /// `SourceMetadata::bytes_hash` ("the raw source bytes").
-fn hash_source_file(path: &Path) -> std::io::Result<String> {
+pub(crate) fn hash_source_file(path: &Path) -> std::io::Result<String> {
     Ok(ChecksumAlgo::Blake3.hash(&std::fs::read(path)?))
 }
 
