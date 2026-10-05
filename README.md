@@ -149,7 +149,7 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | `--checksum` / `--manifest-source-hash` | tree | Per-tile checksums (re-hashed before the run succeeds) and the BLAKE3 of the source file's bytes, in `manifest.json` |
 | `--region x,y,w,h` | all | Crop, then pyramid. A region outside the image is exit 2, checked against the file's header before anything is decoded |
 | `--drop-blanks` | all | Leave blank tiles out altogether (`--skip-blank` writes a placeholder per blank tile instead; the two can't be combined) |
-| `--events none\|text\|json` | all | One line per engine event on stdout; each `json` line has `"v":1` and an `"event"` name |
+| `--events none\|text\|json` | all | One line per engine event on stdout; each `json` line has `"v":1` and an `"event"` name, the core's own (`EngineEvent::name`) |
 
 `--memory-limit MB` prices the run from the input's header before anything is decoded, so a run that won't fit is refused (exit 1) without spending the decode. A PNG, JPEG, TIFF, `.v`, Netpbm or SVG file is read that way; stdin, a PDF, a GIF and the formats libviprs parses itself are decoded first and checked after, as before.
 
