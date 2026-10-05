@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 
 use clap::{Args, ValueEnum};
 use libviprs::observe::{EngineEvent, EngineObserver};
-use libviprs::pmtiles::writer::DEDUPE_WINDOW_WAYS;
+use libviprs::pmtiles::writer::{DEDUPE_BYTES_PER_PAYLOAD, DEDUPE_WINDOW_WAYS};
 use libviprs::pmtiles::{Layout as PmTilesLayout, WriterOptions};
 use libviprs::resume::DEFAULT_RESUME_CHECKPOINT_EVERY;
 use libviprs::{
@@ -53,22 +53,21 @@ use libviprs::{
 
 use crate::{PyramidArgs, operational_error, usage_error};
 
-/// What one deduplication set costs the PMTiles writer.
-///
-/// The writer charges 65 bytes per payload it remembers and keeps them in sets
-/// of [`DEDUPE_WINDOW_WAYS`]. The 65 is documented on
-/// `WriterOptions::dedupe_memory_bytes` but the constant behind it is private,
-/// so it is spelled here until the core exports it (the core tracking issue,
-/// libviprs#1161, lists it). Below this the writer quietly rounds up to one
-/// set, which is a budget the caller did not ask for, so the flag refuses
-/// instead.
-pub(crate) const DEDUPE_MEMORY_FLOOR: usize = DEDUPE_WINDOW_WAYS * 65;
+/// What one deduplication set costs the PMTiles writer: the writer's own
+/// `WriterOptions::MIN_DEDUPE_MEMORY_BYTES` (libviprs#1169), one set of
+/// [`DEDUPE_WINDOW_WAYS`] payloads at [`DEDUPE_BYTES_PER_PAYLOAD`] each.
+/// Below this the writer quietly rounds up to one set, which is a budget the
+/// caller did not ask for, so the flag refuses instead.
+pub(crate) const DEDUPE_MEMORY_FLOOR: usize = WriterOptions::MIN_DEDUPE_MEMORY_BYTES;
 
 /// Exit status for a run stopped by SIGINT, the shell's own convention.
 const EXIT_INTERRUPTED: i32 = 130;
 
 /// The version of the `--events json` line format. Every line carries it as
-/// `"v"`, so a consumer can tell a format it knows from one it does not.
+/// `"v"`, so a consumer can tell a format it knows from one it does not. The
+/// event names are core's (`EngineEvent::name`), so a core
+/// `EngineEvent::NAMES_VERSION` bump is a bump here too; a unit test holds the
+/// two together.
 const EVENTS_SCHEMA_VERSION: u32 = 1;
 
 /// The pipeline flags, flattened into `viprs pyramid`'s arguments.
@@ -471,7 +470,7 @@ fn check_combinations(args: &PyramidArgs, target: &Target) -> Result<(), Refusal
         return Err(Refusal::new(
             format!("--dedupe-memory-bytes {bytes} is below the {DEDUPE_MEMORY_FLOOR}-byte floor"),
             format!(
-                "one dedupe set of {DEDUPE_WINDOW_WAYS} payloads at 65 bytes each is the \
+                "one dedupe set of {DEDUPE_WINDOW_WAYS} payloads at {DEDUPE_BYTES_PER_PAYLOAD} bytes each is the \
                  smallest window the writer has, and it would round {bytes} up to that \
                  without saying so. Ask for {DEDUPE_MEMORY_FLOOR} or more"
             ),
@@ -1208,38 +1207,6 @@ fn coord_fields(coord: TileCoord) -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
-/// The name an event goes out under in `--events` output.
-///
-/// Spelled out rather than derived from the variant's `Debug` text: the names
-/// are a public format, and a rename in the core must not change them behind
-/// a consumer's back. A variant this build has no name for (the enum is
-/// `#[non_exhaustive]`) goes out as `unknown`, with no fields. The core may
-/// grow its own `EngineEvent::name()` (the core tracking issue lists it).
-fn event_name(event: &EngineEvent) -> &'static str {
-    match event {
-        EngineEvent::SourceLoadStarted { .. } => "source_load_started",
-        EngineEvent::SourceLoaded { .. } => "source_loaded",
-        EngineEvent::PlanCreated { .. } => "plan_created",
-        EngineEvent::LevelStarted { .. } => "level_started",
-        EngineEvent::TileCompleted { .. } => "tile_completed",
-        EngineEvent::TileFailed { .. } => "tile_failed",
-        EngineEvent::TileSkippedOnResume { .. } => "tile_skipped_on_resume",
-        EngineEvent::RetryAttempted { .. } => "retry_attempted",
-        EngineEvent::LevelCompleted { .. } => "level_completed",
-        EngineEvent::StripRendered { .. } => "strip_rendered",
-        EngineEvent::BatchStarted { .. } => "batch_started",
-        EngineEvent::BatchCompleted { .. } => "batch_completed",
-        EngineEvent::StripDispatched { .. } => "strip_dispatched",
-        EngineEvent::StripExecutorDone { .. } => "strip_executor_done",
-        EngineEvent::WorkerJoined { .. } => "worker_joined",
-        EngineEvent::WorkerLeft { .. } => "worker_left",
-        EngineEvent::MemorySnapshot { .. } => "memory_snapshot",
-        EngineEvent::CheckpointFlushed { .. } => "checkpoint_flushed",
-        EngineEvent::Finished { .. } => "finished",
-        _ => "unknown",
-    }
-}
-
 /// The fields an event's line carries, beyond its name.
 fn event_fields(event: &EngineEvent) -> Vec<(&'static str, serde_json::Value)> {
     match event {
@@ -1298,7 +1265,7 @@ impl EngineObserver for EventPrinter {
         if self.format == EventsArg::None {
             return;
         }
-        self.emit(event_name(&event), event_fields(&event));
+        self.emit(event.name(), event_fields(&event));
     }
 }
 
@@ -1423,6 +1390,68 @@ mod tests {
         let mut argv = vec!["viprs", "in.png", "out.pmtiles"];
         argv.extend_from_slice(extra);
         PyramidArgs::try_parse_from(argv).expect("the flags under test parse")
+    }
+
+    /// The json line a pipeline event goes out as, through the printer's
+    /// own name and field functions.
+    fn json_for(event: &EngineEvent) -> serde_json::Value {
+        serde_json::from_str(&json_line(event.name(), event_fields(event))).unwrap()
+    }
+
+    /// `PipelineComplete` went out as `unknown`, because the CLI's own name
+    /// table predated it. Core names every event now (libviprs#1169), and the
+    /// CLI uses those names (libviprs-cli#94).
+    #[test]
+    fn every_event_goes_out_under_cores_name() {
+        let line = json_for(&EngineEvent::PipelineComplete);
+        assert_eq!(line["event"], "pipeline_complete", "{line}");
+        let line = json_for(&EngineEvent::CheckpointFlushed { tiles: 3 });
+        assert_eq!(line["event"], "checkpoint_flushed", "{line}");
+        assert_eq!(line["tiles"], 3, "{line}");
+    }
+
+    /// `"v"` versions the line format, and the event names are part of it, so
+    /// a core rename (a `NAMES_VERSION` bump) has to be a decision here too.
+    #[test]
+    fn the_events_schema_tracks_cores_names_version() {
+        assert_eq!(
+            (EngineEvent::NAMES_VERSION, EVENTS_SCHEMA_VERSION),
+            (1, 1),
+            "core changed its event names; bump EVENTS_SCHEMA_VERSION and say so \
+             in the README and CHANGELOG"
+        );
+    }
+
+    /// The dedupe floor is the writer's own constant, not a copy of it.
+    #[test]
+    fn the_dedupe_floor_is_the_writers() {
+        assert_eq!(
+            DEDUPE_MEMORY_FLOOR,
+            libviprs::pmtiles::writer::WriterOptions::MIN_DEDUPE_MEMORY_BYTES
+        );
+    }
+
+    /// The copies the CLI carried until core exported them (libviprs-cli#94).
+    #[test]
+    fn no_private_copies_of_what_core_exports() {
+        // Spelled in pieces so this test does not match itself.
+        let sources = [
+            ("src/pipeline.rs", include_str!("pipeline.rs")),
+            ("src/verify.rs", include_str!("verify.rs")),
+        ];
+        let copies = [
+            ["fn event", "_name("].concat(),
+            ["DEDUPE_WINDOW_WAYS", " * 65"].concat(),
+            ["push(\".manifest", ".json\")"].concat(),
+        ];
+        for (file, src) in sources {
+            for copy in &copies {
+                assert!(
+                    !src.contains(copy.as_str()),
+                    "{file} still has `{copy}`; use what core exports (libviprs-cli#94)"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1679,27 +1708,27 @@ mod tests {
 
     #[test]
     fn events_go_out_under_fixed_names() {
+        // Core's names, pinned here because they are this CLI's public format.
         let coord = TileCoord::new(3, 1, 2);
+        assert_eq!(EngineEvent::tile_completed(coord).name(), "tile_completed");
         assert_eq!(
-            event_name(&EngineEvent::tile_completed(coord)),
-            "tile_completed"
-        );
-        assert_eq!(
-            event_name(&EngineEvent::LevelCompleted {
+            EngineEvent::LevelCompleted {
                 level: 3,
                 tiles_produced: 4
-            }),
+            }
+            .name(),
             "level_completed"
         );
         assert_eq!(
-            event_name(&EngineEvent::CheckpointFlushed { tiles: 9 }),
+            EngineEvent::CheckpointFlushed { tiles: 9 }.name(),
             "checkpoint_flushed"
         );
         assert_eq!(
-            event_name(&EngineEvent::Finished {
+            EngineEvent::Finished {
                 total_tiles: 1,
                 levels: 1
-            }),
+            }
+            .name(),
             "finished"
         );
     }

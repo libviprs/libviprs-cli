@@ -384,16 +384,10 @@ fn zxy_name(coord: TileCoord) -> String {
     }
 }
 
-/// The manifest beside or inside a tree, in the order `FsSink` writes them.
+/// The manifest inside or beside a tree, wherever `FsSink` wrote it
+/// (`Manifest::locate`, libviprs#1169).
 fn read_manifest(dir: &Path) -> Option<Manifest> {
-    let mut candidates = Vec::new();
-    if let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) {
-        let mut sibling = name.to_os_string();
-        sibling.push(".manifest.json");
-        candidates.push(parent.join(sibling));
-    }
-    candidates.push(dir.join("manifest.json"));
-    let path = candidates.into_iter().find(|p| p.is_file())?;
+    let path = Manifest::locate(dir)?;
     match Manifest::read_from(&path) {
         Ok(m) => Some(m),
         Err(e) => operational_error(&format!("reading {}: {e}", path.display())),

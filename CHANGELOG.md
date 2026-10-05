@@ -55,6 +55,15 @@ the `version` in `Cargo.toml`.
 
 ### Changed
 
+- `--events` names come from the core (`EngineEvent::name`, libviprs#1169)
+  instead of the CLI's own table, so `pipeline_complete` goes out under its
+  name instead of `unknown`; every other name is unchanged and `"v"` stays 1.
+  A unit test ties `"v"` to the core's `EngineEvent::NAMES_VERSION`, so a core
+  rename has to be a version bump here too. `--dedupe-memory-bytes` refuses
+  below the writer's own `WriterOptions::MIN_DEDUPE_MEMORY_BYTES` (still 520),
+  and `verify` finds a tree's manifest through `Manifest::locate`, which looks
+  inside the tree before the sibling copy (the sink writes the two
+  byte-identical) (#94).
 - An SVG without its `.svg` extension is recognised by the core's content
   sniff (`libviprs::looks_like_svg`, libviprs#1170) instead of the CLI's own
   copy of it. The core's rule is stricter: the root element itself has to be
