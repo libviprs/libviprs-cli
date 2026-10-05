@@ -1,9 +1,9 @@
 //! Convolution / correlation op family — a Wave-2 per-family lane
 //! (`CLI_CONTRACT.md` §3/§6, `OP_MAP.md` convolution section).
 //!
-//! The core `src/convolution.rs` exposes 22 `pub fn` that fold to nine base
-//! ops; those become **nine** `viprs` subcommands here, covering four of the
-//! six §3 command shapes:
+//! The core `src/convolution.rs` exposes 30 `pub fn` that fold to thirteen
+//! base ops; those become **thirteen** `viprs` subcommands here, covering four
+//! of the six §3 command shapes:
 //!
 //! | command | vips | shape | oracle | notes |
 //! |---|---|---|---|---|
@@ -16,6 +16,10 @@
 //! | `sharpen IN OUT [--sigma] [--m1] [--m2]`                  | `sharpen`  | S1 | BOUNDED-TOL | LabS unsharp mask |
 //! | `spcor IN REF OUT`                                        | `spcor`    | S2 | BOUNDED-TOL | normalised cross-correlation → float `.v` |
 //! | `fastcor IN REF OUT`                                      | `fastcor`  | S2 | EXACT | sum-of-squared-differences → float `.v` |
+//! | `sobel IN OUT`                                            | `sobel`    | S1 | EXACT | built-in 3x3 gradient pair; always uchar out |
+//! | `scharr IN OUT`                                           | `scharr`   | S1 | EXACT | as sobel, Scharr mask |
+//! | `prewitt IN OUT`                                          | `prewitt`  | S1 | EXACT | as sobel, Prewitt mask |
+//! | `canny IN OUT [--sigma] [--precision]`                    | `canny`    | S1 | BOUNDED-TOL | blur, 2x2 gradient, non-maximum suppression |
 //!
 //! Positional orders, flag names, enum spellings, and input value bounds mirror
 //! vips 8.18.4 exactly (verified against `vips <op>`): `gaussmat`/`logmat` take
@@ -43,6 +47,18 @@
 //!
 //! `spcor` / `fastcor` output 32-bit float surfaces (the core returns a float
 //! image for both correlations), also carried as `.v`.
+//!
+//! The four edge detectors (`sobel`, `scharr`, `prewitt`, `canny`) arrived in
+//! the core after `OP_MAP.md`'s first audit and joined here in
+//! libviprs-cli#67. The three gradient detectors take no arguments at all, in
+//! vips or in the core, and always write uchar: a uchar input takes the
+//! clipped `|Gx| + |Gy|` arm and anything wider the truncated
+//! `sqrt(Gx^2 + Gy^2)` one, which is the core's contract and vips's. `canny`
+//! takes vips's two optional arguments with vips's defaults (`--sigma 1.4`,
+//! `--precision float`); on a uchar input at float precision its output is a
+//! float image, so write it to `.v`. vips quietly ignores a `--sigma` outside
+//! `0.01..=1000` and runs at 1.4; this CLI refuses one instead, at parse
+//! time, rather than substitute a different blur.
 //!
 //! Handlers keep the §3 `load → try_op → save` shape and call only the
 //! panic-free `try_*` core APIs, so a bad input becomes exit 1 rather than an
@@ -76,6 +92,18 @@
 // @doc-command:begin name=fastcor about="Fast (sum-of-squared-differences) correlation of an image against a template." \
 //     slot-order=load,apply,save imports-base=decode_file,save_file
 // @doc-command:end name=fastcor
+// @doc-command:begin name=sobel about="Sobel edge detector." \
+//     slot-order=load,apply,save imports-base=decode_file,save_file
+// @doc-command:end name=sobel
+// @doc-command:begin name=scharr about="Scharr edge detector." \
+//     slot-order=load,apply,save imports-base=decode_file,save_file
+// @doc-command:end name=scharr
+// @doc-command:begin name=prewitt about="Prewitt edge detector." \
+//     slot-order=load,apply,save imports-base=decode_file,save_file
+// @doc-command:end name=prewitt
+// @doc-command:begin name=canny about="Canny edge detector (up to non-maximum suppression)." \
+//     slot-order=load,apply,save imports-base=decode_file,save_file
+// @doc-command:end name=canny
 
 use std::path::{Path, PathBuf};
 
@@ -135,7 +163,42 @@ pub fn metas() -> Vec<CommandMeta> {
             shape: Shape::NImageToImage,
             oracle_class: OracleClass::Exact,
         },
+        CommandMeta {
+            name: "sobel",
+            shape: Shape::ImageToImage,
+            oracle_class: OracleClass::Exact,
+        },
+        CommandMeta {
+            name: "scharr",
+            shape: Shape::ImageToImage,
+            oracle_class: OracleClass::Exact,
+        },
+        CommandMeta {
+            name: "prewitt",
+            shape: Shape::ImageToImage,
+            oracle_class: OracleClass::Exact,
+        },
+        CommandMeta {
+            name: "canny",
+            shape: Shape::ImageToImage,
+            oracle_class: OracleClass::BoundedTol,
+        },
     ]
+}
+
+/// A plain `<op> IN OUT` edge-detector command: no mask file and no options,
+/// in vips or in the core.
+fn edge_command(name: &'static str, about: &'static str) -> Command {
+    io::with_decode_limit_args(
+        Command::new(name)
+            .about(about)
+            .arg(Arg::new("IN").required(true).help("Input image"))
+            .arg(
+                Arg::new("OUT")
+                    .required(true)
+                    .help("Output image (always uchar)"),
+            ),
+    )
 }
 
 /// A `--precision integer|float` flag with the given vips default. The core
@@ -369,7 +432,44 @@ pub fn commands() -> Vec<Command> {
                         .help("Output correlation surface (.v)"),
                 ),
         ),
+        // sobel / scharr / prewitt: S1, no arguments (vips takes none either).
+        edge_command("sobel", "Sobel edge detector."),
+        edge_command("scharr", "Scharr edge detector."),
+        edge_command("prewitt", "Prewitt edge detector."),
+        // canny: S1. vips: `canny in out [--sigma] [--precision]`, sigma
+        // gdouble 0.01..=1000 default 1.4, precision default float.
+        io::with_decode_limit_args(
+            Command::new("canny")
+                .about("Canny edge detector (up to non-maximum suppression).")
+                .arg(Arg::new("IN").required(true).help("Input image"))
+                .arg(
+                    Arg::new("OUT")
+                        .required(true)
+                        .help("Output image (float for a uchar input at float precision: use .v)"),
+                )
+                .arg(
+                    Arg::new("sigma")
+                        .long("sigma")
+                        .value_name("S")
+                        .default_value("1.4")
+                        .value_parser(parse_canny_sigma)
+                        .help("Sigma of the Gaussian (0.01..=1000)"),
+                )
+                .arg(precision_arg("float")),
+        ),
     ]
+}
+
+/// `--sigma` for `canny`, held to vips's declared `0.01..=1000`. vips itself
+/// ignores an out-of-range value and runs at its 1.4 default; refusing it is
+/// the honest version of that.
+fn parse_canny_sigma(s: &str) -> std::result::Result<f64, String> {
+    let v: f64 = s.parse().map_err(|_| format!("{s:?} is not a number"))?;
+    if (0.01..=1000.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err(format!("sigma {v} is outside vips's 0.01..=1000"))
+    }
 }
 
 /// Dispatch a matched convolution subcommand to its handler.
@@ -384,6 +484,8 @@ pub fn run(name: &str, m: &ArgMatches) -> Result<()> {
         "sharpen" => run_sharpen(m),
         "spcor" => run_spcor(m),
         "fastcor" => run_fastcor(m),
+        "sobel" | "scharr" | "prewitt" => run_edge(name, m),
+        "canny" => run_canny(m),
         other => bail!("convolution family has no command {other:?}"),
     }
 }
@@ -670,6 +772,57 @@ fn run_fastcor(m: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
+/// `sobel|scharr|prewitt IN OUT`: S1, built-in gradient pair, uchar out.
+fn run_edge(name: &str, m: &ArgMatches) -> Result<()> {
+    let limits = io::decode_limits(m);
+    let in_path = PathBuf::from(pos(m, "IN"));
+    let out_path = PathBuf::from(pos(m, "OUT"));
+
+    let raster = io::load(&in_path, &limits)?;
+    let out = match name {
+        "sobel" => {
+            // @doc-snippet:begin command=sobel slot=apply
+            raster.try_sobel()?
+            // @doc-snippet:end command=sobel slot=apply
+        }
+        "scharr" => {
+            // @doc-snippet:begin command=scharr slot=apply
+            raster.try_scharr()?
+            // @doc-snippet:end command=scharr slot=apply
+        }
+        "prewitt" => {
+            // @doc-snippet:begin command=prewitt slot=apply
+            raster.try_prewitt()?
+            // @doc-snippet:end command=prewitt slot=apply
+        }
+        other => bail!("{other:?} is not an edge detector"),
+    };
+    io::save(&out, &out_path)?;
+    Ok(())
+}
+
+/// `canny IN OUT [--sigma] [--precision]`: S1.
+fn run_canny(m: &ArgMatches) -> Result<()> {
+    let limits = io::decode_limits(m);
+    let in_path = PathBuf::from(pos(m, "IN"));
+    let out_path = PathBuf::from(pos(m, "OUT"));
+    let sigma = *m.get_one::<f64>("sigma").expect("clap default 1.4");
+    let precision = precision(m)?;
+
+    // @doc-snippet:begin command=canny slot=load imports=decode_file
+    let raster = io::load(&in_path, &limits)?;
+    // @doc-snippet:end command=canny slot=load
+
+    // @doc-snippet:begin command=canny slot=apply
+    let out = raster.try_canny(sigma, precision)?;
+    // @doc-snippet:end command=canny slot=apply
+
+    // @doc-snippet:begin command=canny slot=save imports=save_file
+    io::save(&out, &out_path)?;
+    // @doc-snippet:end command=canny slot=save
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,8 +850,8 @@ mod tests {
         assert_eq!(cmd_names.len(), meta_names.len());
         assert_eq!(
             meta_names.len(),
-            9,
-            "the convolution family has nine commands"
+            13,
+            "the convolution family has thirteen commands"
         );
     }
 
@@ -901,5 +1054,47 @@ mod tests {
         }
         assert_eq!(combine("max").unwrap(), Combine::Max);
         assert_eq!(combine("sum").unwrap(), Combine::Sum);
+    }
+
+    #[test]
+    fn edge_detectors_take_only_in_and_out() {
+        for name in ["sobel", "scharr", "prewitt"] {
+            let m = cmd(name)
+                .try_get_matches_from([name, "in.png", "out.png"])
+                .unwrap();
+            assert_eq!(pos(&m, "IN"), "in.png");
+            assert_eq!(pos(&m, "OUT"), "out.png");
+            assert!(
+                cmd(name)
+                    .try_get_matches_from([name, "in.png", "out.png", "mask.mat"])
+                    .is_err(),
+                "{name} takes no mask"
+            );
+        }
+    }
+
+    #[test]
+    fn canny_defaults_match_vips() {
+        let m = cmd("canny")
+            .try_get_matches_from(["canny", "in.png", "out.v"])
+            .unwrap();
+        assert_eq!(*m.get_one::<f64>("sigma").unwrap(), 1.4);
+        assert_eq!(precision(&m).unwrap(), Precision::Float);
+    }
+
+    #[test]
+    fn canny_refuses_a_sigma_vips_would_silently_replace() {
+        for bad in ["0", "0.009", "1000.5", "-1", "nan"] {
+            assert!(
+                cmd("canny")
+                    .try_get_matches_from(["canny", "in.png", "out.v", "--sigma", bad])
+                    .is_err(),
+                "sigma {bad} must be refused"
+            );
+        }
+        let m = cmd("canny")
+            .try_get_matches_from(["canny", "in.png", "out.v", "--sigma", "0.01"])
+            .unwrap();
+        assert_eq!(*m.get_one::<f64>("sigma").unwrap(), 0.01);
     }
 }

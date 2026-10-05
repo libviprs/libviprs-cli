@@ -8,14 +8,15 @@
 //! interpretation** — LAB / XYZ / scRGB float from `colourspace`, a float ΔE
 //! from the difference metrics, or a re-profiled device image from the ICC
 //! ops — so every command is oracle class **BOUNDED-TOL** (`CLI_CONTRACT.md`
-//! §5, colour round-trips):
+//! §5, colour round-trips), bar `dECMC`, which has no vips cross-oracle and is
+//! **GOLDEN-ONLY**:
 //!
 //! | command | vips | shape | oracle | notes |
 //! |---|---|---|---|---|
 //! | `colourspace IN OUT SPACE --source-space` | `colourspace` | S1 | BOUNDED-TOL | ≤1 LSB uchar / 1e-4 float via `.v` |
 //! | `dE76 LEFT RIGHT OUT`  | `dE76`  | S2 | BOUNDED-TOL | float ΔE out via `.v`, eps ~1e-4 |
 //! | `dE00 LEFT RIGHT OUT`  | `dE00`  | S2 | BOUNDED-TOL | libvips `vips_col_dE00` parity, eps ~1e-4 |
-//! | `dECMC LEFT RIGHT OUT` | `dECMC` | S2 | BOUNDED-TOL | eps ~1e-4 |
+//! | `dECMC LEFT RIGHT OUT` | `dECMC` | S2 | GOLDEN-ONLY | no vips oracle: vips's dECMC is a different formula (see below) |
 //! | `icc_import IN OUT --input-profile --intent --pcs`  | `icc_import`    | S1 | BOUNDED-TOL | matrix-shaper sRGB only; lcms caveat |
 //! | `icc_export IN OUT --output-profile --intent --depth` | `icc_export`  | S1 | BOUNDED-TOL | matrix-shaper sRGB only; lcms caveat |
 //! | `icc_transform IN OUT OUTPUT_PROFILE --input-profile --intent --depth` | `icc_transform` | S1 | BOUNDED-TOL | matrix-shaper sRGB only; lcms caveat |
@@ -151,9 +152,15 @@ pub fn metas() -> Vec<CommandMeta> {
             oracle_class: OracleClass::BoundedTol,
         },
         CommandMeta {
+            // GOLDEN-ONLY, not BOUNDED-TOL: the core computes the published
+            // CMC(1:1) dE, vips approximates dECMC as a Euclidean distance in
+            // its CMC uniform space. Measured max-abs-diff ~297, so there is no
+            // cross-oracle and the differential pins a viprs-made reference
+            // (libviprs-tests cli_colour_diff.rs). Corrected at the
+            // libviprs-cli#67 OP_MAP refresh.
             name: "dECMC",
             shape: Shape::NImageToImage,
-            oracle_class: OracleClass::BoundedTol,
+            oracle_class: OracleClass::GoldenOnly,
         },
         CommandMeta {
             name: "icc_import",
