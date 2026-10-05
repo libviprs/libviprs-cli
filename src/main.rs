@@ -47,6 +47,9 @@ mod features;
 /// and the missing-feature refusal (libviprs-cli#64).
 mod input;
 
+/// `viprs pdf`, `viprs geo` and the planner query flags (#68).
+mod pdf_geo_plan;
+
 /// Upper bound, in megabytes, accepted for `--memory-limit` and
 /// `--memory-budget`. Values above this are rejected at parse time. The cap is
 /// 16 Ti MB, so the byte conversion (`mb * 1024 * 1024`) tops out at 2^54,
@@ -103,6 +106,12 @@ enum Command {
     /// A format whose feature is missing is refused with a message naming the
     /// feature to rebuild with; this is how to check before trying.
     Features(features::FeaturesArgs),
+
+    /// Inspect a PDF and extract one page, with a password, background, DPI or budget.
+    Pdf(pdf_geo_plan::PdfArgs),
+
+    /// Map pixels to geographic positions and back, and find tile centres.
+    Geo(pdf_geo_plan::GeoArgs),
 }
 
 #[derive(Parser)]
@@ -204,11 +213,11 @@ struct PyramidArgs {
     buffer_size: usize,
 
     /// Geo-reference origin as "longitude,latitude" (top-left pixel).
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     geo_origin: Option<String>,
 
     /// Geo-reference pixel scale as "scale_x,scale_y" (degrees per pixel).
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     geo_scale: Option<String>,
 
     /// Use PDFium for PDF rendering (required for vector PDFs).
@@ -431,9 +440,10 @@ struct PlanArgs {
     #[arg(long, default_value = "0")]
     overlap: u32,
 
-    /// Tile layout format.
+    /// Tile layout format. Besides the three `pyramid` writes, `plan` takes
+    /// `zoomify` and `iiif` for its sidecar and tile-path queries.
     #[arg(long, default_value = "deep-zoom")]
-    layout: LayoutArg,
+    layout: pdf_geo_plan::PlanLayoutArg,
 
     /// DPI for PDF dimensions (only used when input is a PDF).
     #[arg(long, default_value = "72")]
@@ -446,6 +456,9 @@ struct PlanArgs {
     /// Centre the image within the tile grid (even padding on all sides).
     #[arg(long)]
     centre: bool,
+
+    #[command(flatten)]
+    queries: pdf_geo_plan::PlanQueryArgs,
 }
 
 #[derive(Parser)]
@@ -758,7 +771,10 @@ fn main() {
     let matches = ops::assembled_cli().get_matches();
 
     match matches.subcommand() {
-        Some(("pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features", _)) => {
+        Some((
+            "pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features" | "pdf" | "geo",
+            _,
+        )) => {
             let cli = Cli::from_arg_matches(&matches)
                 .expect("a built-in subcommand deserializes through the derive Cli");
             match cli.command {
@@ -768,6 +784,8 @@ fn main() {
                 Command::TestImage(args) => run_test_image(args),
                 Command::Pmtiles(args) => run_pmtiles(args),
                 Command::Features(args) => features::run(args),
+                Command::Pdf(args) => pdf_geo_plan::run_pdf(args),
+                Command::Geo(args) => pdf_geo_plan::run_geo(args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
@@ -2577,6 +2595,10 @@ fn run_plan(args: PlanArgs) {
         }
     };
     let plan = planner.plan();
+    if args.queries.is_query() {
+        pdf_geo_plan::run_plan_query(&args.queries, &plan, layout);
+        return;
+    }
 
     let peak_memory = planner.estimate_peak_memory();
     let (canvas_w, canvas_h) = planner.canvas_dimensions();
@@ -2873,21 +2895,12 @@ fn build_geo_transform(args: &PyramidArgs, _w: u32, _h: u32) -> Option<GeoTransf
     // @doc-snippet:end slot=geo
 }
 
+/// `--geo-origin` / `--geo-scale` as an `x,y` pair, through the same parser
+/// `viprs geo` uses, so a bad or non-finite pair is a usage error (exit 2) on
+/// both commands.
 fn parse_coord_pair(s: &str, name: &str) -> (f64, f64) {
-    let parts: Vec<&str> = s.split(',').collect();
-    if parts.len() != 2 {
-        eprintln!("Invalid --{name}: expected \"x,y\", got \"{s}\"");
-        process::exit(1);
-    }
-    let x = parts[0].trim().parse::<f64>().unwrap_or_else(|e| {
-        eprintln!("Invalid --{name} x value \"{}\": {e}", parts[0]);
-        process::exit(1);
-    });
-    let y = parts[1].trim().parse::<f64>().unwrap_or_else(|e| {
-        eprintln!("Invalid --{name} y value \"{}\": {e}", parts[1]);
-        process::exit(1);
-    });
-    (x, y)
+    let v = pdf_geo_plan::parse_floats(s, name, 2);
+    (v[0], v[1])
 }
 
 #[cfg(test)]

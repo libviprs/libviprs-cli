@@ -279,6 +279,8 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "test-image",
     "pmtiles",
     "features",
+    "pdf",
+    "geo",
 ];
 
 /// Assemble the full `viprs` CLI: the frozen derived commands unioned with
