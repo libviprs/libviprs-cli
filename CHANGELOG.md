@@ -8,6 +8,8 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
+- `viprs info --json`, one JSON object per file in the `{"v": 1, ...}` shape
+  `features --json` uses, with the exact decoded size (#82).
 - `viprs pmtiles pack TREE ARCHIVE`, the inverse of `extract`. The plan comes
   from a manifest or from explicit flags and is never guessed, the effective
   plan is printed before packing, and a pack that finds no tiles exits 1
@@ -80,6 +82,11 @@ the `version` in `Cargo.toml`.
 
 ### Fixed
 
+- `pyramid`, `plan` and `test-image` refuse a zero `--tile-size`, `--dpi`,
+  `--page`, width or height, an `--overlap` as wide as the tile, a JPEG
+  `--quality` outside 1 to 100, and `plan`'s missing `--height` as usage
+  mistakes (exit 2) before reading anything. They used to exit 1 after
+  decoding the input, and quality 0 or 101 was taken as given (#81).
 - A FIFO or `<(...)` input decodes. It used to be opened by the SVG sniff,
   which ate its first 4 KB, and then reopened by a decoder that seeks; it is
   now read once and decoded from its bytes (#64).
