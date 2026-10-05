@@ -316,6 +316,45 @@ fn s3_sink_without_the_s3_feature_exits_1() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A required mode flag left out is a usage mistake like any other missing
+/// argument (README, "Exit codes"): `webpsave` writes lossless only and
+/// insists on being told so.
+#[test]
+fn a_missing_required_mode_flag_exits_2_and_writes_nothing() {
+    let dir = unique_dir("webpsave-no-lossless");
+    let png = make_input(&dir, 16, 16);
+    let webp = dir.join("out.webp");
+    let out = run(&["webpsave", png.to_str().unwrap(), webp.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 2, "stderr:\n{stderr}");
+    assert!(stderr.contains("--lossless"), "{stderr}");
+    assert!(!webp.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An op that refuses a value it parsed is a 1 today, and the README says
+/// so. This cell is here so the table and the binary cannot drift apart
+/// silently: whoever moves these to 2 changes both.
+#[test]
+fn an_op_refusing_a_value_it_parsed_exits_1() {
+    let dir = unique_dir("clamp-inverted");
+    let png = make_input(&dir, 16, 16);
+    let res = dir.join("out.png");
+    let out = run(&[
+        "clamp",
+        png.to_str().unwrap(),
+        res.to_str().unwrap(),
+        "--min",
+        "200",
+        "--max",
+        "50",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 1, "stderr:\n{stderr}");
+    assert!(!res.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // PMTiles: the default storage flip and the `viprs pmtiles` group (#54)
 // ---------------------------------------------------------------------------
