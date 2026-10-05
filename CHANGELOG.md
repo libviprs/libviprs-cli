@@ -1,0 +1,37 @@
+# Changelog
+
+Notable changes to `viprs` land here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+the `version` in `Cargo.toml`.
+
+## [Unreleased]
+
+### Added
+
+- `viprs pmtiles pack TREE ARCHIVE`, the inverse of `extract`. The plan comes
+  from a manifest or from explicit flags and is never guessed, the effective
+  plan is printed before packing, and a pack that finds no tiles exits 1
+  instead of writing an empty archive (#59).
+- Cargo features `avif`, `svg`, `jxl`, `jp2k`, `pdfium-static`,
+  `object-store-sink` and `full`, each forwarding to the core feature of the
+  same name, and `viprs features [--json]` to list what a binary was built
+  with (#64).
+- `sobel`, `scharr`, `prewitt`, `canny`, `matrixmultiply`, `remainder` and
+  `join` (#67).
+
+### Changed
+
+- A feature this build left out exits 1 everywhere. `--trace-level`,
+  `packfile://` and `s3://` used to exit 2 for it while a missing codec exited
+  1. The README's "Exit codes" section now holds the whole contract (#64).
+- `dECMC` is GOLDEN-ONLY rather than BOUNDED-TOL in `OP_MAP.md`, so its oracle
+  class in `viprs __dump-commands --json` changes (#67).
+
+### Fixed
+
+- A FIFO or `<(...)` input decodes. It used to be opened by the SVG sniff,
+  which ate its first 4 KB, and then reopened by a decoder that seeks; it is
+  now read once and decoded from its bytes (#64).
+- A `.svgz`, or a gzipped document named `.svg`, is refused saying the SVG
+  renderer in this build has no gzip support, instead of failing as an XML
+  parse error (#64).

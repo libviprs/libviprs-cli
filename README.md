@@ -49,6 +49,19 @@ cargo install --path . --features avif
 
 A format whose feature was left out is refused with exit 1 and a message naming the feature to rebuild with, never a generic "unsupported format". [`viprs features`](#viprs-features) says what a given binary has.
 
+## Exit codes
+
+One contract for every command, built-ins and ops alike:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Operational failure: an input that cannot be read or decoded, an I/O error, a check that found a problem, or a feature this build left out (the message names the `--features` flag to rebuild with). |
+| `2` | Usage mistake: an unknown flag, a missing or conflicting argument, a value out of range, or a combination of flags that has no meaning. Nothing is read or written. |
+| `130` | Interrupted by Ctrl-C (SIGINT). A process killed by the signal is reported as 130 by the shell too. |
+
+A missing feature is a 1 rather than a 2 on purpose: the command line was fine, this binary just cannot do it, and rebuilding fixes it where retyping would not.
+
 ## Commands
 
 Each command below links to its section on the CLI docs page. Flag rows link to per-flag anchors with longer descriptions, defaults, and worked examples.

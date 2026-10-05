@@ -94,6 +94,11 @@ enum Command {
 
     /// List the cargo features this binary was built with, one per line.
     ///
+    /// These are this crate's cargo features, not a list of capabilities. A
+    /// feature that brings another with it is listed under its own name only:
+    /// an `s3` build has the core's object-store sink (the core's `s3` is an
+    /// alias for `object-store-sink`) and lists `s3`, not `object-store-sink`.
+    ///
     /// A format whose feature is missing is refused with a message naming the
     /// feature to rebuild with; this is how to check before trying.
     Features(features::FeaturesArgs),
@@ -959,7 +964,9 @@ fn maybe_init_tracing(level: &Option<String>) {
         eprintln!(
             "Error: --trace-level requires libviprs-cli built with the `tracing` feature (rebuild with `--features tracing`)."
         );
-        process::exit(2);
+        // A feature this build left out is an operational failure, not a
+        // usage mistake (README, "Exit codes").
+        process::exit(1);
     }
 }
 
@@ -1394,7 +1401,7 @@ fn run_pyramid_s3(
     #[cfg(not(feature = "s3"))]
     {
         eprintln!("Error: s3:// sink requires the `s3` feature — rebuild with `--features s3`.");
-        process::exit(2);
+        process::exit(1);
     }
 }
 
@@ -1923,7 +1930,7 @@ fn run_pyramid_packfile(
         eprintln!(
             "Error: packfile:// sink requires the `packfile` feature — rebuild with `--features packfile`."
         );
-        process::exit(2);
+        process::exit(1);
     }
 }
 

@@ -32,6 +32,28 @@ use crate::features::missing_feature;
 /// person meant to hand over without its extension.
 const SVG_SNIFF_BYTES: usize = 4096;
 
+/// The two bytes every gzip stream opens with, and so every `.svgz`.
+const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
+
+/// A gzip-compressed SVG, which this build cannot read.
+///
+/// The core's renderer is `resvg` built without `usvg`'s gzip support (no
+/// `flate2` in its tree), so a `.svgz` reaches the XML parser still
+/// compressed and fails as a parse error. This says what is actually wrong.
+#[derive(Debug)]
+pub struct CompressedSvg;
+
+impl std::fmt::Display for CompressedSvg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "this is a gzip-compressed SVG (.svgz), and the SVG renderer in this build has no \
+             gzip support; gunzip it to a plain .svg first",
+        )
+    }
+}
+
+impl std::error::Error for CompressedSvg {}
+
 /// Decode the image at `path` under `limits`.
 ///
 /// # Errors
@@ -40,9 +62,21 @@ const SVG_SNIFF_BYTES: usize = 4096;
 /// decoder was compiled out, otherwise the core's own decode error; either
 /// way with the path as context.
 pub fn decode_path(path: &Path, limits: DecodeLimits) -> Result<Raster> {
-    let raster = if names_svg(path) || head_is_svg(path) {
+    let raster = if is_stream(path) {
+        // A FIFO or `<(...)` can be read once and cannot seek, and the core's
+        // file decoders seek. So read it once, here, and decode the bytes,
+        // which also gets it the same SVG sniff a regular file gets.
+        read_stream(path, &limits).and_then(|bytes| decode_bytes(&bytes, limits))
+    } else if names_svg(path) || head_is_svg(path) {
         let bytes = read_svg(path)?;
-        decode_svg(&bytes, limits)
+        if bytes.starts_with(GZIP_MAGIC) {
+            // Before the feature check on purpose: rebuilding with `svg`
+            // would not help, so naming that feature would send the person
+            // the wrong way.
+            Err(CompressedSvg.into())
+        } else {
+            decode_svg(&bytes, limits)
+        }
     } else {
         decode_file_with_limits(path, limits).map_err(refusal_or_error)
     };
@@ -125,7 +159,39 @@ fn names_svg(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"))
 }
 
+/// Whether `path` is something that exists but is neither a regular file nor
+/// a directory: a FIFO, a `<(...)` process substitution, a character device.
+fn is_stream(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| !m.is_file() && !m.is_dir())
+}
+
+/// Read a stream input once, refusing one larger than the decode may
+/// allocate rather than buffering it without end.
+fn read_stream(path: &Path, limits: &DecodeLimits) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(limits.max_alloc_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limits.max_alloc_bytes {
+        anyhow::bail!(
+            "the input stream is larger than the {} bytes this decode may allocate",
+            limits.max_alloc_bytes
+        );
+    }
+    Ok(bytes)
+}
+
+/// Whether the first [`SVG_SNIFF_BYTES`] of a regular file open an SVG.
+///
+/// Only a regular file is sniffed. A FIFO or a `<(...)` process substitution
+/// can be read once, and a sniff that opened it would take its first 4 KB and
+/// leave the decoder, which opens it again, with the rest or with nothing to
+/// read at all; [`decode_path`] reads those once through [`read_stream`]
+/// before this is ever asked.
 fn head_is_svg(path: &Path) -> bool {
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
     let Ok(file) = std::fs::File::open(path) else {
         // Let the real decode report the open failure.
         return false;
@@ -216,7 +282,8 @@ mod tests {
     /// A FIFO (or `<(...)` process substitution) can be read once. The SVG
     /// sniff used to open it and take the first 4 KB, and the decoder then
     /// opened it again and got the rest, or blocked waiting for a writer that
-    /// had gone. Only regular files are sniffed now.
+    /// had gone. Only regular files are sniffed now, and a stream is read once
+    /// and decoded from its bytes, because the core's file decoders seek.
     #[cfg(unix)]
     #[test]
     fn a_fifo_input_keeps_its_first_bytes() {

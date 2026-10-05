@@ -134,3 +134,11 @@ jobs:
       # then missing from the binary the other repository drives, which is how
       # `viprs pmtiles` could have been green here and absent there.
       - run: cargo test --no-default-features
+      # Every other cell runs the tests with the codec features off, so the
+      # SVG unit test, the decoders' feature-on arms and the object-store code
+      # were linted by the job above and executed by nothing. `full` turns all
+      # of them on and needs nothing installed: every codec behind it is pure
+      # Rust, and `pdfium` binds libpdfium at runtime, which no test here
+      # reaches. `pdfium-static` stays out because it needs a static
+      # libpdfium.a to link.
+      - run: cargo test --features full
