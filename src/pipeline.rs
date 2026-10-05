@@ -1243,56 +1243,29 @@ impl EngineObserver for EventPrinter {
 
 #[cfg(any(feature = "s3", feature = "object-store-sink"))]
 mod object_store {
-    use std::path::{Component, Path, PathBuf};
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use libviprs::{
-        EngineError, EngineResult, ObjectStore, ObjectStoreConfig, ObjectStoreSink, SinkError,
-        TileFormat,
+        DirectoryObjectStore, EngineError, EngineResult, ObjectStoreConfig, ObjectStoreSink,
+        SinkError, TileFormat,
     };
 
     use super::Run;
     use crate::{PyramidArgs, operational_error, usage_error};
 
-    /// The local stub store: object `key` in `bucket` is the file
-    /// `root/bucket/key`, written atomically.
-    pub(super) struct LocalStore {
-        root: PathBuf,
-    }
-
-    impl LocalStore {
-        #[cfg(test)]
-        pub(super) fn for_tests(root: PathBuf) -> Self {
-            Self { root }
-        }
-
-        pub(super) fn path_of(&self, key: &str) -> Result<PathBuf, SinkError> {
-            let rel = Path::new(key);
-            if key.is_empty() || rel.components().any(|c| !matches!(c, Component::Normal(_))) {
-                return Err(SinkError::Other(format!(
-                    "object key {key:?} would escape the stub store"
-                )));
-            }
-            Ok(self.root.join(rel))
-        }
-    }
-
-    impl ObjectStore for LocalStore {
-        fn put(&self, key: &str, bytes: &[u8]) -> Result<(), SinkError> {
-            let path = self.path_of(key)?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut tmp = path.clone().into_os_string();
-            tmp.push(".part");
-            std::fs::write(&tmp, bytes)?;
-            std::fs::rename(&tmp, &path)?;
-            Ok(())
-        }
-    }
-
     /// Check the flags and build the store, before the input is read.
-    pub(super) fn prepare(args: &PyramidArgs, bucket: &str, _prefix: &str) -> Arc<LocalStore> {
+    ///
+    /// The stub store is the core's `DirectoryObjectStore`: object `key` in
+    /// `bucket` is the file `root/bucket/key`. `resolve_target` has already
+    /// refused a bucket that climbs out of the root; the store's own check is
+    /// stricter (a backslash, say, is one plain name to a Unix path), and what
+    /// it refuses is the same usage mistake, exit 2.
+    pub(super) fn prepare(
+        args: &PyramidArgs,
+        bucket: &str,
+        _prefix: &str,
+    ) -> Arc<DirectoryObjectStore> {
         let Some(root) = args.pipeline.object_store_root.clone() else {
             usage_error(
                 "an s3:// sink needs somewhere to write: --object-store-root DIR",
@@ -1300,14 +1273,21 @@ mod object_store {
                  through a local stub store; name its directory",
             );
         };
-        Arc::new(LocalStore {
-            root: root.join(bucket),
-        })
+        match DirectoryObjectStore::for_bucket(&root, bucket) {
+            Ok(store) => Arc::new(store),
+            Err(SinkError::Other(why)) => {
+                usage_error(&why, "a bucket is one plain name, such as s3://tiles/run-1")
+            }
+            Err(e) => usage_error(
+                &e.to_string(),
+                "a bucket is one plain name, such as s3://tiles/run-1",
+            ),
+        }
     }
 
     pub(super) fn run(
         run: &Run<'_>,
-        store: Arc<LocalStore>,
+        store: Arc<DirectoryObjectStore>,
         bucket: &str,
         prefix: &str,
         format: TileFormat,
@@ -1317,7 +1297,7 @@ mod object_store {
             .map(|s| s.to_string_lossy().into_owned())
             .filter(|s| s != "-")
             .unwrap_or_else(|| "image".to_string());
-        let root = store.root.clone();
+        let root = store.root().to_path_buf();
         // @doc-snippet:begin slot=sink-s3 imports=ObjectStoreSink
         // @doc-test: phase3_packfile.rs::tar_sink_produces_valid_archive:177
         // @doc-flag: sink kind=override
@@ -1344,11 +1324,11 @@ mod object_store {
     use crate::{PyramidArgs, operational_error};
 
     /// Never built: [`prepare`] refuses the run first.
-    pub(super) struct LocalStore;
+    pub(super) struct NoStore;
 
     /// A feature this build left out is an operational failure, exit 1, not a
     /// usage mistake (README, "Exit codes").
-    pub(super) fn prepare(_args: &PyramidArgs, _bucket: &str, _prefix: &str) -> LocalStore {
+    pub(super) fn prepare(_args: &PyramidArgs, _bucket: &str, _prefix: &str) -> NoStore {
         operational_error(
             "the s3:// sink needs the `s3` feature, which this viprs was built without; \
              rebuild with `--features s3`, and run `viprs features` to see what this build has",
@@ -1357,7 +1337,7 @@ mod object_store {
 
     pub(super) fn run(
         _run: &Run<'_>,
-        _store: LocalStore,
+        _store: NoStore,
         _bucket: &str,
         _prefix: &str,
         _format: TileFormat,
@@ -1666,18 +1646,5 @@ mod tests {
             line,
             r#"{"v":1,"event":"tile_completed","level":3,"col":1,"row":2}"#
         );
-    }
-
-    #[cfg(any(feature = "s3", feature = "object-store-sink"))]
-    #[test]
-    fn the_stub_store_keeps_every_key_under_its_root() {
-        let store = object_store::LocalStore::for_tests(PathBuf::from("/srv/store/bucket"));
-        assert_eq!(
-            store.path_of("run/image_files/0/0_0.png").unwrap(),
-            PathBuf::from("/srv/store/bucket/run/image_files/0/0_0.png")
-        );
-        for key in ["", "../x", "a/../../x", "/etc/passwd"] {
-            assert!(store.path_of(key).is_err(), "{key:?} must be refused");
-        }
     }
 }
