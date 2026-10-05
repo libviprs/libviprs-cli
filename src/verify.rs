@@ -495,7 +495,19 @@ fn rerender(
     let sink = FsSink::new(dir, plan.clone()).with_format(format);
     let mut config = EngineConfig::default().with_blank_tile_strategy(m.generation.blank_strategy);
     config.background_rgb = m.generation.background_rgb;
-    let problem = match verify_from_strip_source(&strips, plan, &sink, &config, &NoopObserver) {
+    // `viprs pyramid` hands the core the BLAKE3 of the input file on every
+    // tree run from a file, and the core folds it into the plan hash the
+    // checkpoint records (#88), so the re-render has to fold in the same
+    // digest. A tree written from stdin, or before #88, has none, so a
+    // mismatch with the digest gets one more try without it.
+    let digest = crate::pipeline::hash_source_file(source)
+        .unwrap_or_else(|e| operational_error(&format!("hashing {}: {e}", source.display())));
+    let hashed = config.clone().with_source_content_hash(digest);
+    let mut outcome = verify_from_strip_source(&strips, plan, &sink, &hashed, &NoopObserver);
+    if matches!(outcome, Err(EngineError::PlanHashMismatch { .. })) {
+        outcome = verify_from_strip_source(&strips, plan, &sink, &config, &NoopObserver);
+    }
+    let problem = match outcome {
         Ok(_) => return,
         Err(EngineError::ChecksumMismatch { tile, .. }) => {
             let name = plan
@@ -506,9 +518,15 @@ fn rerender(
                 source.display()
             )
         }
-        // The checkpoint records the hash of the plan the run used, which is
-        // how a centred tree gives itself away here.
-        Err(e @ EngineError::PlanHashMismatch { .. }) => format!("{}: {e}", dir.display()),
+        // The checkpoint records the hash of the plan the run used, with the
+        // source file's digest folded in. So a different source file gives
+        // itself away here, and so does a centred tree verified without
+        // --centre.
+        Err(e @ EngineError::PlanHashMismatch { .. }) => format!(
+            "{} was made from a different source than {}, or with a different plan ({e})",
+            dir.display(),
+            source.display()
+        ),
         Err(e) => fail_one(&format!("{}: {e}", dir.display())),
     };
     eprintln!("Error: {problem}");

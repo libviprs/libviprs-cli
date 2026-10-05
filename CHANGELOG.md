@@ -125,6 +125,11 @@ the `version` in `Cargo.toml`.
 
 ### Fixed
 
+- `verify TREE --source INPUT` passes a tree written from a file again. Since
+  #88 the run folds the input's digest into the plan hash its checkpoint
+  records, and the re-render left it out, so every such tree failed with a
+  plan-hash mismatch. A source that differs now says the tree was made from a
+  different source instead of only pointing at `--centre` (#99).
 - `cargo test --features object-store-sink` passes: the cell for the
   missing-feature `s3://` refusal was gated on `s3` alone, so it ran against
   the real sink in that build. It is gated on both features now, and
