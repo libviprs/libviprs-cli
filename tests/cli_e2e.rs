@@ -2712,3 +2712,34 @@ fn info_json_failure_prints_nothing_on_stdout_and_exits_1() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `svgload -` reads the document from stdin, and a gzipped one gets the same
+/// exit 1 and the same "gunzip it" refusal a `.svgz` path gets from every
+/// other command, with nothing written (libviprs-cli#64's refusal, now on
+/// `svgload` too).
+#[test]
+fn svgload_refuses_a_gzipped_document_on_stdin() {
+    use std::io::Write as _;
+    let dir = unique_dir("svgload-svgz-stdin");
+    let out = dir.join("out.png");
+    // Gzip magic, deflate, then a body the renderer would choke on as XML:
+    // the refusal has to come from the magic, not from a parse error.
+    let gz = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03\x01\x00\x00\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00";
+    let mut child = viprs()
+        .args(["svgload", "-", out.to_str().unwrap()])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the viprs binary must be spawnable");
+    child.stdin.take().unwrap().write_all(gz).unwrap();
+    let got = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&got.stderr);
+    assert_eq!(code(&got), 1, "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("gzip") && stderr.contains("gunzip"),
+        "expected the .svgz refusal, got:\n{stderr}"
+    );
+    assert!(!out.exists(), "a refused load wrote {}", out.display());
+    let _ = std::fs::remove_dir_all(&dir);
+}
