@@ -1050,7 +1050,8 @@ mod tests {
         csv.push_str(&"\n1".repeat(50));
         let input = scratch.file("ragged.csv", csv.as_bytes());
         let out = scratch.path("ragged.v");
-        let m = parse(&["csvload", &input, &out, "--max-alloc-bytes", "100000"]).unwrap();
+        // 400 x 51 floats is 81600 bytes padded, a few hundred unpadded.
+        let m = parse(&["csvload", &input, &out, "--max-alloc-bytes", "50000"]).unwrap();
         let err = format!("{:#}", run("csvload", &m).expect_err("ragged bomb loaded"));
         assert!(err.contains("--max-alloc-bytes"), "{err}");
     }
@@ -1068,6 +1069,94 @@ mod tests {
         let m = parse(&["matrixload", &input, &out, "--max-alloc-bytes", "1000"]).unwrap();
         let err = format!("{:#}", run("matrixload", &m).expect_err("over budget"));
         assert!(err.contains("--max-alloc-bytes"), "{err}");
+    }
+
+    /// A `rows` x `cols` grid of ones, comma separated.
+    fn csv_grid(cols: usize, rows: usize) -> String {
+        vec![vec!["1"; cols].join(","); rows].join("\n")
+    }
+
+    /// A `width height` text matrix of ones.
+    fn matrix_grid(cols: usize, rows: usize) -> String {
+        let mut text = format!("{cols} {rows}\n");
+        for _ in 0..rows {
+            text.push_str(&vec!["1"; cols].join(" "));
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn csvload_prices_the_one_grid_core_builds() {
+        // 20x20 floats is 1600 bytes, and core builds that grid once
+        // (libviprs#1168), so a 2000 byte budget holds it. The CLI used to
+        // price three copies (4800 bytes) and refuse it (libviprs-cli#90).
+        let scratch = Scratch::new("csv-one-grid");
+        let input = scratch.file("grid.csv", csv_grid(20, 20).as_bytes());
+        let out = scratch.path("grid.v");
+        let m = parse(&["csvload", &input, &out, "--max-alloc-bytes", "2000"]).unwrap();
+        run("csvload", &m).expect("a grid inside the budget was refused");
+        assert!(std::path::Path::new(&out).is_file());
+    }
+
+    #[test]
+    fn matrixload_prices_the_one_grid_core_builds() {
+        // As above: 1600 bytes against 2000, where two copies were priced.
+        let scratch = Scratch::new("matrix-one-grid");
+        let input = scratch.file("grid.mat.txt", matrix_grid(20, 20).as_bytes());
+        let out = scratch.path("grid.v");
+        let m = parse(&["matrixload", &input, &out, "--max-alloc-bytes", "2000"]).unwrap();
+        run("matrixload", &m).expect("a grid inside the budget was refused");
+        assert!(std::path::Path::new(&out).is_file());
+    }
+
+    #[test]
+    fn a_text_grid_refusal_names_the_flag_and_the_bytes_core_priced() {
+        // Over budget, the refusal still names the flag to raise, with the
+        // size of the grid core would have built rather than a multiple of it.
+        let scratch = Scratch::new("text-refusal");
+        let csv = scratch.file("grid.csv", csv_grid(20, 20).as_bytes());
+        let mat = scratch.file("grid.mat.txt", matrix_grid(20, 20).as_bytes());
+        for (cmd, input) in [("csvload", &csv), ("matrixload", &mat)] {
+            let out = scratch.path(&format!("{cmd}.v"));
+            let m = parse(&[cmd, input, &out, "--max-alloc-bytes", "1000"]).unwrap();
+            let err = format!("{:#}", run(cmd, &m).expect_err("over budget"));
+            assert!(err.contains("--max-alloc-bytes"), "{cmd}: {err}");
+            assert!(err.contains("1600"), "{cmd}: {err}");
+            assert!(!std::path::Path::new(&out).exists(), "{cmd} wrote {out}");
+        }
+    }
+
+    #[test]
+    fn a_text_grid_over_max_width_is_still_refused_naming_the_flag() {
+        // Core checks max_coord, max_pixels and the byte price; --max-width
+        // and --max-height are the CLI's to hold every loader to.
+        let scratch = Scratch::new("text-width");
+        let input = scratch.file("grid.csv", csv_grid(20, 2).as_bytes());
+        let out = scratch.path("grid.v");
+        let m = parse(&["csvload", &input, &out, "--max-width", "10"]).unwrap();
+        let err = format!("{:#}", run("csvload", &m).expect_err("over --max-width"));
+        assert!(err.contains("--max-width"), "{err}");
+    }
+
+    #[test]
+    fn the_text_loaders_leave_the_grid_pricing_to_core() {
+        // Spelled in pieces so this test does not match itself.
+        let src = include_str!("foreign.rs");
+        for name in [
+            ["fn csv", "_geometry"].concat(),
+            ["fn matrix", "_geometry"].concat(),
+            ["CSV_GRID", "_COPIES"].concat(),
+            ["MATRIX_GRID", "_COPIES"].concat(),
+            ["Raster::csv_load", "(&"].concat(),
+            ["Raster::matrix_load", "(&"].concat(),
+        ] {
+            assert!(
+                !src.contains(&name),
+                "src/ops/foreign.rs still has `{name}`; csvload and matrixload \
+                 should call core's *_load_with_limits (libviprs-cli#90)"
+            );
+        }
     }
 
     #[test]

@@ -586,6 +586,36 @@ fn an_op_refusing_its_input_still_exits_1() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The ragged CSV from the review: one 65535-field row, then 16383 one-field
+/// rows, about 160 KB of text that pads to 65535 x 16384 floats (about 4.3 GB)
+/// while staying inside every geometry default. Core prices that grid against
+/// `--max-alloc-bytes` before it builds anything now (libviprs#1168), and the
+/// CLI hands it the limits instead of pricing it itself (libviprs-cli#90): the
+/// refusal is still an operational exit 1 naming the flag, and nothing is
+/// written.
+#[test]
+fn csvload_refuses_a_hostile_ragged_grid_through_the_limits() {
+    let dir = unique_dir("csv-ragged-bomb");
+    let mut csv = vec!["0"; 65535].join(",");
+    csv.push_str(&"\n1".repeat(16383));
+    csv.push('\n');
+    let input = dir.join("ragged.csv");
+    std::fs::write(&input, csv).unwrap();
+    let res = dir.join("ragged.v");
+    let started = std::time::Instant::now();
+    let out = run(&["csvload", input.to_str().unwrap(), res.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 1, "stderr:\n{stderr}");
+    assert!(stderr.contains("--max-alloc-bytes"), "stderr:\n{stderr}");
+    assert!(!res.exists(), "wrote {}", res.display());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "took {:?}, so the grid was built before it was refused",
+        started.elapsed()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // PMTiles: the default storage flip and the `viprs pmtiles` group (#54)
 // ---------------------------------------------------------------------------
