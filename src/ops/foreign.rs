@@ -24,11 +24,30 @@
 //! | | | `heifload` (AVIF only), `svgload` (`--dpi`, `--scale`, `--unlimited`), `openexrload`, `niftiload`, `analyzeload`, `matload` | |
 //!
 //! Every loader takes the five shared `--max-*` decode limits, and `-` as its
-//! input reads the image from stdin. The core bounds allocation with
+//! input reads the image from stdin. Nothing here writes stdout, so an OUT of
+//! `-` is refused while the arguments are parsed (exit 2) rather than creating
+//! a file called `-`. The core bounds allocation with
 //! `max_coord`, `max_pixels` and `max_alloc_bytes` before it reserves a frame,
 //! but only its `image`-crate paths look at `max_width` / `max_height`, so the
 //! loaders here check the decoded geometry against all of them afterwards
 //! as well; a flag the help text promises is a flag every loader honours.
+//!
+//! `csvload` and `matrixload` are the two whose core decoders take no limits
+//! at all, so their grid is measured from the text and priced before the
+//! decode: width x height x 4 bytes, times the copies of the grid the core
+//! holds while it builds the raster, against `--max-alloc-bytes`. A ragged
+//! CSV is priced at the padded width, because that is what `csv_load` builds.
+//!
+//! # Where this departs from vips
+//!
+//! `pngsave --bitdepth` only means something with `--palette` here (vips also
+//! reduces a plain PNG's depth), and `--compression` conflicts with
+//! `--interlace` and `--palette`, because the core's interlaced and palette
+//! encoders take no deflate level. `jpegload --shrink` decodes the whole image
+//! and box-shrinks it afterwards, where vips shrinks inside libjpeg, so the
+//! limits apply to the full-size decode. `jpegload` cannot write a `.jpg` OUT:
+//! loaders save through the shared op sink, which bans `.jpg` (`jpegsave` is
+//! the way to write one).
 //!
 //! # What is deliberately not here
 //!
@@ -46,9 +65,11 @@
 //! has no encoder that matches vips's lossy modes (WebP and JPEG XL have no
 //! lossy encoder at all, and the JPEG 2000 one takes a rate, not vips's `Q`).
 //! Writing lossless when someone typed vips's default would be a silent
-//! change of meaning, so each of them requires `--lossless` and refuses
-//! without it. The extension route (`viprs copy in.png out.webp`) is the
-//! core's own `Raster::save` table and writes lossless, as it always has.
+//! change of meaning, so each of them makes `--lossless` a required argument:
+//! leaving it out is a usage error (exit 2, shown in the usage line) caught
+//! before any input is read. The extension route (`viprs copy in.png
+//! out.webp`) is the core's own `Raster::save` table and writes lossless, as
+//! it always has.
 
 use std::io::Read as _;
 use std::num::NonZeroU32;
@@ -116,8 +137,46 @@ pub fn metas() -> Vec<CommandMeta> {
 }
 
 fn in_out(cmd: Command, input: &'static str) -> Command {
-    cmd.arg(Arg::new("IN").required(true).help(input))
-        .arg(Arg::new("OUT").required(true).help("Output image"))
+    cmd.arg(Arg::new("IN").required(true).help(input)).arg(
+        Arg::new("OUT")
+            .required(true)
+            .value_parser(output_path)
+            .help("Output file (not -: nothing here writes stdout)"),
+    )
+}
+
+/// OUT is always a file. A loader's IN takes `-` for stdin, so `-` as OUT
+/// reads like stdout and would quietly create a file called `-` instead.
+fn output_path(s: &str) -> std::result::Result<String, String> {
+    if s == "-" {
+        Err(
+            "OUT cannot be -: these commands write a file and never stdout \
+             (only a loader's IN reads - as stdin)"
+                .to_owned(),
+        )
+    } else {
+        Ok(s.to_owned())
+    }
+}
+
+/// A finite number above zero, for `svgload --dpi` and `--scale`: the core
+/// rounds NaN, infinities and negatives to a zero-sized render, so they are
+/// refused while parsing instead (exit 2).
+fn positive_finite(s: &str) -> std::result::Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        Ok(_) => Err("must be a finite number above 0".to_owned()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// A finite number from 0 to 1 inclusive, for `gifsave --dither`.
+fn unit_interval(s: &str) -> std::result::Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(v) if (0.0..=1.0).contains(&v) => Ok(v),
+        Ok(_) => Err("must be a number from 0 to 1".to_owned()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn saver(name: &'static str, about: &'static str) -> Command {
@@ -140,6 +199,7 @@ fn lossless() -> Arg {
         "lossless",
         "Write lossless (required: vips's default is lossy, which this build cannot encode)",
     )
+    .required(true)
 }
 
 /// `--page` and `--n` for the multi-page loaders, and `--max-pages` for the
@@ -202,7 +262,10 @@ pub fn commands() -> Vec<Command> {
                     .value_name("0-9")
                     .value_parser(value_parser!(u8).range(0..=9))
                     .conflicts_with_all(["interlace", "palette"])
-                    .help("Deflate level for a plain PNG (default 6)"),
+                    .help(
+                        "Deflate level for a plain PNG (default 6); unlike vips it conflicts \
+                         with --interlace and --palette, whose encoders take no level",
+                    ),
             )
             .arg(flag("interlace", "Write an Adam7-interlaced PNG"))
             .arg(
@@ -214,7 +277,10 @@ pub fn commands() -> Vec<Command> {
                     .value_name("1|2|4|8")
                     .value_parser(["1", "2", "4", "8"])
                     .requires("palette")
-                    .help("With --palette, hold at most 2^N colours (default 8)"),
+                    .help(
+                        "With --palette, hold at most 2^N colours (default 8); unlike vips it \
+                         needs --palette",
+                    ),
             ),
         saver("tiffsave", "Save an image as a single-page TIFF.").arg(
             Arg::new("compression")
@@ -229,7 +295,7 @@ pub fn commands() -> Vec<Command> {
                 Arg::new("dither")
                     .long("dither")
                     .value_name("0-1")
-                    .value_parser(value_parser!(f64))
+                    .value_parser(unit_interval)
                     .default_value("1")
                     .help("Amount of dithering during palette quantisation"),
             )
@@ -299,12 +365,19 @@ pub fn commands() -> Vec<Command> {
             "ppmsave",
             "Save a one- or three-band integer image as binary PGM/PPM.",
         ),
-        loader("jpegload", "Load a JPEG image.").arg(
+        loader(
+            "jpegload",
+            "Load a JPEG image (OUT cannot be .jpg: the shared op sink bans it, use jpegsave).",
+        )
+        .arg(
             Arg::new("shrink")
                 .long("shrink")
                 .value_parser(["1", "2", "4", "8"])
                 .default_value("1")
-                .help("Shrink by this integer factor while loading"),
+                .help(
+                    "Shrink by this integer factor after a full-size decode (vips shrinks \
+                     inside the decoder; the --max-* limits see the full size here)",
+                ),
         ),
         loader("pngload", "Load a PNG image."),
         page_args(
@@ -330,14 +403,14 @@ pub fn commands() -> Vec<Command> {
         .arg(
             Arg::new("dpi")
                 .long("dpi")
-                .value_parser(value_parser!(f64))
+                .value_parser(positive_finite)
                 .default_value("72")
                 .help("Render at this DPI"),
         )
         .arg(
             Arg::new("scale")
                 .long("scale")
-                .value_parser(value_parser!(f64))
+                .value_parser(positive_finite)
                 .default_value("1")
                 .help("Scale the rendered output by this factor"),
         )
@@ -373,10 +446,11 @@ pub fn commands() -> Vec<Command> {
 pub fn run(name: &str, m: &ArgMatches) -> Result<()> {
     let out = PathBuf::from(pos(m, "OUT"));
     if let Some(format) = name.strip_suffix("save") {
+        // A build without the encoder refuses before the input is read, so
+        // nothing gets decoded only to be thrown away.
+        require_saver(format)?;
         let raster = io::load(Path::new(pos(m, "IN")), &io::decode_limits(m))?;
-        let bytes = encode(format, &raster, m)?;
-        return std::fs::write(&out, bytes)
-            .with_context(|| format!("failed to write {}", out.display()));
+        return save(format, &raster, m, &out);
     }
     let raster = decode(name, m)?;
     check_geometry(&raster, &io::decode_limits(m))?;
@@ -387,6 +461,34 @@ fn pos<'a>(m: &'a ArgMatches, id: &str) -> &'a str {
     m.get_one::<String>(id)
         .map(String::as_str)
         .unwrap_or_default()
+}
+
+/// The encoder a `*save` command needs, checked before anything is read.
+fn require_saver(format: &str) -> Result<()> {
+    match format {
+        "jxl" => require_encoder(cfg!(feature = "jxl"), "jxl", "JPEG XL"),
+        "jp2k" => require_encoder(cfg!(feature = "jp2k"), "jp2k", "JPEG 2000"),
+        _ => Ok(()),
+    }
+}
+
+fn save(format: &str, raster: &Raster, m: &ArgMatches, out: &Path) -> Result<()> {
+    if format == "tiff" {
+        // `save_tiff` is the core's one compression-choosing entry point and
+        // it writes the path itself, so it gets OUT directly: no temp file
+        // beside it to plant a symlink at, and no encode, read back and write
+        // again to get the bytes out.
+        let compression = match pos(m, "compression") {
+            "lzw" => TiffCompression::Lzw,
+            "deflate" => TiffCompression::Deflate,
+            _ => TiffCompression::None,
+        };
+        return io::to_integer_encodable(raster)?
+            .save_tiff(out, compression)
+            .with_context(|| format!("failed to write {}", out.display()));
+    }
+    let bytes = encode(format, raster, m)?;
+    std::fs::write(out, bytes).with_context(|| format!("failed to write {}", out.display()))
 }
 
 fn encode(format: &str, raster: &Raster, m: &ArgMatches) -> Result<Vec<u8>> {
@@ -412,25 +514,9 @@ fn encode(format: &str, raster: &Raster, m: &ArgMatches) -> Result<Vec<u8>> {
                 r.encode_png(m.get_one::<u8>("compression").copied().unwrap_or(6))?
             }
         }
-        "tiff" => {
-            let compression = match pos(m, "compression") {
-                "lzw" => TiffCompression::Lzw,
-                "deflate" => TiffCompression::Deflate,
-                _ => TiffCompression::None,
-            };
-            // `save_tiff` is the core's one compression-choosing entry point
-            // and it writes a path, so the bytes go through a sibling temp
-            // file rather than a second copy of the encoder.
-            let tmp = tempfile_beside(Path::new(pos(m, "OUT")))?;
-            let result = integer()?.save_tiff(&tmp, compression);
-            let bytes = result.map_err(anyhow::Error::from).and_then(|()| {
-                std::fs::read(&tmp).with_context(|| format!("failed to read {}", tmp.display()))
-            });
-            let _ = std::fs::remove_file(&tmp);
-            bytes?
-        }
         "webp" => {
-            require_lossless(m, "webpsave")?;
+            // --lossless is a required argument, so clap has already refused
+            // a command line without it.
             integer()?.encode_webp(
                 libviprs::webp::SaveOptions::default().with_keep(libviprs::webp::Keep::None),
             )?
@@ -442,14 +528,8 @@ fn encode(format: &str, raster: &Raster, m: &ArgMatches) -> Result<Vec<u8>> {
                 .with_interlaced(m.get_flag("interlace"));
             integer()?.encode_gif(options)?
         }
-        "jxl" => {
-            require_encoder(cfg!(feature = "jxl"), "jxl", "JPEG XL")?;
-            require_lossless(m, "jxlsave")?;
-            integer()?.encode_jxl(libviprs::jxl::SaveOptions::default())?
-        }
+        "jxl" => integer()?.encode_jxl(libviprs::jxl::SaveOptions::default())?,
         "jp2k" => {
-            require_encoder(cfg!(feature = "jp2k"), "jp2k", "JPEG 2000")?;
-            require_lossless(m, "jp2ksave")?;
             let tile = |id: &str| {
                 NonZeroU32::new(*m.get_one::<u32>(id).expect("defaulted"))
                     .ok_or_else(|| anyhow!("--{id} must be at least 1"))
@@ -491,16 +571,6 @@ fn to_scrgb(raster: &Raster) -> Result<std::borrow::Cow<'_, Raster>> {
         .map_err(|e| anyhow!("uhdrsave needs an scRGB image and this one does not convert: {e}"))
 }
 
-fn require_lossless(m: &ArgMatches, command: &str) -> Result<()> {
-    if m.get_flag("lossless") {
-        return Ok(());
-    }
-    bail!(
-        "{command} writes lossless only, and vips's default for it is lossy, so the mode \
-         has to be asked for: pass --lossless"
-    )
-}
-
 fn require_encoder(compiled: bool, feature: &'static str, format: &'static str) -> Result<()> {
     if compiled {
         Ok(())
@@ -517,30 +587,20 @@ fn require_decoder(compiled: bool, feature: &'static str, format: &'static str) 
     }
 }
 
-/// A path next to `out` that nothing else is using, for an encoder that only
-/// writes files.
-fn tempfile_beside(out: &Path) -> Result<PathBuf> {
-    let dir = out
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let name = out
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    Ok(dir.join(format!(".{name}.{}.viprs-tmp", std::process::id())))
-}
-
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
 
 /// Read the whole input, from stdin for `-`, refusing more than the
 /// `max_alloc_bytes` budget before it is all in memory.
+///
+/// `ceiling` is a format's own input ceiling (SVG's 10 MB). When that is the
+/// lower of the two, one byte past it is handed on so the core refuses the
+/// document with its own typed error. When the budget is the lower one the
+/// input is refused here: a truncated document is never handed on.
 fn read_input(spec: &str, limits: &DecodeLimits, ceiling: Option<u64>) -> Result<Vec<u8>> {
-    let cap = ceiling
-        .unwrap_or(limits.max_alloc_bytes)
-        .min(limits.max_alloc_bytes);
+    let budget = limits.max_alloc_bytes;
+    let cap = ceiling.map_or(budget, |c| c.min(budget));
     let mut bytes = Vec::new();
     if spec == "-" {
         std::io::stdin()
@@ -548,17 +608,20 @@ fn read_input(spec: &str, limits: &DecodeLimits, ceiling: Option<u64>) -> Result
             .read_to_end(&mut bytes)
             .context("failed to read the image from stdin")?;
     } else {
-        std::fs::File::open(spec)
-            .with_context(|| format!("failed to open {spec}"))?
-            .take(cap.saturating_add(1))
+        let file = std::fs::File::open(spec).with_context(|| format!("failed to open {spec}"))?;
+        // Sized from the file, so a large input is read without the doubling
+        // a growing Vec does on the way, and never past the cap.
+        if let Ok(meta) = file.metadata() {
+            let hint = meta.len().min(cap.saturating_add(1));
+            bytes.reserve(usize::try_from(hint).unwrap_or(0));
+        }
+        file.take(cap.saturating_add(1))
             .read_to_end(&mut bytes)
             .with_context(|| format!("failed to read {spec}"))?;
     }
-    if bytes.len() as u64 > cap && ceiling.is_none() {
-        bail!(
-            "{spec} is larger than the {} byte decode budget (--max-alloc-bytes)",
-            limits.max_alloc_bytes
-        );
+    let over_ceiling_only = ceiling.is_some_and(|c| c < budget);
+    if bytes.len() as u64 > cap && !over_ceiling_only {
+        bail!("{spec} is larger than the {budget} byte decode budget (--max-alloc-bytes)");
     }
     Ok(bytes)
 }
@@ -691,6 +754,7 @@ fn decode(name: &str, m: &ArgMatches) -> Result<Raster> {
             source(libviprs::decode_avif(&bytes, limits))?
         }
         "svgload" => {
+            require_decoder(cfg!(feature = "svg"), "svg", "SVG")?;
             let unlimited = m.get_flag("unlimited");
             // One byte past the core's ceiling is enough for it to refuse
             // with its own typed error; --unlimited reads the whole document.
@@ -735,13 +799,13 @@ fn decode(name: &str, m: &ArgMatches) -> Result<Raster> {
         "csvload" => {
             let bytes = read_input(spec, &limits, None)?;
             let (w, h) = csv_geometry(&bytes);
-            check_dims(w, h, &limits)?;
+            check_dims(w, h, Some(CSV_GRID_COPIES), &limits)?;
             core(Raster::csv_load(&bytes))?
         }
         "matrixload" => {
             let bytes = read_input(spec, &limits, None)?;
             if let Some((w, h)) = matrix_geometry(&bytes) {
-                check_dims(w, h, &limits)?;
+                check_dims(w, h, Some(MATRIX_GRID_COPIES), &limits)?;
             }
             core(Raster::matrix_load(&bytes))?
         }
@@ -770,7 +834,26 @@ fn matrix_geometry(bytes: &[u8]) -> Option<(u64, u64)> {
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
 
-fn check_dims(w: u64, h: u64, limits: &DecodeLimits) -> Result<()> {
+/// Copies of a `csvload` grid alive at once while `Raster::csv_load` builds
+/// it: the padded row vectors, the flattened samples (a growing Vec, which can
+/// sit at up to twice the grid while the rows drain into it), and the raster's
+/// own buffer. The core reserves none of them fallibly or under a limit, which
+/// is on the core tracking issue; until it does, this is priced here.
+const CSV_GRID_COPIES: u64 = 3;
+
+/// The same for `Raster::matrix_load`: the parsed samples (a growing Vec, so
+/// up to twice the grid) and the raster's buffer.
+const MATRIX_GRID_COPIES: u64 = 2;
+
+/// Bytes per sample of the one-band float raster both text loaders build.
+const F32_BYTES: u64 = 4;
+
+/// `w` x `h` against every geometry limit, and with `copies` the float grid
+/// a text loader builds (`w` x `h` x 4 bytes, `copies` times) against
+/// `max_alloc_bytes`. The products saturate rather than wrap, so a header
+/// claiming absurd dimensions is refused, never priced at a wrapped-around
+/// small number.
+fn check_dims(w: u64, h: u64, copies: Option<u64>, limits: &DecodeLimits) -> Result<()> {
     let too = |what: &str, got: u64, max: u64, flag: &str| {
         Err(anyhow!(
             "image {what} {got} exceeds the decode limit of {max} (--{flag})"
@@ -785,8 +868,20 @@ fn check_dims(w: u64, h: u64, limits: &DecodeLimits) -> Result<()> {
     if w.max(h) > u64::from(limits.max_coord) {
         return too("axis", w.max(h), limits.max_coord.into(), io::MAX_COORD);
     }
-    if w * h > limits.max_pixels {
-        return too("pixel count", w * h, limits.max_pixels, io::MAX_PIXELS);
+    let pixels = w.saturating_mul(h);
+    if pixels > limits.max_pixels {
+        return too("pixel count", pixels, limits.max_pixels, io::MAX_PIXELS);
+    }
+    if let Some(copies) = copies {
+        let bytes = pixels.saturating_mul(F32_BYTES).saturating_mul(copies);
+        if bytes > limits.max_alloc_bytes {
+            return too(
+                "byte size",
+                bytes,
+                limits.max_alloc_bytes,
+                io::MAX_ALLOC_BYTES,
+            );
+        }
     }
     Ok(())
 }
@@ -794,7 +889,7 @@ fn check_dims(w: u64, h: u64, limits: &DecodeLimits) -> Result<()> {
 /// The decoded geometry against every limit the flags promise; see the module
 /// docs for why this runs after the core's own checks too.
 fn check_geometry(raster: &Raster, limits: &DecodeLimits) -> Result<()> {
-    check_dims(raster.width().into(), raster.height().into(), limits)
+    check_dims(raster.width().into(), raster.height().into(), None, limits)
 }
 
 #[cfg(test)]
@@ -852,22 +947,33 @@ mod tests {
     #[test]
     fn check_dims_names_the_flag_it_tripped() {
         let limits = DecodeLimits::default().with_max_pixels(10);
-        let err = check_dims(4, 4, &limits).unwrap_err().to_string();
+        let err = check_dims(4, 4, None, &limits).unwrap_err().to_string();
         assert!(err.contains("--max-pixels"), "{err}");
-        assert!(check_dims(2, 5, &limits).is_ok());
+        assert!(check_dims(2, 5, None, &limits).is_ok());
     }
 
     #[test]
-    fn lossless_only_savers_refuse_without_the_flag() {
-        let cmd = commands()
-            .into_iter()
-            .find(|c| c.get_name() == "webpsave")
-            .unwrap();
-        let m = cmd
-            .try_get_matches_from(["webpsave", "a.png", "b.webp"])
-            .unwrap();
-        let err = require_lossless(&m, "webpsave").unwrap_err().to_string();
-        assert!(err.contains("--lossless"), "{err}");
+    fn check_dims_prices_the_grid_copies_without_wrapping() {
+        // The ragged CSV from the review, one 65535-field row and 16383
+        // one-field rows: inside every geometry default, about 4.3 GB a copy.
+        let limits = DecodeLimits::default();
+        assert!(check_dims(65_535, 16_384, None, &limits).is_ok());
+        let err = check_dims(65_535, 16_384, Some(CSV_GRID_COPIES), &limits)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--max-alloc-bytes"), "{err}");
+        // Dimensions whose byte count overflows u64 still refuse cleanly.
+        let wide = DecodeLimits::default()
+            .with_max_width(u32::MAX)
+            .with_max_height(u32::MAX)
+            .with_max_coord(u32::MAX)
+            .with_max_pixels(u64::MAX)
+            .with_max_alloc_bytes(u64::MAX - 1);
+        let max = u64::from(u32::MAX);
+        let err = check_dims(max, max, Some(CSV_GRID_COPIES), &wide)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--max-alloc-bytes"), "{err}");
     }
 
     fn command(name: &str) -> Command {
