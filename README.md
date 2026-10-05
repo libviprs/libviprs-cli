@@ -56,11 +56,13 @@ One contract for every command, built-ins and ops alike:
 | Code | Meaning |
 |---|---|
 | `0` | Success. |
-| `1` | Operational failure: an input that cannot be read or decoded, an I/O error, a check that found a problem, or a feature this build left out (the message names the `--features` flag to rebuild with). |
-| `2` | Usage mistake: an unknown flag, a missing or conflicting argument, a value out of range, or a combination of flags that has no meaning. Nothing is read or written. |
-| `130` | Interrupted by Ctrl-C (SIGINT). A process killed by the signal is reported as 130 by the shell too. |
+| `1` | Operational failure: an input that cannot be read or decoded, an I/O error, an op that refuses its input or a value it was given, a check that found a problem (`verify`, `pmtiles verify`), a pyramid that skipped tiles under `--skip-failed`, or a feature this build left out (the message names the `--features` flag to rebuild with). |
+| `2` | Usage mistake: an unknown flag, a missing or conflicting argument (including a required mode flag such as `webpsave`'s `--lossless`), a value clap or the built-in commands refuse, or a combination of flags that has no meaning. Nothing is written. |
+| `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself; any other command dies by the signal, which a shell reports as 130 too. |
 
 A missing feature is a 1 rather than a 2 on purpose: the command line was fine, this binary just cannot do it, and rebuilding fixes it where retyping would not.
+
+The op commands (`gamma`, `clamp`, `linear` and the rest of the vips nicknames) leave to clap what clap can check, so a flag value that isn't a number, or isn't one of the listed choices, is a 2. A value the op checks itself is a 1 today, the same as the op failing: a space-separated vector argument that doesn't parse (`linear`'s `"1 1 1"`), `clamp --min 200 --max 50`, or a `gamma --exponent` outside vips's range. Moving those to 2 is tracked in #78.
 
 ## Commands
 
@@ -110,7 +112,7 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 |---|---|---|
 | a directory-shaped output (existing directory, trailing `/`, or no extension) | the default target is one archive file | `--storage directory`, or name the archive `tiles.pmtiles` |
 | `--layout deep-zoom` | PMTiles v3 addresses tiles as slippy `z/x/y`, and a Deep Zoom tier is not a slippy zoom | `--storage directory`, or drop `--layout` |
-| `--format raw` | a PMTiles tile is a blob a viewer hands to a decoder, and raw pixels carry neither dimensions nor pixel format | `--format png`, `--format jpeg`, or `--storage directory` |
+| `--format raw` | a PMTiles tile is a blob a viewer hands to a decoder, and raw pixels carry neither dimensions nor pixel format | `--format png`, `--format jpeg`, `--format webp`, or `--storage directory` |
 
 `--layout` has no single default any more: an archive gets `xyz`, a directory gets `deep-zoom`.
 
@@ -122,8 +124,8 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | [`--tile-size`](https://libviprs.org/cli/#flag-tile-size) | 256 | Tile size in pixels |
 | [`--overlap`](https://libviprs.org/cli/#flag-overlap) | 0 | Tile overlap in pixels |
 | [`--layout`](https://libviprs.org/cli/#flag-layout) | storage-dependent | `deep-zoom`, `xyz` or `google` |
-| [`--format`](https://libviprs.org/cli/#flag-format) | png | `png`, `jpeg`, or `raw` (`raw` needs `--storage directory`) |
-| [`--quality`](https://libviprs.org/cli/#flag-quality) | 85 | JPEG quality (1-100) |
+| [`--format`](https://libviprs.org/cli/#flag-format) | png | `png`, `jpeg`, `webp` (lossless), or `raw` (`raw` needs `--storage directory`) |
+| [`--quality`](https://libviprs.org/cli/#flag-quality) | 85 | JPEG quality (1-100); `webp` is lossless and ignores it |
 | [`--dpi`](https://libviprs.org/cli/#flag-dpi) | 150 | PDF rasterization DPI |
 | [`--page`](https://libviprs.org/cli/#flag-page) | 1 | PDF page number (1-based) |
 | [`--concurrency`](https://libviprs.org/cli/#flag-concurrency) | 0 | Worker threads (0 = single-threaded) |
@@ -204,7 +206,7 @@ Generate synthetic test images (gradients, checkerboards, noise) for benchmarkin
 
 ### [`viprs pmtiles`](https://libviprs.org/cli/#pmtiles)
 
-Inspect, read and unpack a PMTiles v3 archive. A container utility rather than a vips operation, so it is a first-class command and is not in `OP_MAP.md`.
+Inspect, read, unpack and pack a PMTiles v3 archive. A container utility rather than a vips operation, so it is a first-class command and is not in `OP_MAP.md`.
 
 ```bash
 # What is in here
@@ -235,6 +237,10 @@ viprs pmtiles verify plan.pmtiles
 
 # Back to a loose {z}/{x}/{y}.png tree
 viprs pmtiles extract plan.pmtiles ./tiles
+
+# And a tree into an archive again, with the plan from the run's manifest
+viprs pmtiles pack ./tiles plan.pmtiles --manifest ./tiles/manifest.json
+viprs pmtiles pack ./tiles plan.pmtiles --width 5000 --height 3000 --tile-size 256
 ```
 
 `tile` writes the tile and only the tile to stdout; every diagnostic, including the one for a tile that is not in the archive, goes to stderr. An absent tile exits 1 with nothing on stdout, so piping into a decoder cannot pick up a sentence where the bytes should be.
@@ -243,11 +249,13 @@ viprs pmtiles extract plan.pmtiles ./tiles
 
 `extract` reproduces exactly what `viprs pyramid --storage directory --layout xyz` writes for the same input, so an archive somebody hands you turns into the tree existing tools already serve. Tiles stored under a deduplicating run get written out once per coordinate.
 
-There is no `webp` in `--format`, and there will not be one until the core crate's `TileFormat` grows the variant. PMTiles v3 defines a WebP tile type and `viprs pmtiles info` reports it when somebody else's archive carries one, but nothing this CLI writes can contain one and the flag is not going to say otherwise.
+`pack` never guesses the plan. It comes from `--manifest` (or a `manifest.json` inside the tree, which it says it is using), or from `--width`, `--height` and the other plan flags, never a mix of the two. It prints the plan it packs with, exits 1 rather than writing an empty archive when it finds no tiles, and warns about planned tiles the tree lacks and tile-shaped files the plan never visits. A centred tree needs `--centre`, since the manifest doesn't record centring.
+
+`viprs pyramid --format webp` writes lossless WebP tiles, which PMTiles v3 has a tile type for, and `pmtiles info`, `extract` and `pack` handle them like PNG and JPEG.
 
 ### `viprs features`
 
-Print the cargo features this binary was built with, one per line, in alphabetical order. `--json` prints `{"features": [...]}` instead. It always exits 0, and a `--no-default-features` build prints nothing.
+Print the cargo features this binary was built with, one per line, in alphabetical order. `--json` prints `{"v":1,"features":[...]}` instead, where `v` is the shape's version. It always exits 0, and a `--no-default-features` build prints nothing.
 
 ```bash
 $ viprs features
@@ -323,7 +331,7 @@ viprs verify tiles/
 viprs verify tiles/ --source blueprint.png
 ```
 
-The manifest and the archive metadata don't record `--centre` or `--drop-blanks` yet, so a pyramid written with either needs the same flag on `verify`. Without it a centred pyramid gets checked against the uncentred grid, and every dropped blank shows up as a missing tile (the message says so). `--drop-blanks` can't be combined with `--source`, because the re-render expects every planned tile, and a PDF can't be a `--source`, because verify doesn't know the page, DPI or render mode the pyramid used. `--source` decodes through the same input path as every other command. A badly broken pyramid is reported up to 50 problems, then verify stops looking.
+The manifest and the archive metadata don't record `--centre` or `--drop-blanks` yet, so a pyramid written with either needs the same flag on `verify`. Without it a centred pyramid gets checked against the uncentred grid, and every dropped blank shows up as a missing tile (the message says so). `--drop-blanks` can't be combined with `--source`, because the re-render expects every planned tile, `--centre` can't either, because the re-render can't lay a source out on a centred grid yet, `--source` only applies to a tile tree (an archive is checked by decoding every tile), and a PDF can't be a `--source`, because verify doesn't know the page, DPI or render mode the pyramid used. `--source` decodes through the same input path as every other command. A badly broken pyramid is reported up to 50 problems, then verify stops looking.
 
 ## PDF Handling
 

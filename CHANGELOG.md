@@ -10,6 +10,7 @@ the `version` in `Cargo.toml`.
 
 - `viprs info --json`, one JSON object per file in the `{"v": 1, ...}` shape
   `features --json` uses, with the exact decoded size (#82).
+- `viprs pyramid --format webp`, which writes lossless WebP tiles (#60).
 - `viprs pmtiles pack TREE ARCHIVE`, the inverse of `extract`. The plan comes
   from a manifest or from explicit flags and is never guessed, the effective
   plan is printed before packing, and a pack that finds no tiles exits 1
@@ -56,7 +57,8 @@ the `version` in `Cargo.toml`.
 
 - A feature this build left out exits 1 everywhere. `--trace-level`,
   `packfile://` and `s3://` used to exit 2 for it while a missing codec exited
-  1. The README's "Exit codes" section now holds the whole contract (#64).
+  1. The README's "Exit codes" section now holds the whole contract (#64), and
+  says which refusals in the op commands are still a 1 (#79).
 - `dECMC` is GOLDEN-ONLY rather than BOUNDED-TOL in `OP_MAP.md`, so its oracle
   class in `viprs __dump-commands --json` changes (#67).
 - `viprs pyramid` exits 2, not 1, for a malformed `--geo-origin` or
