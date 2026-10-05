@@ -118,15 +118,29 @@ impl std::error::Error for MissingEncoder {}
 
 /// The [`MissingFeature`] behind a core decode error, if that is what it is.
 ///
-/// Matched on the core's typed `FeatureNotEnabled` variants, never on the
-/// message text. Each of them is declared in every build of the core, so this
-/// compiles the same with the feature on or off; with it on, the arm is simply
-/// never taken.
+/// Matched on the core's typed `FeatureNotEnabled` variants. Each of them is
+/// declared in every build of the core, so this compiles the same with the
+/// feature on or off; with it on, the arm is simply never taken. SVG is the
+/// exception: the core has no typed variant for it, only an `Unsupported` I/O
+/// error that names the feature, so in a build without `svg` that kind plus
+/// that name is what's matched.
 pub fn missing_feature(err: &SourceError) -> Option<MissingFeature> {
     let (feature, format) = match err {
         SourceError::Avif(AvifError::FeatureNotEnabled) => ("avif", "AVIF"),
         SourceError::Jxl(JxlError::FeatureNotEnabled) => ("jxl", "JPEG XL"),
         SourceError::Jp2k(Jp2kError::FeatureNotEnabled) => ("jp2k", "JPEG 2000"),
+        // Without `svg` the core's rasteriser has one answer, an `Unsupported`
+        // I/O error naming the feature, whether the SVG came by extension or
+        // through the core's own content sniff (libviprs#1170). With the
+        // feature on, the arm is not compiled, so an `Unsupported` from the
+        // renderer stays what it is.
+        #[cfg(not(feature = "svg"))]
+        SourceError::Io(e)
+            if e.kind() == std::io::ErrorKind::Unsupported
+                && e.to_string().contains("`svg` feature") =>
+        {
+            ("svg", "SVG")
+        }
         _ => return None,
     };
     Some(MissingFeature { feature, format })

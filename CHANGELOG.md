@@ -55,6 +55,14 @@ the `version` in `Cargo.toml`.
 
 ### Changed
 
+- An SVG without its `.svg` extension is recognised by the core's content
+  sniff (`libviprs::looks_like_svg`, libviprs#1170) instead of the CLI's own
+  copy of it. The core's rule is stricter: the root element itself has to be
+  `svg` (a namespace prefix is fine), so a root like `<svgish>` or an `<svg`
+  that only appears inside a comment is no longer sent to the renderer, or
+  refused as a missing `svg` feature, and fails as an unrecognised format
+  instead. A `.svg` / `.svgz` name still goes straight to the renderer, and
+  `.svgz` is still refused (#91).
 - `csvload` and `matrixload` decode through the core's
   `Raster::csv_load_with_limits` / `matrix_load_with_limits` (libviprs#1168),
   which check the grid against `--max-coord`, `--max-pixels` and
