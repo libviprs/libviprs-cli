@@ -145,7 +145,7 @@ struct PyramidArgs {
     /// Tile size in pixels.
     ///
     /// See also: [interactive example](https://libviprs.org/cli/#flag-tile-size).
-    #[arg(long, default_value = "256")]
+    #[arg(long, default_value = "256", value_parser = clap::value_parser!(u32).range(1..))]
     tile_size: u32,
 
     /// Tile overlap in pixels.
@@ -203,15 +203,15 @@ struct PyramidArgs {
     /// JPEG quality (1-100, only used with --format jpeg).
     ///
     /// See also: [interactive example](https://libviprs.org/cli/#flag-quality).
-    #[arg(long, default_value = "85")]
+    #[arg(long, default_value = "85", value_parser = clap::value_parser!(u8).range(1..=100))]
     quality: u8,
 
     /// DPI for PDF rendering/page-size scaling (default matches libvips).
-    #[arg(long, default_value = "72")]
+    #[arg(long, default_value = "72", value_parser = clap::value_parser!(u32).range(1..))]
     dpi: u32,
 
     /// PDF page number to extract (1-based, only used for PDF inputs).
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "1", value_parser = page_number)]
     page: usize,
 
     /// Number of worker threads (0 = single-threaded).
@@ -436,6 +436,14 @@ struct PyramidArgs {
 struct InfoArgs {
     /// PDF or image file to inspect.
     input: PathBuf,
+
+    /// Print one JSON object instead of text: `{"v": 1, "kind": "image",
+    /// "path", "width", "height", "format", "bytes"}` for an image, or
+    /// `{"v": 1, "kind": "pdf", "path", "pages", "page_sizes": [{"page",
+    /// "width_pts", "height_pts", "has_images"}]}` for a PDF. A failure
+    /// prints nothing on stdout and exits 1 as the text form does.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -444,11 +452,11 @@ struct PlanArgs {
     width_or_input: String,
 
     /// Image height in pixels (required when width is given as a number).
-    #[arg(long)]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     height: Option<u32>,
 
     /// Tile size in pixels.
-    #[arg(long, default_value = "256")]
+    #[arg(long, default_value = "256", value_parser = clap::value_parser!(u32).range(1..))]
     tile_size: u32,
 
     /// Tile overlap in pixels.
@@ -461,11 +469,11 @@ struct PlanArgs {
     layout: pdf_geo_plan::PlanLayoutArg,
 
     /// DPI for PDF dimensions (only used when input is a PDF).
-    #[arg(long, default_value = "72")]
+    #[arg(long, default_value = "72", value_parser = clap::value_parser!(u32).range(1..))]
     dpi: u32,
 
     /// PDF page number (1-based, only used when input is a PDF).
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "1", value_parser = page_number)]
     page: usize,
 
     /// Centre the image within the tile grid (even padding on all sides).
@@ -482,12 +490,37 @@ struct TestImageArgs {
     output: PathBuf,
 
     /// Image width in pixels.
-    #[arg(long, default_value = "1024")]
+    #[arg(long, default_value = "1024", value_parser = clap::value_parser!(u32).range(1..))]
     width: u32,
 
     /// Image height in pixels.
-    #[arg(long, default_value = "1024")]
+    #[arg(long, default_value = "1024", value_parser = clap::value_parser!(u32).range(1..))]
     height: u32,
+}
+
+/// clap `value_parser` for a 1-based `--page`: 0 names no page in any
+/// document, so it is a usage mistake (exit 2) before anything is opened. A
+/// page past the end of a real document is a 1, since only the file knows.
+fn page_number(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(0) => Err("pages are numbered from 1".to_string()),
+        Ok(page) => Ok(page),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Refuse an overlap that leaves no tile, before any input is read.
+///
+/// The planner refuses it too, but only once the input has been decoded and
+/// as an operational failure, and the mistake is in the command line whatever
+/// the input turns out to be (#81).
+fn check_overlap(tile_size: u32, overlap: u32) {
+    if overlap >= tile_size {
+        usage_error(
+            &format!("--overlap {overlap} must be less than --tile-size {tile_size}"),
+            "an overlap as wide as the tile leaves no tile; lower --overlap or raise --tile-size",
+        );
+    }
 }
 
 #[derive(Clone, ValueEnum)]
@@ -1085,6 +1118,7 @@ fn run_pyramid(args: PyramidArgs) {
     // Ctrl-C first, before either driver is picked, so every engine below
     // stops at a tile boundary on it and the run exits 130.
     let cancel = pipeline::install_sigint();
+    check_overlap(args.tile_size, args.overlap);
     if pipeline::takes_over(&args) {
         return pipeline::run(args, cancel);
     }
@@ -2269,6 +2303,30 @@ fn run_info(args: InfoArgs) {
 
     if ext == "pdf" {
         match libviprs::pdf_info(path) {
+            Ok(info) if args.json => {
+                let pages: Vec<serde_json::Value> = info
+                    .pages
+                    .iter()
+                    .map(|page| {
+                        serde_json::json!({
+                            "page": page.page_number,
+                            "width_pts": page.width_pts,
+                            "height_pts": page.height_pts,
+                            "has_images": page.has_images,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "v": 1,
+                        "kind": "pdf",
+                        "path": path.display().to_string(),
+                        "pages": info.page_count,
+                        "page_sizes": pages,
+                    })
+                );
+            }
             Ok(info) => {
                 println!("PDF: {}", path.display());
                 println!("Pages: {}", info.page_count);
@@ -2289,6 +2347,20 @@ fn run_info(args: InfoArgs) {
         }
     } else {
         match input::decode_path_default(path) {
+            Ok(raster) if args.json => {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "v": 1,
+                        "kind": "image",
+                        "path": path.display().to_string(),
+                        "width": raster.width(),
+                        "height": raster.height(),
+                        "format": format!("{:?}", raster.format()),
+                        "bytes": raster.data().len(),
+                    })
+                );
+            }
             Ok(raster) => {
                 println!("Image: {}", path.display());
                 println!("Dimensions: {}x{}", raster.width(), raster.height());
@@ -2307,6 +2379,7 @@ fn run_info(args: InfoArgs) {
 }
 
 fn run_plan(args: PlanArgs) {
+    check_overlap(args.tile_size, args.overlap);
     let (w, h) = resolve_plan_dimensions(&args);
 
     let layout: Layout = args.layout.into();
@@ -2397,10 +2470,19 @@ fn run_test_image(args: TestImageArgs) {
 fn resolve_plan_dimensions(args: &PlanArgs) -> (u32, u32) {
     // Try parsing as a number first
     if let Ok(w) = args.width_or_input.parse::<u32>() {
-        let h = args.height.unwrap_or_else(|| {
-            eprintln!("--height is required when width is given as a number");
-            process::exit(1);
-        });
+        // Both are the command line's mistake, so both are usage errors (#81).
+        if w == 0 {
+            usage_error(
+                "a width of 0 describes no image",
+                "give the width in pixels, 1 or more, or the path of an image or PDF",
+            );
+        }
+        let Some(h) = args.height else {
+            usage_error(
+                "--height is required when width is given as a number",
+                "pass --height, or give the path of an image or PDF to read both from",
+            );
+        };
         return (w, h);
     }
 

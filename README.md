@@ -172,6 +172,16 @@ Format: Rgb8
 Size: 36.0 MB
 ```
 
+`--json` prints the same as one JSON object, with the exact decoded size in `bytes`:
+
+```bash
+$ viprs info --json photo.png
+{"v":1,"kind":"image","path":"photo.png","width":4096,"height":3072,"format":"Rgb8","bytes":37748736}
+
+$ viprs info --json blueprint.pdf
+{"v":1,"kind":"pdf","path":"blueprint.pdf","pages":1,"page_sizes":[{"page":1,"width_pts":3370.0,"height_pts":4768.0,"has_images":true}]}
+```
+
 ### [`viprs plan`](https://libviprs.org/cli/#plan)
 
 Preview the pyramid layout (level count, tile counts, output bytes) without writing tiles. See the [plan command page](https://libviprs.org/cli/#plan) for flags and example output.

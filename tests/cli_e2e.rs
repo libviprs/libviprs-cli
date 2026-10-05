@@ -49,10 +49,11 @@ fn plan_with_numeric_dimensions_succeeds() {
 }
 
 #[test]
-fn plan_numeric_width_without_height_exits_1() {
-    // A numeric width with no --height is a resolvable user error, exit 1.
+fn plan_numeric_width_without_height_exits_2() {
+    // A numeric width with no --height is a missing argument, which the
+    // exit-code contract calls a usage mistake (#81).
     let out = run(&["plan", "1024"]);
-    assert_eq!(code(&out), 1);
+    assert_eq!(code(&out), 2);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("--height is required"),
@@ -2422,5 +2423,292 @@ fn pmtiles_pack_takes_the_manifest_inside_the_tree_when_nothing_else_is_said() {
     );
     assert_eq!(xyz_tiles(&tree), xyz_tiles(&unpacked));
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Built-in values out of range are usage mistakes (#81)
+// ---------------------------------------------------------------------------
+
+/// Run a command that must be refused as a usage mistake, and check the
+/// refusal names the flag (or value) that fixes it and wrote nothing.
+fn assert_usage_refusal(args: &[&str], needle: &str, must_not_exist: &[&std::path::Path]) {
+    let out = run_bounded(args, 60);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 2, "{args:?} must exit 2, stderr:\n{stderr}");
+    assert!(
+        stderr.contains(needle),
+        "{args:?}: the refusal must name `{needle}`, got:\n{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{args:?} panicked:\n{stderr}");
+    for path in must_not_exist {
+        assert!(
+            !path.exists(),
+            "{args:?}: a refused run must not write {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn plan_refuses_a_zero_grid_as_a_usage_error() {
+    for (args, needle) in [
+        (vec!["plan", "0", "--height", "500"], "width"),
+        (vec!["plan", "700", "--height", "0"], "height"),
+        (
+            vec!["plan", "700", "--height", "500", "--tile-size", "0"],
+            "--tile-size",
+        ),
+        (
+            vec!["plan", "700", "--height", "500", "--overlap", "256"],
+            "--overlap",
+        ),
+        (
+            vec!["plan", "700", "--height", "500", "--page", "0"],
+            "--page",
+        ),
+        (
+            vec!["plan", "700", "--height", "500", "--dpi", "0"],
+            "--dpi",
+        ),
+    ] {
+        assert_usage_refusal(&args, needle, &[]);
+    }
+}
+
+#[test]
+fn pyramid_refuses_out_of_range_values_before_reading_the_input() {
+    // The input does not exist. A value check that ran after the input was
+    // opened would answer "not found" with exit 1; a usage check answers
+    // first, with 2, because the command line was wrong whatever the file is.
+    let dir = unique_dir("pyramid-out-of-range");
+    let missing = dir.join("missing.png");
+    let archive = dir.join("out.pmtiles");
+    let m = missing.to_str().unwrap();
+    let a = archive.to_str().unwrap();
+    for (extra, needle) in [
+        (vec!["--tile-size", "0"], "--tile-size"),
+        (vec!["--overlap", "256"], "--overlap"),
+        (vec!["--tile-size", "64", "--overlap", "64"], "--overlap"),
+        (vec!["--page", "0"], "--page"),
+        (vec!["--dpi", "0"], "--dpi"),
+        (vec!["--format", "jpeg", "--quality", "0"], "--quality"),
+        (vec!["--format", "jpeg", "--quality", "101"], "--quality"),
+    ] {
+        let mut args = vec!["pyramid", m, a];
+        args.extend_from_slice(&extra);
+        assert_usage_refusal(&args, needle, &[&archive]);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pyramid_refuses_a_quality_out_of_range_on_a_real_input() {
+    // Today quality 101 is taken and an archive is written. Same refusal as
+    // above, on an input that decodes, so the check cannot be an accident of
+    // the missing file.
+    let dir = unique_dir("pyramid-quality");
+    let input = make_input(&dir, 64, 64);
+    let archive = dir.join("out.pmtiles");
+    for q in ["0", "101", "255"] {
+        assert_usage_refusal(
+            &[
+                "pyramid",
+                input.to_str().unwrap(),
+                archive.to_str().unwrap(),
+                "--format",
+                "jpeg",
+                "--quality",
+                q,
+            ],
+            "--quality",
+            &[&archive],
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pyramid_keeps_the_values_at_the_edge_of_the_range() {
+    // The other side of the boundary: the smallest legal values still run.
+    let dir = unique_dir("pyramid-edges");
+    let input = make_input(&dir, 64, 64);
+    let archive = dir.join("out.pmtiles");
+    let out = run_bounded(
+        &[
+            "pyramid",
+            input.to_str().unwrap(),
+            archive.to_str().unwrap(),
+            "--tile-size",
+            "1",
+            "--overlap",
+            "0",
+            "--format",
+            "jpeg",
+            "--quality",
+            "1",
+            "--page",
+            "1",
+            "--dpi",
+            "1",
+        ],
+        120,
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(archive.is_file());
+    let out = run_bounded(
+        &[
+            "pyramid",
+            input.to_str().unwrap(),
+            dir.join("q100.pmtiles").to_str().unwrap(),
+            "--format",
+            "jpeg",
+            "--quality",
+            "100",
+            "--tile-size",
+            "64",
+            "--overlap",
+            "63",
+        ],
+        120,
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_image_refuses_a_zero_dimension_as_a_usage_error() {
+    let dir = unique_dir("test-image-zero");
+    let png = dir.join("zero.png");
+    for (extra, needle) in [
+        (["--width", "0"], "--width"),
+        (["--height", "0"], "--height"),
+    ] {
+        let mut args = vec!["test-image", png.to_str().unwrap()];
+        args.extend_from_slice(&extra);
+        assert_usage_refusal(&args, needle, &[&png]);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// `viprs info --json` (#82)
+// ---------------------------------------------------------------------------
+
+/// The smallest PDF lopdf opens: one page with the given MediaBox, no images.
+/// The xref offsets are computed rather than typed, so the file is valid
+/// rather than repaired on load.
+fn write_minimal_pdf(path: &std::path::Path, width_pts: u32, height_pts: u32) {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width_pts} {height_pts}] >>"),
+    ];
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for off in offsets {
+        pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    std::fs::write(path, pdf).expect("the PDF must be writable");
+}
+
+fn info_json(path: &std::path::Path) -> serde_json::Value {
+    let out = run(&["info", "--json", path.to_str().unwrap()]);
+    assert_eq!(
+        code(&out),
+        0,
+        "info --json stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "info --json must print one JSON object ({e}), got:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })
+}
+
+#[test]
+fn info_json_describes_an_image() {
+    let dir = unique_dir("info-json-image");
+    let png = make_input(&dir, 64, 48);
+    let json = info_json(&png);
+    assert_eq!(json["v"], 1, "{json}");
+    assert_eq!(json["kind"], "image", "{json}");
+    assert_eq!(json["path"], png.to_str().unwrap(), "{json}");
+    assert_eq!(json["width"], 64, "{json}");
+    assert_eq!(json["height"], 48, "{json}");
+    assert_eq!(json["format"], "Rgb8", "{json}");
+    // Exact, where the text output rounds to a tenth of a megabyte.
+    assert_eq!(json["bytes"], 64 * 48 * 3, "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn info_json_describes_a_pdf() {
+    let dir = unique_dir("info-json-pdf");
+    let pdf = dir.join("page.pdf");
+    write_minimal_pdf(&pdf, 200, 100);
+    let json = info_json(&pdf);
+    assert_eq!(json["v"], 1, "{json}");
+    assert_eq!(json["kind"], "pdf", "{json}");
+    assert_eq!(json["path"], pdf.to_str().unwrap(), "{json}");
+    assert_eq!(json["pages"], 1, "{json}");
+    let sizes = json["page_sizes"]
+        .as_array()
+        .expect("page_sizes is an array");
+    assert_eq!(sizes.len(), 1, "{json}");
+    assert_eq!(sizes[0]["page"], 1, "{json}");
+    assert_eq!(sizes[0]["width_pts"].as_f64(), Some(200.0), "{json}");
+    assert_eq!(sizes[0]["height_pts"].as_f64(), Some(100.0), "{json}");
+    assert_eq!(sizes[0]["has_images"], false, "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn info_json_failure_prints_nothing_on_stdout_and_exits_1() {
+    let dir = unique_dir("info-json-bad");
+    let bad = dir.join("bad.png");
+    std::fs::write(&bad, b"not an image").unwrap();
+    for path in [bad.clone(), dir.join("missing.png")] {
+        let out = run(&["info", "--json", path.to_str().unwrap()]);
+        assert_eq!(
+            code(&out),
+            1,
+            "stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "a failed info --json must leave stdout empty, got:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(!out.stderr.is_empty(), "the failure must say why on stderr");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
