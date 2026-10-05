@@ -313,6 +313,136 @@ fn pyramid_geo_origin_is_parsed_like_geo_s_and_exits_2() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `--geo-origin` and `--geo-scale` take values that start with `-`
+/// (`-122.4,37.7`), so a bare `--geo-origin` with its value forgotten used to
+/// take the next flag as its value. On `pyramid` that flag then vanished, and
+/// with `--geo-scale` missing the geo pair was dropped too, so the run
+/// succeeded having done neither. Now the flag is refused as a value, by name.
+#[test]
+fn pyramid_geo_origin_does_not_swallow_the_next_flag() {
+    let dir = unique_dir("pyramid-geo-swallow");
+    let input = png_input(&dir);
+    for argv in [
+        &["--geo-origin", "--centre"][..],
+        &["--geo-scale", "1,1", "--geo-origin", "--centre"][..],
+        &["--geo-origin", "1,1", "--geo-scale", "--centre"][..],
+    ] {
+        let target = dir.join("tiles");
+        let mut args = vec![
+            "pyramid",
+            input.to_str().unwrap(),
+            target.to_str().unwrap(),
+            "--storage",
+            "directory",
+        ];
+        args.extend_from_slice(argv);
+        let out = run(&args);
+        assert_usage_error(&out, &format!("pyramid {}", argv.join(" ")));
+        let err = stderr(&out);
+        assert!(
+            err.contains("--centre") && err.contains("looks like a flag"),
+            "pyramid {}: the refusal should name the swallowed flag, got:\n{err}",
+            argv.join(" ")
+        );
+        assert!(
+            !target.exists(),
+            "pyramid {}: a refused run wrote {}",
+            argv.join(" "),
+            target.display()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `pyramid` drops a geo pair it only got half of, so either flag alone is
+/// refused (as `viprs geo` already refuses it), rather than a run that looks
+/// georeferenced and is not.
+#[test]
+fn pyramid_geo_origin_and_scale_need_each_other() {
+    let dir = unique_dir("pyramid-geo-half");
+    let input = png_input(&dir);
+    for argv in [&["--geo-origin", "1,2"][..], &["--geo-scale", "1,-1"][..]] {
+        let target = dir.join("tiles");
+        let mut args = vec![
+            "pyramid",
+            input.to_str().unwrap(),
+            target.to_str().unwrap(),
+            "--storage",
+            "directory",
+        ];
+        args.extend_from_slice(argv);
+        let out = run(&args);
+        assert_usage_error(&out, &format!("pyramid {}", argv.join(" ")));
+        assert!(!target.exists(), "pyramid {}: wrote tiles", argv.join(" "));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same refusal on `viprs geo`, for each of its three list flags.
+#[test]
+fn geo_list_flags_do_not_swallow_the_next_flag() {
+    for argv in [
+        &["--geo-scale", "--geo-origin", "0,0"][..],
+        &["--geo-origin", "--geo-scale", "1,1"][..],
+        &["--affine", "--geo-origin", "0,0"][..],
+    ] {
+        let mut args = vec!["geo", "pixel-to-geo", "1", "2"];
+        args.extend_from_slice(argv);
+        let out = run(&args);
+        assert_usage_error(&out, &format!("geo pixel-to-geo 1 2 {}", argv.join(" ")));
+        let err = stderr(&out);
+        assert!(
+            err.contains("looks like a flag"),
+            "geo {}: expected the swallowed-flag refusal, got:\n{err}",
+            argv.join(" ")
+        );
+    }
+}
+
+/// What the hyphen allowance is there for keeps working: negative numbers,
+/// separated or joined with `=`.
+#[test]
+fn negative_geo_values_still_parse() {
+    for argv in [
+        &["--geo-origin", "-122.5,37.75", "--geo-scale", "0.5,-0.25"][..],
+        &["--geo-origin=-122.5,37.75", "--geo-scale=0.5,-0.25"][..],
+        &["--affine", "-0.5,0,-122.5,0,-0.25,37.75"][..],
+    ] {
+        let mut args = vec!["geo", "pixel-to-geo", "0", "0"];
+        args.extend_from_slice(argv);
+        let out = run(&args);
+        assert_eq!(
+            code(&out),
+            0,
+            "geo {}: stderr:\n{}",
+            argv.join(" "),
+            stderr(&out)
+        );
+        assert_eq!(
+            stdout(&out).trim(),
+            "-122.5,37.75",
+            "geo {}",
+            argv.join(" ")
+        );
+    }
+    let dir = unique_dir("pyramid-geo-negative");
+    let input = png_input(&dir);
+    let target = dir.join("tiles");
+    let out = run(&[
+        "pyramid",
+        input.to_str().unwrap(),
+        target.to_str().unwrap(),
+        "--storage",
+        "directory",
+        "--geo-origin",
+        "-122.4194,37.7749",
+        "--geo-scale",
+        "0.0001,-0.0001",
+    ]);
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // Passwords: not only on argv
 // ---------------------------------------------------------------------------
