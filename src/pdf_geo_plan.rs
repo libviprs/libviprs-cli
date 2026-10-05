@@ -446,8 +446,7 @@ struct TransformArgs {
         long,
         value_name = "X,Y",
         requires = "geo_scale",
-        allow_hyphen_values = true,
-        value_parser = not_a_flag
+        allow_hyphen_values = true
     )]
     geo_origin: Option<String>,
 
@@ -457,8 +456,7 @@ struct TransformArgs {
         long,
         value_name = "X,Y",
         requires = "geo_origin",
-        allow_hyphen_values = true,
-        value_parser = not_a_flag
+        allow_hyphen_values = true
     )]
     geo_scale: Option<String>,
 
@@ -468,8 +466,7 @@ struct TransformArgs {
         long,
         value_name = "A,B,C,D,E,F",
         conflicts_with_all = ["geo_origin", "geo_scale"],
-        allow_hyphen_values = true,
-        value_parser = not_a_flag
+        allow_hyphen_values = true
     )]
     affine: Option<String>,
 }
@@ -521,22 +518,40 @@ fn finite_f64(text: &str) -> Result<f64, String> {
     }
 }
 
-/// The value of a number-list flag (`--geo-origin`, `--geo-scale`,
-/// `--affine`), refused when it is another flag.
+/// The flags that take a number list and so allow values starting with `-`.
+const LIST_FLAGS: &[&str] = &["--geo-origin", "--geo-scale", "--affine"];
+
+/// The first number-list flag in `args` whose value is another flag, as
+/// `(flag, value)`.
 ///
-/// Those flags take values that start with `-` (`-122.4,37.7`), so clap hands
-/// them whatever comes next, and a bare `--geo-origin` with its value
-/// forgotten would take the following flag as the value and that flag would
-/// never apply. Nothing that starts with `--` is a number, so refusing it
-/// here costs no real value and names the flag that would have vanished.
-pub(crate) fn not_a_flag(value: &str) -> Result<String, String> {
-    if value.starts_with("--") {
-        Err(format!(
-            "{value:?} looks like a flag, not a value; give the value after the flag, or \
-             join the two with = (--flag=VALUE)"
-        ))
-    } else {
-        Ok(value.to_owned())
+/// `--geo-origin`, `--geo-scale` and `--affine` allow hyphen values so that
+/// `-122.4,37.7` parses, which also lets clap hand them whatever comes next,
+/// so a forgotten value takes the following flag as the value and that flag
+/// never applies. Nothing that starts with `--` is a number, so treating such
+/// a value as a mistake refuses nothing real. This runs on the raw arguments
+/// rather than as a clap value parser because clap parses an option's value
+/// late: an extra positional after the swallowed flag is reported first, as
+/// an "unexpected argument" that names neither flag.
+pub(crate) fn swallowed_flag(args: &[std::ffi::OsString]) -> Option<(String, String)> {
+    args.windows(2).find_map(|pair| {
+        let flag = pair[0].to_str()?;
+        let value = pair[1].to_str()?;
+        (LIST_FLAGS.contains(&flag) && value.starts_with("--"))
+            .then(|| (flag.to_owned(), value.to_owned()))
+    })
+}
+
+/// Exit 2 when a number-list flag swallowed the next flag (see
+/// [`swallowed_flag`]), before clap or anything else reads the arguments.
+pub(crate) fn refuse_swallowed_flag(args: &[std::ffi::OsString]) {
+    if let Some((flag, value)) = swallowed_flag(args) {
+        usage_error(
+            &format!("{flag} got {value:?} as its value, and that looks like a flag, not a value"),
+            &format!(
+                "give {flag} its value, or join the two with = ({flag}=VALUE), which also takes \
+                 a value that starts with -"
+            ),
+        );
     }
 }
 
@@ -831,6 +846,38 @@ mod tests {
             std::env::temp_dir().join(format!("viprs-pgp-unit-{}-{tag}", std::process::id()));
         std::fs::write(&path, contents).expect("the temp file must be writable");
         path
+    }
+
+    fn os(args: &[&str]) -> Vec<std::ffi::OsString> {
+        args.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    #[test]
+    fn a_list_flag_followed_by_a_flag_is_a_swallow() {
+        for flag in ["--geo-origin", "--geo-scale", "--affine"] {
+            assert_eq!(
+                swallowed_flag(&os(&["viprs", "geo", flag, "--centre", "1"])),
+                Some((flag.to_owned(), "--centre".to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    fn negative_values_and_joined_values_are_not_a_swallow() {
+        assert_eq!(
+            swallowed_flag(&os(&[
+                "viprs",
+                "--geo-origin",
+                "-122.4,37.7",
+                "--geo-scale=-1,-1",
+                "--affine",
+                "-1,0,0,0,-1,0",
+                "--render",
+            ])),
+            None
+        );
+        // Another flag's value that happens to look like one is not ours.
+        assert_eq!(swallowed_flag(&os(&["viprs", "--page", "--centre"])), None);
     }
 
     #[test]
