@@ -239,6 +239,82 @@ fn with_svg_an_svg_input_decodes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `viprs features --help` says what the list is and what it is not. It
+/// reports this crate's cargo features, not capabilities, and an `s3` build
+/// has the core's object-store sink without listing `object-store-sink`.
+#[test]
+fn features_help_says_it_lists_cargo_features_not_capabilities() {
+    let out = run(&["features", "--help"]);
+    assert_eq!(code(&out), 0);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("cargo features") && stdout.contains("not a list of capabilities"),
+        "the help must say what the list is, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("object-store-sink"),
+        "the help must say an `s3` build has the object-store sink unlisted, got:\n{stdout}"
+    );
+}
+
+// The exit-code contract (README, "Exit codes"): a usage mistake is 2, an
+// operational failure is 1, and a feature this build left out is an
+// operational failure, whichever flag reached it. These three used to exit 2
+// while a missing codec exited 1.
+
+#[cfg(not(feature = "tracing"))]
+#[test]
+fn trace_level_without_the_tracing_feature_exits_1() {
+    let dir = unique_dir("no-tracing");
+    let png = make_input(&dir, 64, 64);
+    let tree = dir.join("tree");
+    let out = run(&[
+        "pyramid",
+        png.to_str().unwrap(),
+        tree.to_str().unwrap(),
+        "--storage",
+        "directory",
+        "--trace-level",
+        "info",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 1, "stderr:\n{stderr}");
+    assert!(stderr.contains("--features tracing"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(not(feature = "packfile"))]
+#[test]
+fn packfile_sink_without_the_packfile_feature_exits_1() {
+    let dir = unique_dir("no-packfile");
+    let png = make_input(&dir, 64, 64);
+    let tar = dir.join("out.tar");
+    let sink = format!("packfile://{}", tar.display());
+    let out = run(&["pyramid", png.to_str().unwrap(), "--sink", &sink]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 1, "stderr:\n{stderr}");
+    assert!(stderr.contains("--features packfile"), "{stderr}");
+    assert!(!tar.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(not(feature = "s3"))]
+#[test]
+fn s3_sink_without_the_s3_feature_exits_1() {
+    let dir = unique_dir("no-s3");
+    let png = make_input(&dir, 64, 64);
+    let out = run(&[
+        "pyramid",
+        png.to_str().unwrap(),
+        "--sink",
+        "s3://bucket/prefix",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 1, "stderr:\n{stderr}");
+    assert!(stderr.contains("--features s3"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // PMTiles: the default storage flip and the `viprs pmtiles` group (#54)
 // ---------------------------------------------------------------------------

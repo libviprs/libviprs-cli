@@ -185,6 +185,102 @@ mod tests {
         assert!(!looks_like_svg(b""));
     }
 
+    /// A unique scratch path for one test, under the system temp dir.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("viprs-input-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A PNG comfortably over [`SVG_SNIFF_BYTES`], so a sniff that eats the
+    /// head of a stream eats part of the image rather than all of it.
+    fn noisy_png() -> Vec<u8> {
+        let (w, h) = (64u32, 64u32);
+        let mut state = 0x2545_f491_u32;
+        let pixels: Vec<u8> = (0..w * h * 3)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect();
+        let raster = Raster::new(w, h, libviprs::PixelFormat::Rgb8, pixels).unwrap();
+        let png = raster.encode_png(6).unwrap();
+        assert!(
+            png.len() > SVG_SNIFF_BYTES,
+            "the fixture must outgrow the sniff"
+        );
+        png
+    }
+
+    /// A FIFO (or `<(...)` process substitution) can be read once. The SVG
+    /// sniff used to open it and take the first 4 KB, and the decoder then
+    /// opened it again and got the rest, or blocked waiting for a writer that
+    /// had gone. Only regular files are sniffed now.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_input_keeps_its_first_bytes() {
+        let dir = scratch("fifo");
+        let fifo = dir.join("in.png");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo must be runnable");
+        assert!(made.success());
+
+        let png = noisy_png();
+        let writer_path = fifo.clone();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            // The FIFO may be opened more than once by a broken reader, so
+            // keep offering the whole image until nobody opens it.
+            for _ in 0..2 {
+                if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&writer_path) {
+                    let _ = f.write_all(&png);
+                }
+            }
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader_path = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(
+                decode_path(&reader_path, DecodeLimits::default()).map(|r| (r.width(), r.height())),
+            );
+        });
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("decoding a FIFO must not hang");
+        assert_eq!(got.map_err(|e| format!("{e:#}")), Ok((64, 64)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `.svgz` is gzip, and the SVG renderer in this build has no gzip
+    /// support (usvg is built without flate2), so it gets a refusal that says
+    /// so instead of an XML parse error.
+    #[test]
+    fn an_svgz_is_refused_saying_why() {
+        let dir = scratch("svgz");
+        let svgz = dir.join("in.svgz");
+        std::fs::write(&svgz, b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03junk").unwrap();
+        let err = decode_path(&svgz, DecodeLimits::default()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("gzip") && msg.contains("gunzip"), "{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same document under a plain `.svg` name is still gzip.
+    #[test]
+    fn a_gzipped_document_named_svg_is_refused_saying_why() {
+        let dir = scratch("svg-gz");
+        let svg = dir.join("in.svg");
+        std::fs::write(&svg, b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03junk").unwrap();
+        let err = decode_path(&svg, DecodeLimits::default()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("gzip") && msg.contains("gunzip"), "{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Without the feature an SVG is the typed refusal, never the generic
     /// decode error the content sniff would give it.
     #[cfg(not(feature = "svg"))]
