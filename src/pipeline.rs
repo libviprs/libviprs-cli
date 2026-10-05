@@ -1,4 +1,5 @@
-//! The pipeline controls on `viprs pyramid` (libviprs-cli#66).
+//! The pipeline controls on `viprs pyramid`, and the driver every pyramid run
+//! goes through (libviprs-cli#66).
 //!
 //! The core grew a PMTiles layout choice, a dedupe budget and ordered emission
 //! (EPIC M), resume and retry knobs, cancellation, progress events, region runs
@@ -7,12 +8,18 @@
 //!
 //! # Which runs come through here
 //!
-//! Every run on the monolithic engine into a PMTiles archive, a loose tree or
-//! an object store. That is nearly all of them, and it is all of them by
-//! default, so Ctrl-C cancels cleanly whether or not a pipeline flag was typed.
-//! The two paths that stay in `main.rs` are `--packfile` and `--memory-budget`
-//! (the streaming and MapReduce engines), and a pipeline flag given to either
-//! of those is a usage error rather than a flag that silently does nothing.
+//! [`run`] drives every run into a PMTiles archive, a loose tree or an object
+//! store on the monolithic engine, which is all of them by default. Two runs
+//! stay on the drivers in `main.rs`: `--packfile`, and a fresh `--memory-budget`
+//! run into a tile tree (the streaming and MapReduce engines). A pipeline flag
+//! given to either of those is a usage error rather than a flag that silently
+//! does nothing. They still share this module's [`prepare`], [`engine_config`],
+//! [`tree_sink`] and [`conclude`], so there is one copy of the plan, the memory
+//! check, the engine config and the exit codes, and Ctrl-C is installed before
+//! either driver is picked.
+//!
+//! The `@doc-snippet` and `@doc-flag` markers libviprs.org reads sit here for
+//! the same reason: they annotate the code that runs.
 //!
 //! # Two flags that look like older ones
 //!
@@ -21,13 +28,13 @@
 //! where the PMTiles writer puts the tile bytes inside the archive, which
 //! decides nothing about the tiles at all.
 //!
-//! `--skip-blanks` is not `--skip-blank`. The older flag writes a one-byte
+//! `--drop-blanks` is not `--skip-blank`. The older flag writes a one-byte
 //! placeholder for every blank tile, so the file count is unchanged; this one
 //! drops blank tiles from the output altogether, the way `dzsave --skip-blanks`
-//! does.
+//! does. The two cannot be given together.
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,8 +46,9 @@ use libviprs::pmtiles::{Layout as PmTilesLayout, WriterOptions};
 use libviprs::resume::DEFAULT_RESUME_CHECKPOINT_EVERY;
 use libviprs::{
     CancelToken, ChecksumAlgo, ChecksumMode, EngineBuilder, EngineConfig, EngineError,
-    EngineResult, FailurePolicy, FsSink, ManifestBuilder, PmTilesSink, PyramidPlan, PyramidPlanner,
-    Raster, ResumeMode, ResumePolicy, RetryPolicy, TileCoord,
+    EngineResult, FailurePolicy, FsSink, Layout, ManifestBuilder, PixelFormat, PmTilesSink,
+    PyramidPlan, PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy, TileCoord,
+    TileFormat,
 };
 
 use crate::{PyramidArgs, operational_error, usage_error};
@@ -50,12 +58,18 @@ use crate::{PyramidArgs, operational_error, usage_error};
 /// The writer charges 65 bytes per payload it remembers and keeps them in sets
 /// of [`DEDUPE_WINDOW_WAYS`]. The 65 is documented on
 /// `WriterOptions::dedupe_memory_bytes` but the constant behind it is private,
-/// so it is spelled here. Below this the writer quietly rounds up to one set,
-/// which is a budget the caller did not ask for, so the flag refuses instead.
+/// so it is spelled here until the core exports it (the core tracking issue,
+/// libviprs#1161, lists it). Below this the writer quietly rounds up to one
+/// set, which is a budget the caller did not ask for, so the flag refuses
+/// instead.
 pub(crate) const DEDUPE_MEMORY_FLOOR: usize = DEDUPE_WINDOW_WAYS * 65;
 
 /// Exit status for a run stopped by SIGINT, the shell's own convention.
 const EXIT_INTERRUPTED: i32 = 130;
+
+/// The version of the `--events json` line format. Every line carries it as
+/// `"v"`, so a consumer can tell a format it knows from one it does not.
+const EVENTS_SCHEMA_VERSION: u32 = 1;
 
 /// The pipeline flags, flattened into `viprs pyramid`'s arguments.
 #[derive(Args, Clone, Debug)]
@@ -79,7 +93,8 @@ pub(crate) struct PipelineArgs {
     ///
     /// Under `--pmtiles-layout arrival` this makes the archive byte-identical
     /// to the `tile-id` one with no reordering pass. It costs memory: every
-    /// level's raster is held at once instead of one at a time. Archives only.
+    /// level's raster is held at once instead of one at a time, and the
+    /// `--memory-limit` estimate counts them. Archives only.
     #[arg(long, help_heading = "PMTiles")]
     pub(crate) ordered_emission: bool,
 
@@ -88,7 +103,9 @@ pub(crate) struct PipelineArgs {
     /// About 65 bytes per distinct tile remembered; the default is 8 MiB.
     /// Two identical tiles further apart than this window are stored twice,
     /// which is still a correct archive, just a larger one. Below 520 bytes
-    /// (one dedupe set) the value is refused. Archives only.
+    /// (one dedupe set) the value is refused. Above a slot for every tile in
+    /// the plan it is lowered to that, and the run says so, because the writer
+    /// allocates the whole window up front. Archives only.
     #[arg(long, value_name = "BYTES", help_heading = "PMTiles")]
     pub(crate) dedupe_memory_bytes: Option<usize>,
 
@@ -104,11 +121,11 @@ pub(crate) struct PipelineArgs {
     #[arg(long, value_name = "DIR", help_heading = "Resume")]
     pub(crate) checkpoint_root: Option<PathBuf>,
 
-    /// Retry a failed tile write up to N times.
+    /// Retry a failed tile write up to N times, then fail the run.
     ///
-    /// A tile still failing after that is skipped and counted, and the run
-    /// carries on, unless `--fail-fast` is also given. Shorthand for
-    /// `--on-failure retry-skip=N,...`, so the two cannot be combined.
+    /// Add `--skip-failed` to skip a tile that still fails and carry on
+    /// instead. Shorthand for `--on-failure retry=N,...`, so the two cannot
+    /// be combined.
     #[arg(
         long,
         value_name = "N",
@@ -126,11 +143,24 @@ pub(crate) struct PipelineArgs {
     )]
     pub(crate) retry_backoff_ms: Option<u64>,
 
-    /// Abort the run on a tile that still fails after its retries.
+    /// Abort the run on the first tile that fails (the default).
     ///
-    /// On its own, abort on the first failure without retrying.
-    #[arg(long, conflicts_with = "on_failure", help_heading = "Reliability")]
+    /// With `--retries N`, abort once a tile has failed all N retries, which
+    /// is what `--retries` does on its own anyway.
+    #[arg(
+        long,
+        conflicts_with_all = ["on_failure", "skip_failed"],
+        help_heading = "Reliability"
+    )]
     pub(crate) fail_fast: bool,
+
+    /// Skip a tile that still fails after its retries, and carry on.
+    ///
+    /// The output then has holes, so the run still exits 1 at the end and
+    /// says how many tiles it skipped. Without `--retries` a failing tile is
+    /// skipped on its first failure.
+    #[arg(long, conflicts_with = "on_failure", help_heading = "Reliability")]
+    pub(crate) skip_failed: bool,
 
     /// Record a per-tile checksum in the manifest and re-hash every tile on
     /// disk before the run reports success. Tile trees only.
@@ -139,8 +169,10 @@ pub(crate) struct PipelineArgs {
     #[arg(long, help_heading = "Manifest")]
     pub(crate) checksum: bool,
 
-    /// Record the BLAKE3 of the decoded source pixels in the manifest.
-    /// Tile trees only.
+    /// Record the BLAKE3 of the source file's bytes in the manifest.
+    ///
+    /// Tile trees only, and not for an input read from stdin, which leaves no
+    /// file to hash.
     #[arg(long, help_heading = "Manifest")]
     pub(crate) manifest_source_hash: bool,
 
@@ -154,20 +186,28 @@ pub(crate) struct PipelineArgs {
     /// Leave blank (single-colour) tiles out of the output entirely.
     ///
     /// Not `--skip-blank`, which writes a one-byte placeholder for each blank
-    /// tile and so keeps one file per tile.
-    #[arg(long, help_heading = "Dedupe")]
-    pub(crate) skip_blanks: bool,
+    /// tile and so keeps one file per tile; the two cannot be combined.
+    /// `viprs verify` needs `--drop-blanks` as well to check such a pyramid.
+    #[arg(
+        long,
+        conflicts_with_all = ["skip_blank", "blank_tolerance"],
+        help_heading = "Dedupe"
+    )]
+    pub(crate) drop_blanks: bool,
 
     /// Print one line per engine event on stdout: `none`, `text` or `json`.
+    ///
+    /// Each `json` line is an object with `"v": 1` and an `"event"` name.
     #[arg(long, value_name = "FORMAT", default_value = "none")]
     pub(crate) events: EventsArg,
 
     /// Directory the `s3://bucket/prefix` sink writes into (needs the `s3` feature).
     ///
-    /// This build carries no network transport, so the object-store sink
-    /// writes through a local stub store: object `KEY` in bucket `B` lands at
-    /// `DIR/B/KEY`.
-    #[arg(long, value_name = "DIR", help_heading = "Output")]
+    /// Hidden: this build carries no network transport, so the object-store
+    /// sink writes through a local stub store (object `KEY` in bucket `B`
+    /// lands at `DIR/B/KEY`). That is a test seam, not something to point a
+    /// job at, and it stays out of the help until a real transport exists.
+    #[arg(long, value_name = "DIR", hide = true)]
     pub(crate) object_store_root: Option<PathBuf>,
 }
 
@@ -246,10 +286,11 @@ impl PipelineArgs {
         push(self.checkpoint_root.is_some(), "--checkpoint-root");
         push(self.retries.is_some(), "--retries");
         push(self.fail_fast, "--fail-fast");
+        push(self.skip_failed, "--skip-failed");
         push(self.checksum, "--checksum");
         push(self.manifest_source_hash, "--manifest-source-hash");
         push(self.region.is_some(), "--region");
-        push(self.skip_blanks, "--skip-blanks");
+        push(self.drop_blanks, "--drop-blanks");
         push(self.events != EventsArg::None, "--events");
         push(self.object_store_root.is_some(), "--object-store-root");
         out
@@ -282,25 +323,63 @@ impl PipelineArgs {
     }
 
     /// The failure policy these flags spell, or `None` to keep `--on-failure`.
+    ///
+    /// `--retries N` retries and then fails, like `--on-failure retry=N,..`;
+    /// only `--skip-failed` turns a tile that keeps failing into a hole.
     fn failure_policy(&self) -> Option<FailurePolicy> {
-        match (self.retries, self.fail_fast) {
-            (Some(n), fail_fast) => {
-                let backoff = Duration::from_millis(self.retry_backoff_ms.unwrap_or(100));
-                let policy = RetryPolicy::new(n, backoff);
-                Some(if fail_fast {
-                    FailurePolicy::RetryThenFail(policy)
-                } else {
-                    FailurePolicy::RetryThenSkip(policy)
-                })
+        let policy = || {
+            let backoff = Duration::from_millis(self.retry_backoff_ms.unwrap_or(100));
+            let policy = RetryPolicy::new(self.retries.unwrap_or(0), backoff);
+            // The core caps every delay at `max_backoff` (5 s by default). A
+            // first delay above that would be clamped without a word, so the
+            // cap moves up to meet it instead.
+            if backoff > policy.max_backoff {
+                policy.with_max_backoff(backoff)
+            } else {
+                policy
             }
-            (None, true) => Some(FailurePolicy::FailFast),
-            (None, false) => None,
+        };
+        if self.skip_failed {
+            Some(FailurePolicy::RetryThenSkip(policy()))
+        } else if self.retries.is_some() {
+            Some(FailurePolicy::RetryThenFail(policy()))
+        } else if self.fail_fast {
+            Some(FailurePolicy::FailFast)
+        } else {
+            None
         }
+    }
+}
+
+/// A flag combination with no meaning: what was wrong and what fixes it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    message: String,
+    hint: String,
+}
+
+impl Refusal {
+    fn new(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            hint: hint.into(),
+        }
+    }
+
+    /// Report it as a usage error (exit 2).
+    fn exit(self) -> ! {
+        usage_error(&self.message, &self.hint)
     }
 }
 
 /// Whether this run comes through the pipeline, refusing pipeline flags on a
 /// path that would ignore them.
+///
+/// `--memory-budget` only means something to a fresh run into a tile tree:
+/// that is the one place `main.rs` hands it to the streaming engines. Into an
+/// archive, an object store, or with `--resume`/`--verify`, the run comes here
+/// and says the budget does not apply, which is what it always did without
+/// saying so.
 pub(crate) fn takes_over(args: &PyramidArgs) -> bool {
     let legacy = if args.packfile
         || args
@@ -309,7 +388,7 @@ pub(crate) fn takes_over(args: &PyramidArgs) -> bool {
             .is_some_and(|u| u.starts_with("packfile://"))
     {
         Some("--packfile")
-    } else if args.memory_budget.is_some() {
+    } else if budget_streams(args) {
         Some("--memory-budget")
     } else {
         None
@@ -326,119 +405,152 @@ pub(crate) fn takes_over(args: &PyramidArgs) -> bool {
     false
 }
 
+/// Whether `--memory-budget` reaches the streaming engines on this run.
+fn budget_streams(args: &PyramidArgs) -> bool {
+    args.memory_budget.is_some()
+        && !args.resume
+        && !args.verify
+        && matches!(target_of(args), Ok(Target::Tree(_)))
+}
+
 /// Where the run is going, resolved from the sink URI.
+#[derive(Debug, PartialEq, Eq)]
 enum Target {
     Archive(PathBuf),
     Tree(PathBuf),
     ObjectStore { bucket: String, prefix: String },
 }
 
-fn resolve_target(args: &PyramidArgs, uri: &str) -> Target {
+fn target_of(args: &PyramidArgs) -> Result<Target, Refusal> {
+    resolve_target(args, &crate::resolve_sink_uri(args))
+}
+
+fn resolve_target(args: &PyramidArgs, uri: &str) -> Result<Target, Refusal> {
     if let Some(path) = uri.strip_prefix("pmtiles://") {
-        Target::Archive(PathBuf::from(path))
+        Ok(Target::Archive(PathBuf::from(path)))
     } else if let Some(rest) = uri.strip_prefix("s3://") {
         let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
         if bucket.is_empty() {
-            usage_error(
-                &format!("{uri} names no bucket"),
+            return Err(Refusal::new(
+                format!("{uri} names no bucket"),
                 "spell it s3://bucket/prefix",
-            );
+            ));
         }
-        Target::ObjectStore {
+        // The stub store puts a bucket at ROOT/bucket, so a bucket of `..`
+        // would write beside the root rather than under it.
+        let mut parts = Path::new(bucket).components();
+        if !matches!(
+            (parts.next(), parts.next()),
+            (Some(Component::Normal(_)), None)
+        ) {
+            return Err(Refusal::new(
+                format!("{bucket:?} in {uri} is not a bucket name"),
+                "a bucket is one plain name, such as s3://tiles/run-1",
+            ));
+        }
+        Ok(Target::ObjectStore {
             bucket: bucket.to_string(),
             prefix: prefix.trim_matches('/').to_string(),
-        }
+        })
     } else if let Some(path) = uri.strip_prefix("fs://") {
-        Target::Tree(PathBuf::from(path))
+        Ok(Target::Tree(PathBuf::from(path)))
     } else if let Some(output) = args.output.clone() {
         // An unknown scheme has always fallen through to the positional output.
-        Target::Tree(output)
+        Ok(Target::Tree(output))
     } else {
-        Target::Tree(PathBuf::from(uri))
+        Ok(Target::Tree(PathBuf::from(uri)))
     }
 }
 
 /// Every refusal that depends only on the flags, before anything is read.
-fn check_combinations(args: &PyramidArgs, target: &Target) {
+fn check_combinations(args: &PyramidArgs, target: &Target) -> Result<(), Refusal> {
     let p = &args.pipeline;
     if let Some(bytes) = p.dedupe_memory_bytes
         && bytes < DEDUPE_MEMORY_FLOOR
     {
-        usage_error(
-            &format!("--dedupe-memory-bytes {bytes} is below the {DEDUPE_MEMORY_FLOOR}-byte floor"),
-            &format!(
+        return Err(Refusal::new(
+            format!("--dedupe-memory-bytes {bytes} is below the {DEDUPE_MEMORY_FLOOR}-byte floor"),
+            format!(
                 "one dedupe set of {DEDUPE_WINDOW_WAYS} payloads at 65 bytes each is the \
                  smallest window the writer has, and it would round {bytes} up to that \
                  without saying so. Ask for {DEDUPE_MEMORY_FLOOR} or more"
             ),
-        );
+        ));
     }
     let is_archive = matches!(target, Target::Archive(_));
     let is_tree = matches!(target, Target::Tree(_));
     if !is_archive && let Some(flag) = p.pmtiles_only() {
-        usage_error(
-            &format!("{flag} only applies to a PMTiles archive"),
+        return Err(Refusal::new(
+            format!("{flag} only applies to a PMTiles archive"),
             "it configures the PMTiles writer; drop it, or drop --storage directory / --sink",
-        );
+        ));
     }
     if !is_tree {
         if let Some(flag) = p.tree_only() {
-            usage_error(
-                &format!("{flag} only applies to a tile tree (--storage directory)"),
+            return Err(Refusal::new(
+                format!("{flag} only applies to a tile tree (--storage directory)"),
                 "an archive keeps no manifest and cannot be resumed",
-            );
+            ));
         }
         if args.resume {
-            usage_error(
+            return Err(Refusal::new(
                 "--resume only applies to a tile tree (--storage directory)",
                 "a PMTiles archive cannot be resumed: the writer's staging is not \
                  reconstructible from a checkpoint, so rerun without --resume",
-            );
+            ));
         }
     }
     if p.object_store_root.is_some() && !matches!(target, Target::ObjectStore { .. }) {
-        usage_error(
+        return Err(Refusal::new(
             "--object-store-root only applies to an s3:// sink",
             "pass --sink s3://bucket/prefix as well, or drop it",
-        );
+        ));
+    }
+    if p.manifest_source_hash && args.input == "-" {
+        return Err(Refusal::new(
+            "--manifest-source-hash cannot hash an input read from stdin",
+            "it records the hash of the source file's bytes, and stdin leaves no file to \
+             hash; name the input file, or drop the flag",
+        ));
     }
     if p.region.is_some() {
         let resumable = args.resume || p.checkpoint_every.is_some() || p.checkpoint_root.is_some();
         if resumable {
-            usage_error(
+            return Err(Refusal::new(
                 "--region runs are not resumable",
                 "a region run crops first and keeps no checkpoint; drop --resume and the \
                  checkpoint flags",
-            );
+            ));
         }
         if p.events != EventsArg::None {
-            usage_error(
+            return Err(Refusal::new(
                 "--region emits no per-tile events",
                 "drop --events, or pre-crop the input and run without --region",
-            );
+            ));
         }
     }
+    Ok(())
 }
 
-/// Run `viprs pyramid` through the pipeline.
-pub(crate) fn run(args: PyramidArgs) {
-    let start = Instant::now();
+// ---------------------------------------------------------------------------
+// What both drivers share
+// ---------------------------------------------------------------------------
 
-    let uri = crate::resolve_sink_uri(&args);
-    let target = resolve_target(&args, &uri);
-    check_combinations(&args, &target);
-    let to_archive = matches!(target, Target::Archive(_));
-    let layout = crate::resolve_layout(&args, to_archive);
-    let tile_format = crate::resolve_tile_format(&args, to_archive);
-    let object_store = match &target {
-        Target::ObjectStore { bucket, prefix } => {
-            Some(object_store::prepare(&args, bucket, prefix))
-        }
-        _ => None,
-    };
+/// The decoded input and the plan, once the memory check has passed.
+pub(crate) struct Prepared {
+    pub(crate) raster: Raster,
+    pub(crate) plan: PyramidPlan,
+}
 
+/// Decode the input, build the plan and refuse a run that would not fit
+/// `--memory-limit`. Every driver starts here.
+///
+/// A `--region` out of bounds is refused here too, after the decode: the core
+/// has no way to read an image's size without decoding it, so this is the
+/// earliest the bounds are known. Nothing has been written by then.
+pub(crate) fn prepare(args: &PyramidArgs, layout: Layout) -> Prepared {
     crate::maybe_init_tracing(&args.trace_level);
-    let raster = crate::load_source(&args);
+    let raster = crate::load_source(args);
     let (w, h) = (raster.width(), raster.height());
     eprintln!(
         "Source: {}x{} {:?} ({:.1} MB)",
@@ -447,7 +559,7 @@ pub(crate) fn run(args: PyramidArgs) {
         raster.format(),
         raster.data().len() as f64 / (1024.0 * 1024.0)
     );
-    if let Some(geo) = crate::build_geo_transform(&args, w, h) {
+    if let Some(geo) = crate::build_geo_transform(args, w, h) {
         let bounds = geo.image_bounds(w, h);
         eprintln!(
             "Geo bounds: ({:.6}, {:.6}) → ({:.6}, {:.6})",
@@ -455,8 +567,7 @@ pub(crate) fn run(args: PyramidArgs) {
         );
     }
 
-    let region = args.pipeline.region;
-    let (plan_w, plan_h) = match region {
+    let (plan_w, plan_h) = match args.pipeline.region {
         Some(r) => {
             let fits = r.x.checked_add(r.width).is_some_and(|e| e <= w)
                 && r.y.checked_add(r.height).is_some_and(|e| e <= h);
@@ -474,30 +585,65 @@ pub(crate) fn run(args: PyramidArgs) {
         None => (w, h),
     };
 
-    let planner = match PyramidPlanner::new(plan_w, plan_h, args.tile_size, args.overlap, layout) {
-        Ok(p) => p.with_centre(args.centre),
+    // @doc-snippet:begin slot=planner imports=PyramidPlanner,Layout
+    let planner = match PyramidPlanner::new(
+        plan_w,
+        plan_h,
+        // @doc-test: blank_tile_strategy.rs::emit_solid_white_matches_expected:138
+        args.tile_size, // @doc-flag: tile-size kind=param param_name=tile-size
+        // @doc-test: builder_sink_fs.rs::two_arg_new_defaults_to_png:47
+        args.overlap, // @doc-flag: overlap kind=param param_name=overlap
+        // @doc-test: google_centre_pyramid.rs::google_centre_portrait_plan_structure:107
+        layout, // @doc-flag: layout kind=param param_name=layout
+    ) {
+        // @doc-test: google_centre_pyramid.rs::google_centre_portrait_plan_structure:107
+        Ok(p) => p.with_centre(args.centre), // @doc-flag: centre kind=append
         Err(e) => operational_error(&format!("creating pyramid plan: {e}")),
     };
-    let peak_memory = planner.estimate_peak_memory();
+    // @doc-snippet:end slot=planner
+    let plan = planner.plan();
+
+    let extra = ExtraMemory::of(args, &plan, raster.format());
+    let peak_memory = planner.estimate_peak_memory().saturating_add(extra.total());
     let (canvas_w, canvas_h) = planner.canvas_dimensions();
     eprintln!(
         "Memory estimate: {:.1} MB peak (canvas: {}x{}, source: {}x{})",
-        peak_memory as f64 / (1024.0 * 1024.0),
+        mb(peak_memory),
         canvas_w,
         canvas_h,
         plan_w,
         plan_h
     );
-    if args.memory_limit > 0 && peak_memory > crate::mb_to_bytes(args.memory_limit) {
+    if extra.level_rasters > 0 {
         eprintln!(
-            "Error: estimated peak memory ({:.1} MB) exceeds --memory-limit ({} MB)",
-            peak_memory as f64 / (1024.0 * 1024.0),
-            args.memory_limit
+            "  including {:.1} MB for the level rasters --ordered-emission holds at once",
+            mb(extra.level_rasters)
         );
-        eprintln!("Hint: reduce --dpi or image dimensions to lower memory usage");
-        process::exit(1);
     }
-    let plan = planner.plan();
+    if extra.dedupe_window > 0 {
+        eprintln!(
+            "  including {:.1} MB for the --dedupe-memory-bytes window",
+            mb(extra.dedupe_window)
+        );
+    }
+
+    // @doc-snippet:begin slot=memory-limit
+    // @doc-test: streaming_engine.rs::estimate_streaming_memory_reasonable:435
+    if args.memory_limit > 0 {
+        // @doc-flag: memory-limit kind=param param_name=memory-limit
+        let limit_bytes = crate::mb_to_bytes(args.memory_limit);
+        if peak_memory > limit_bytes {
+            eprintln!(
+                "Error: estimated peak memory ({:.1} MB) exceeds --memory-limit ({} MB)",
+                mb(peak_memory),
+                args.memory_limit
+            );
+            eprintln!("Hint: reduce --dpi or image dimensions to lower memory usage");
+            process::exit(1);
+        }
+    }
+    // @doc-snippet:end slot=memory-limit
+
     eprintln!(
         "Plan: {} levels, {} tiles, tile_size={}, overlap={}",
         plan.level_count(),
@@ -505,13 +651,245 @@ pub(crate) fn run(args: PyramidArgs) {
         args.tile_size,
         args.overlap
     );
+    Prepared { raster, plan }
+}
 
-    let source_hash = args
-        .pipeline
-        .manifest_source_hash
-        .then(|| ChecksumAlgo::Blake3.hash(raster.data()));
+fn mb(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// Memory the pipeline flags cost on top of the planner's estimate, which
+/// only knows about the source and the canvas.
+struct ExtraMemory {
+    /// `--ordered-emission` holds every level below the top at once.
+    level_rasters: u64,
+    /// The dedupe window `--dedupe-memory-bytes` asks the writer for, as
+    /// lowered by [`dedupe_window_bytes`].
+    dedupe_window: u64,
+}
+
+impl ExtraMemory {
+    fn of(args: &PyramidArgs, plan: &PyramidPlan, format: PixelFormat) -> Self {
+        let p = &args.pipeline;
+        Self {
+            level_rasters: if p.ordered_emission {
+                lower_level_bytes(plan, format)
+            } else {
+                0
+            },
+            dedupe_window: p
+                .dedupe_memory_bytes
+                .map_or(0, |b| dedupe_window_bytes(b, plan) as u64),
+        }
+    }
+
+    fn total(&self) -> u64 {
+        self.level_rasters.saturating_add(self.dedupe_window)
+    }
+}
+
+/// The bytes of every level raster below the top one.
+fn lower_level_bytes(plan: &PyramidPlan, format: PixelFormat) -> u64 {
+    let bpp = format.bytes_per_pixel() as u64;
+    let top = plan.levels.iter().map(|l| l.level).max();
+    plan.levels
+        .iter()
+        .filter(|l| Some(l.level) != top)
+        .map(|l| u64::from(l.width) * u64::from(l.height) * bpp)
+        .fold(0u64, u64::saturating_add)
+}
+
+/// The dedupe window the writer gets for a `--dedupe-memory-bytes` of
+/// `requested` on this plan.
+///
+/// The writer allocates the whole window up front and touches every page of
+/// it, so a budget far past what the plan can fill is memory spent for
+/// nothing (or an abort). It is lowered to whole sets with a slot for every
+/// planned tile. A set-associative window that size can still evict on an
+/// unlucky hash, which only means an occasional duplicate is stored twice; the
+/// archive is correct either way.
+fn dedupe_window_bytes(requested: usize, plan: &PyramidPlan) -> usize {
+    let tiles = usize::try_from(plan.total_tile_count()).unwrap_or(usize::MAX);
+    let sets = tiles.div_ceil(DEDUPE_WINDOW_WAYS).max(1);
+    requested.min(sets.saturating_mul(DEDUPE_MEMORY_FLOOR))
+}
+
+/// The engine config: the flags `main.rs` already reads, plus this module's.
+pub(crate) fn engine_config(args: &PyramidArgs) -> EngineConfig {
+    // @doc-snippet:begin slot=engine-config imports=EngineConfig,BlankTileStrategy,FailurePolicy,DedupeStrategy,RetryPolicy
+    let mut config = EngineConfig::default()
+        // @doc-test: builder_engine_surface.rs::builder_honours_with_concurrency:100
+        .with_concurrency(args.concurrency) // @doc-flag: concurrency kind=appendChain
+        // @doc-test: builder_engine_surface.rs::builder_honours_with_buffer_size:119
+        .with_buffer_size(args.buffer_size) // @doc-flag: buffer-size kind=appendChain
+        // @doc-test: blank_tile_strategy.rs::placeholder_solid_white_matches_expected:201
+        .with_blank_tile_strategy(crate::build_blank_tile_strategy(args)) // @doc-flag: skip-blank kind=append
+        // @doc-test: phase3_blank_tolerance.rs::engine_with_tolerance_writes_placeholder_for_near_white_tiles:248
+        // @doc-flag: blank-tolerance kind=append
+        // @doc-test: phase3_retry.rs::retries_on_transient_errors:256
+        // @doc-flag: retry-max kind=param param_name=retry-max
+        // @doc-test: phase3_retry.rs::retries_on_transient_errors:256
+        // @doc-flag: retry-backoff kind=param param_name=retry-backoff
+        // @doc-test: builder_resume_retry.rs::builder_with_failure_policy_accepts_every_variant:145
+        .with_failure_policy(
+            args.pipeline
+                .failure_policy()
+                .unwrap_or_else(|| crate::build_failure_policy(args)),
+        ) // @doc-flag: failure-policy kind=param param_name=failure-policy
+        .skip_blanks(args.pipeline.drop_blanks);
+    if let Some(ds) = crate::build_dedupe_strategy(args) {
+        // @doc-test: phase3_dedupe_blanks.rs::blanks_dedupe_manifest_lists_references:364
+        // @doc-flag: dedupe-blanks kind=append
+        // @doc-test: phase3_dedupe_blanks.rs::all_mode_dedupes_identical_non_blank_tiles:467
+        config = config.with_dedupe_strategy(ds); // @doc-flag: dedupe-all kind=append
+    }
+    // @doc-snippet:end slot=engine-config
+    config
+}
+
+/// The filesystem sink with its manifest and checksum options.
+pub(crate) fn tree_sink(
+    args: &PyramidArgs,
+    dir: &Path,
+    plan: &PyramidPlan,
+    format: TileFormat,
+) -> FsSink {
+    let algo: ChecksumAlgo = args.checksum_algo.clone().into();
+    let p = &args.pipeline;
+    // @doc-snippet:begin slot=sink-fs imports=FsSink,TileFormat,ChecksumMode,ChecksumAlgo,ManifestBuilder
+    let mut sink = FsSink::new(dir, plan.clone())
+        // @doc-test: builder_sink_fs.rs::with_format_overrides_default:62
+        .with_format(format); // @doc-flag: format kind=param param_name=format
+    // @doc-test: builder_sink_fs.rs::with_format_overrides_default:62
+    // @doc-flag: quality kind=param param_name=quality
+    if args.manifest_emit_checksums || p.checksum || p.manifest_source_hash {
+        let mut builder = ManifestBuilder::new().include_source_hash(p.manifest_source_hash);
+        if args.manifest_emit_checksums || p.checksum {
+            builder = builder.with_checksums(algo);
+        }
+        // @doc-test: builder_sink_fs.rs::compose_format_checksums_manifest_resume:110
+        sink = sink.with_manifest(builder); // @doc-flag: manifest-emit-checksums kind=append
+    }
+    if args.manifest_emit_checksums {
+        // @doc-test: phase3_checksum.rs::emit_only_populates_manifest_checksums:223
+        sink = sink.with_checksums(ChecksumMode::EmitOnly, algo); // @doc-flag: checksum-algo kind=param param_name=checksum-algo
+    }
+    if p.checksum {
+        sink = sink.with_checksums(ChecksumMode::Verify, algo);
+    }
+    if let Some(ds) = crate::build_dedupe_strategy(args) {
+        sink = sink.with_dedupe(ds);
+    }
+    if args.resume {
+        sink = sink.with_resume(true);
+    }
+    // @doc-snippet:end slot=sink-fs
+    sink
+}
+
+/// The directory a tree run writes into, from an `fs://` URI, the positional
+/// output, or the URI itself.
+pub(crate) fn tree_dir(args: &PyramidArgs, uri: &str) -> PathBuf {
+    match resolve_target(args, uri) {
+        Ok(Target::Tree(dir)) => dir,
+        _ => unreachable!("only a tree run asks for its directory"),
+    }
+}
+
+/// Whether a run that stops part way can be picked up with `--resume`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resumable {
+    Yes,
+    No,
+}
+
+/// Turn the engine's answer into the run's exit, the same way for every
+/// driver: 130 for Ctrl-C, 1 for an error, and 1 for a run that finished but
+/// skipped tiles, since its output has holes. On success it prints the summary
+/// and hands the result back.
+pub(crate) fn conclude(
+    result: Result<EngineResult, EngineError>,
+    output: &Path,
+    start: Instant,
+    resumable: Resumable,
+    events: &EventPrinter,
+) -> EngineResult {
+    let result = match result {
+        Ok(r) => r,
+        Err(EngineError::Cancelled) => {
+            eprintln!("Interrupted: stopped at a tile boundary, nothing half-written.");
+            match resumable {
+                Resumable::Yes => eprintln!(
+                    "Hint: run the same command with --resume to finish the tiles that are missing."
+                ),
+                Resumable::No => {
+                    eprintln!("Hint: this output cannot be resumed; run the command again.")
+                }
+            }
+            process::exit(EXIT_INTERRUPTED);
+        }
+        Err(e @ EngineError::PlanHashMismatch { .. }) => operational_error(&format!(
+            "{e}\nHint: --resume needs the flags the interrupted run used; with different \
+             ones, run without --resume to start over"
+        )),
+        Err(e) => operational_error(&format!("generating pyramid: {e}")),
+    };
+    events.summary(&result);
+    crate::finish_run(result.clone(), output, start);
+    if result.retry_count > 0 || result.skipped_due_to_failure > 0 {
+        eprintln!(
+            "Retries: {}, tiles skipped after failing every retry: {}",
+            result.retry_count, result.skipped_due_to_failure
+        );
+    }
+    if result.skipped_due_to_failure > 0 {
+        operational_error(&format!(
+            "{} tiles were skipped after failing every retry, so {} has holes",
+            result.skipped_due_to_failure,
+            output.display()
+        ));
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
+// The pipeline driver
+// ---------------------------------------------------------------------------
+
+/// Run `viprs pyramid` through the pipeline. `cancel` is the token Ctrl-C
+/// trips, installed by the caller before the driver was picked.
+pub(crate) fn run(args: PyramidArgs, cancel: CancelToken) {
+    let start = Instant::now();
+
+    let target = target_of(&args).unwrap_or_else(|r| r.exit());
+    if let Err(refusal) = check_combinations(&args, &target) {
+        refusal.exit();
+    }
+    let to_archive = matches!(target, Target::Archive(_));
+    let layout = crate::resolve_layout(&args, to_archive);
+    let tile_format = crate::resolve_tile_format(&args, to_archive);
+    let object_store = match &target {
+        Target::ObjectStore { bucket, prefix } => {
+            Some(object_store::prepare(&args, bucket, prefix))
+        }
+        _ => None,
+    };
+    if args.memory_budget.is_some() {
+        eprintln!(
+            "Note: --memory-budget only applies to a fresh run into a tile tree \
+             (--storage directory, without --resume or --verify), so this run uses the \
+             monolithic engine."
+        );
+    }
+
+    let Prepared { raster, plan } = prepare(&args, layout);
+
+    let source_hash = args.pipeline.manifest_source_hash.then(|| {
+        hash_source_file(Path::new(&args.input)).unwrap_or_else(|e| {
+            operational_error(&format!("hashing {} for the manifest: {e}", args.input))
+        })
+    });
     let config = engine_config(&args);
-    let cancel = install_sigint();
     let events = EventPrinter::new(args.pipeline.events);
 
     let run = Run {
@@ -519,29 +897,13 @@ pub(crate) fn run(args: PyramidArgs) {
         raster: &raster,
         plan: &plan,
         config,
-        cancel: cancel.clone(),
+        cancel,
         events: events.clone(),
     };
 
     let (result, output) = match target {
         Target::Archive(path) => {
-            let mut options = WriterOptions::default();
-            if let Some(layout) = args.pipeline.pmtiles_layout {
-                options = options.with_layout(layout.into());
-            }
-            if let Some(bytes) = args.pipeline.dedupe_memory_bytes {
-                options = options.with_dedupe_memory_bytes(bytes);
-            }
-            let sink = match PmTilesSink::builder(&path)
-                .plan(plan.clone())
-                .tile_format(tile_format)
-                .writer_options(options)
-                .ordered_emission(args.pipeline.ordered_emission)
-                .build()
-            {
-                Ok(s) => s,
-                Err(e) => operational_error(&format!("creating the PMTiles archive failed: {e}")),
-            };
+            let sink = archive_sink(&args, &path, &plan, tile_format);
             let result = run.engine(&sink, Some(resume_policy(&args)));
             (result, sink.out_path().to_path_buf())
         }
@@ -555,13 +917,7 @@ pub(crate) fn run(args: PyramidArgs) {
             if let Some(root) = &args.pipeline.checkpoint_root {
                 policy = policy.with_checkpoint_root(root);
             }
-            let result = run.engine(&sink, Some(policy));
-            if let Some(hash) = &source_hash
-                && let Err(e) = record_source_hash(&dir, hash)
-            {
-                operational_error(&format!("recording the source hash in the manifest: {e}"));
-            }
-            (result, dir)
+            (run.engine(&sink, Some(policy)), dir)
         }
         Target::ObjectStore { bucket, prefix } => {
             let store = object_store.expect("prepared above for an s3:// target");
@@ -569,33 +925,55 @@ pub(crate) fn run(args: PyramidArgs) {
         }
     };
 
-    let result = match result {
-        Ok(r) => r,
-        Err(EngineError::Cancelled) => {
-            eprintln!("Interrupted: stopped at a tile boundary, nothing half-written.");
-            if to_archive {
-                eprintln!("Hint: a PMTiles archive cannot be resumed; run the command again.");
-            } else {
-                eprintln!(
-                    "Hint: run the same command with --resume to finish the tiles that are missing."
-                );
-            }
-            process::exit(EXIT_INTERRUPTED);
-        }
-        Err(e @ EngineError::PlanHashMismatch { .. }) => operational_error(&format!(
-            "{e}\nHint: --resume needs the flags the interrupted run used; with different \
-             ones, run without --resume to start over"
-        )),
-        Err(e) => operational_error(&format!("generating pyramid: {e}")),
+    let resumable = if to_archive {
+        Resumable::No
+    } else {
+        Resumable::Yes
     };
-    events.summary(&result);
-    crate::finish_run(result.clone(), &output, start);
-    if result.retry_count > 0 || result.skipped_due_to_failure > 0 {
-        eprintln!(
-            "Retries: {}, tiles skipped after failing every retry: {}",
-            result.retry_count, result.skipped_due_to_failure
-        );
+    conclude(result, &output, start, resumable, &events);
+
+    // Only a run that finished whole gets the digest: a cancelled, failed or
+    // holed run exited in `conclude` above.
+    if let Some(hash) = &source_hash
+        && let Err(e) = record_source_hash(&output, hash)
+    {
+        operational_error(&format!("recording the source hash in the manifest: {e}"));
     }
+}
+
+/// The PMTiles sink with the writer options the flags ask for.
+fn archive_sink(
+    args: &PyramidArgs,
+    path: &Path,
+    plan: &PyramidPlan,
+    format: TileFormat,
+) -> PmTilesSink {
+    let mut options = WriterOptions::default();
+    if let Some(layout) = args.pipeline.pmtiles_layout {
+        options = options.with_layout(layout.into());
+    }
+    if let Some(requested) = args.pipeline.dedupe_memory_bytes {
+        let window = dedupe_window_bytes(requested, plan);
+        if window < requested {
+            eprintln!(
+                "Note: --dedupe-memory-bytes {requested} lowered to {window}, a slot for every \
+                 one of the plan's {} tiles; the writer would allocate the rest for nothing.",
+                plan.total_tile_count()
+            );
+        }
+        options = options.with_dedupe_memory_bytes(window);
+    }
+    // @doc-snippet:begin slot=sink-pmtiles imports=PmTilesSink,TileFormat
+    // @doc-test: cli_e2e.rs::pyramid_default_output_is_a_pmtiles_archive:1
+    // @doc-flag: storage kind=param param_name=storage
+    let sink = PmTilesSink::builder(path)
+        .plan(plan.clone())
+        .tile_format(format)
+        .writer_options(options)
+        .ordered_emission(args.pipeline.ordered_emission)
+        .build();
+    // @doc-snippet:end slot=sink-pmtiles
+    sink.unwrap_or_else(|e| operational_error(&format!("creating the PMTiles archive failed: {e}")))
 }
 
 /// `--resume`, `--verify` or neither, as the policy the engine takes.
@@ -607,62 +985,20 @@ fn resume_policy(args: &PyramidArgs) -> ResumePolicy {
     }
 }
 
-/// The engine config: the flags `main.rs` already reads, plus this module's.
-fn engine_config(args: &PyramidArgs) -> EngineConfig {
-    let mut config = EngineConfig::default()
-        .with_concurrency(args.concurrency)
-        .with_buffer_size(args.buffer_size)
-        .with_blank_tile_strategy(crate::build_blank_tile_strategy(args))
-        .with_failure_policy(
-            args.pipeline
-                .failure_policy()
-                .unwrap_or_else(|| crate::build_failure_policy(args)),
-        )
-        .skip_blanks(args.pipeline.skip_blanks);
-    if let Some(ds) = crate::build_dedupe_strategy(args) {
-        config = config.with_dedupe_strategy(ds);
-    }
-    config
-}
-
-/// The filesystem sink with its manifest and checksum options.
-fn tree_sink(
-    args: &PyramidArgs,
-    dir: &Path,
-    plan: &PyramidPlan,
-    format: libviprs::TileFormat,
-) -> FsSink {
-    let algo: ChecksumAlgo = args.checksum_algo.clone().into();
-    let p = &args.pipeline;
-    let mut sink = FsSink::new(dir, plan.clone()).with_format(format);
-    if args.manifest_emit_checksums || p.checksum || p.manifest_source_hash {
-        let mut builder = ManifestBuilder::new().include_source_hash(p.manifest_source_hash);
-        if args.manifest_emit_checksums || p.checksum {
-            builder = builder.with_checksums(algo);
-        }
-        sink = sink.with_manifest(builder);
-    }
-    if args.manifest_emit_checksums {
-        sink = sink.with_checksums(ChecksumMode::EmitOnly, algo);
-    }
-    if p.checksum {
-        sink = sink.with_checksums(ChecksumMode::Verify, algo);
-    }
-    if let Some(ds) = crate::build_dedupe_strategy(args) {
-        sink = sink.with_dedupe(ds);
-    }
-    if args.resume {
-        sink = sink.with_resume(true);
-    }
-    sink
+/// The BLAKE3 of the source file's bytes, the way the core documents
+/// `SourceMetadata::bytes_hash` ("the raw source bytes").
+fn hash_source_file(path: &Path) -> std::io::Result<String> {
+    Ok(ChecksumAlgo::Blake3.hash(&std::fs::read(path)?))
 }
 
 /// Put the source digest into both copies of the manifest the sink wrote.
 ///
 /// `ManifestBuilder::include_source_hash` is recorded by the core and never
 /// read: `FsSink` writes `bytes_hash: null` whatever the builder says. Until
-/// that is fixed there, the digest is filled in here, after the sink has
-/// finished, in the two places the sink puts the manifest.
+/// that is fixed there, the digest is filled in here, after the run has
+/// finished, in the two places the sink puts the manifest. Remove this, and
+/// let the builder do it, once the source-hash item on the core tracking issue
+/// (libviprs#1161) lands.
 fn record_source_hash(dir: &Path, hash: &str) -> std::io::Result<()> {
     let mut paths = vec![dir.join("manifest.json")];
     if let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) {
@@ -677,7 +1013,8 @@ fn record_source_hash(dir: &Path, hash: &str) -> std::io::Result<()> {
         if let Some(source) = value.get_mut("source").and_then(|s| s.as_object_mut()) {
             source.insert("bytes_hash".to_string(), serde_json::Value::from(hash));
         }
-        let text = serde_json::to_vec(&value)
+        // Pretty, like the core writes it.
+        let text = serde_json::to_vec_pretty(&value)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, text)?;
@@ -723,7 +1060,7 @@ impl Run<'_> {
 /// tiles on disk are whole and the checkpoint names exactly those, and the run
 /// lock is released on the way out. A second one is somebody who does not
 /// want to wait for that.
-fn install_sigint() -> CancelToken {
+pub(crate) fn install_sigint() -> CancelToken {
     let token = CancelToken::new();
     let handler = token.clone();
     let installed = ctrlc::set_handler(move || {
@@ -746,16 +1083,17 @@ fn install_sigint() -> CancelToken {
 /// Prints engine events on stdout, one line each.
 ///
 /// stdout because nothing else in `viprs pyramid` writes there: the progress
-/// and summary lines go to stderr, so a consumer can read events off stdout
-/// without filtering. Each line is written and flushed under one lock, so
-/// concurrent workers cannot interleave half-lines.
+/// and summary lines go to stderr, and so does `--trace-level` output, so a
+/// consumer can read events off stdout without filtering. Each line is written
+/// and flushed under one lock, so concurrent workers cannot interleave
+/// half-lines.
 pub(crate) struct EventPrinter {
     format: EventsArg,
     out: Mutex<std::io::Stdout>,
 }
 
 impl EventPrinter {
-    fn new(format: EventsArg) -> Arc<Self> {
+    pub(crate) fn new(format: EventsArg) -> Arc<Self> {
         Arc::new(Self {
             format,
             out: Mutex::new(std::io::stdout()),
@@ -765,14 +1103,7 @@ impl EventPrinter {
     fn emit(&self, name: &str, fields: Vec<(&'static str, serde_json::Value)>) {
         let line = match self.format {
             EventsArg::None => return,
-            EventsArg::Json => {
-                let mut map = serde_json::Map::new();
-                map.insert("event".to_string(), name.into());
-                for (k, v) in fields {
-                    map.insert(k.to_string(), v);
-                }
-                serde_json::Value::Object(map).to_string()
-            }
+            EventsArg::Json => json_line(name, fields),
             EventsArg::Text => text_line(name, &fields),
         };
         let mut out = self.out.lock().unwrap_or_else(|p| p.into_inner());
@@ -799,6 +1130,17 @@ impl EventPrinter {
             ],
         );
     }
+}
+
+/// `{"v":1,"event":name,...fields}`.
+fn json_line(name: &str, fields: Vec<(&'static str, serde_json::Value)>) -> String {
+    let mut map = serde_json::Map::new();
+    map.insert("v".to_string(), EVENTS_SCHEMA_VERSION.into());
+    map.insert("event".to_string(), name.into());
+    for (k, v) in fields {
+        map.insert(k.to_string(), v);
+    }
+    serde_json::Value::Object(map).to_string()
 }
 
 /// `name level/col/row key=value ...` for a tile event, `name key=value ...`
@@ -833,26 +1175,89 @@ fn coord_fields(coord: TileCoord) -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
-/// `TileCompleted` becomes `tile_completed`, and so on for a variant this
-/// build has no explicit arm for.
-fn snake_name(event: &EngineEvent) -> String {
-    let debug = format!("{event:?}");
-    let variant: String = debug
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric())
-        .collect();
-    let mut out = String::new();
-    for (i, c) in variant.chars().enumerate() {
-        if c.is_ascii_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.push(c.to_ascii_lowercase());
-        } else {
-            out.push(c);
-        }
+/// The name an event goes out under in `--events` output.
+///
+/// Spelled out rather than derived from the variant's `Debug` text: the names
+/// are a public format, and a rename in the core must not change them behind
+/// a consumer's back. A variant this build has no name for (the enum is
+/// `#[non_exhaustive]`) goes out as `unknown`, with no fields. The core may
+/// grow its own `EngineEvent::name()` (the core tracking issue lists it).
+fn event_name(event: &EngineEvent) -> &'static str {
+    match event {
+        EngineEvent::SourceLoadStarted { .. } => "source_load_started",
+        EngineEvent::SourceLoaded { .. } => "source_loaded",
+        EngineEvent::PlanCreated { .. } => "plan_created",
+        EngineEvent::LevelStarted { .. } => "level_started",
+        EngineEvent::TileCompleted { .. } => "tile_completed",
+        EngineEvent::TileFailed { .. } => "tile_failed",
+        EngineEvent::TileSkippedOnResume { .. } => "tile_skipped_on_resume",
+        EngineEvent::RetryAttempted { .. } => "retry_attempted",
+        EngineEvent::LevelCompleted { .. } => "level_completed",
+        EngineEvent::StripRendered { .. } => "strip_rendered",
+        EngineEvent::BatchStarted { .. } => "batch_started",
+        EngineEvent::BatchCompleted { .. } => "batch_completed",
+        EngineEvent::StripDispatched { .. } => "strip_dispatched",
+        EngineEvent::StripExecutorDone { .. } => "strip_executor_done",
+        EngineEvent::WorkerJoined { .. } => "worker_joined",
+        EngineEvent::WorkerLeft { .. } => "worker_left",
+        EngineEvent::MemorySnapshot { .. } => "memory_snapshot",
+        EngineEvent::CheckpointFlushed { .. } => "checkpoint_flushed",
+        EngineEvent::Finished { .. } => "finished",
+        _ => "unknown",
     }
-    out
+}
+
+/// The fields an event's line carries, beyond its name.
+fn event_fields(event: &EngineEvent) -> Vec<(&'static str, serde_json::Value)> {
+    match event {
+        EngineEvent::TileCompleted { coord, .. }
+        | EngineEvent::TileSkippedOnResume { coord, .. } => coord_fields(*coord),
+        EngineEvent::TileFailed { coord, error, .. } => {
+            let mut f = coord_fields(*coord);
+            f.push(("error", error.clone().into()));
+            f
+        }
+        EngineEvent::RetryAttempted { coord, attempt, .. } => {
+            let mut f = coord_fields(*coord);
+            f.push(("attempt", (*attempt).into()));
+            f
+        }
+        EngineEvent::LevelStarted {
+            level,
+            width,
+            height,
+            tile_count,
+        } => vec![
+            ("level", (*level).into()),
+            ("width", (*width).into()),
+            ("height", (*height).into()),
+            ("tile_count", (*tile_count).into()),
+        ],
+        EngineEvent::LevelCompleted {
+            level,
+            tiles_produced,
+        } => vec![
+            ("level", (*level).into()),
+            ("tiles_produced", (*tiles_produced).into()),
+        ],
+        EngineEvent::MemorySnapshot {
+            current_bytes,
+            peak_bytes,
+            ..
+        } => vec![
+            ("current_bytes", (*current_bytes).into()),
+            ("peak_bytes", (*peak_bytes).into()),
+        ],
+        EngineEvent::CheckpointFlushed { tiles } => vec![("tiles", (*tiles).into())],
+        EngineEvent::Finished {
+            total_tiles,
+            levels,
+        } => vec![
+            ("total_tiles", (*total_tiles).into()),
+            ("levels", (*levels).into()),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 impl EngineObserver for EventPrinter {
@@ -860,57 +1265,7 @@ impl EngineObserver for EventPrinter {
         if self.format == EventsArg::None {
             return;
         }
-        let name = snake_name(&event);
-        let fields = match &event {
-            EngineEvent::TileCompleted { coord, .. }
-            | EngineEvent::TileSkippedOnResume { coord, .. } => coord_fields(*coord),
-            EngineEvent::TileFailed { coord, error, .. } => {
-                let mut f = coord_fields(*coord);
-                f.push(("error", error.clone().into()));
-                f
-            }
-            EngineEvent::RetryAttempted { coord, attempt, .. } => {
-                let mut f = coord_fields(*coord);
-                f.push(("attempt", (*attempt).into()));
-                f
-            }
-            EngineEvent::LevelStarted {
-                level,
-                width,
-                height,
-                tile_count,
-            } => vec![
-                ("level", (*level).into()),
-                ("width", (*width).into()),
-                ("height", (*height).into()),
-                ("tile_count", (*tile_count).into()),
-            ],
-            EngineEvent::LevelCompleted {
-                level,
-                tiles_produced,
-            } => vec![
-                ("level", (*level).into()),
-                ("tiles_produced", (*tiles_produced).into()),
-            ],
-            EngineEvent::MemorySnapshot {
-                current_bytes,
-                peak_bytes,
-                ..
-            } => vec![
-                ("current_bytes", (*current_bytes).into()),
-                ("peak_bytes", (*peak_bytes).into()),
-            ],
-            EngineEvent::CheckpointFlushed { tiles } => vec![("tiles", (*tiles).into())],
-            EngineEvent::Finished {
-                total_tiles,
-                levels,
-            } => vec![
-                ("total_tiles", (*total_tiles).into()),
-                ("levels", (*levels).into()),
-            ],
-            _ => Vec::new(),
-        };
-        self.emit(&name, fields);
+        self.emit(event_name(&event), event_fields(&event));
     }
 }
 
@@ -995,6 +1350,9 @@ mod object_store {
             .filter(|s| s != "-")
             .unwrap_or_else(|| "image".to_string());
         let root = store.root.clone();
+        // @doc-snippet:begin slot=sink-s3 imports=ObjectStoreSink
+        // @doc-test: phase3_packfile.rs::tar_sink_produces_valid_archive:177
+        // @doc-flag: sink kind=override
         let cfg = ObjectStoreConfig::s3("file://stub", bucket)
             .with_key_prefix(prefix)
             .with_image_name(image_name)
@@ -1003,6 +1361,7 @@ mod object_store {
             Ok(s) => s,
             Err(e) => operational_error(&format!("creating the object-store sink failed: {e}")),
         };
+        // @doc-snippet:end slot=sink-s3
         (run.engine(&sink, None), root)
     }
 }
@@ -1014,15 +1373,17 @@ mod object_store {
     use libviprs::{EngineError, EngineResult, TileFormat};
 
     use super::Run;
-    use crate::{PyramidArgs, usage_error};
+    use crate::{PyramidArgs, operational_error};
 
     /// Never built: [`prepare`] refuses the run first.
     pub(super) struct LocalStore;
 
+    /// A feature this build left out is an operational failure, exit 1, not a
+    /// usage mistake (README, "Exit codes").
     pub(super) fn prepare(_args: &PyramidArgs, _bucket: &str, _prefix: &str) -> LocalStore {
-        usage_error(
-            "the s3:// sink needs the `s3` feature, which this viprs was built without",
-            "rebuild with `--features s3`; `viprs features` lists what this build has",
+        operational_error(
+            "the s3:// sink needs the `s3` feature, which this viprs was built without; \
+             rebuild with `--features s3`, and run `viprs features` to see what this build has",
         );
     }
 
@@ -1042,8 +1403,11 @@ mod tests {
     use super::*;
     use clap::Parser as _;
 
+    /// `viprs pyramid in.png out.pmtiles` plus the flags under test. The
+    /// output has an extension so the default archive target resolves
+    /// without the directory-shaped refusal.
     fn pyramid(extra: &[&str]) -> PyramidArgs {
-        let mut argv = vec!["viprs", "in.png", "out"];
+        let mut argv = vec!["viprs", "in.png", "out.pmtiles"];
         argv.extend_from_slice(extra);
         PyramidArgs::try_parse_from(argv).expect("the flags under test parse")
     }
@@ -1108,6 +1472,231 @@ mod tests {
         assert!(
             parse_region("0,0,4294967296,1").is_err(),
             "a side past u32 is refused, not wrapped"
+        );
+    }
+
+    #[test]
+    fn skip_failed_retries_then_skips_and_skips_at_once_without_retries() {
+        match pyramid(&["--retries", "2", "--skip-failed"])
+            .pipeline
+            .failure_policy()
+        {
+            Some(FailurePolicy::RetryThenSkip(p)) => assert_eq!(p.max_retries, 2),
+            other => panic!("got {other:?}"),
+        }
+        match pyramid(&["--skip-failed"]).pipeline.failure_policy() {
+            Some(FailurePolicy::RetryThenSkip(p)) => assert_eq!(p.max_retries, 0),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skip_failed_conflicts_with_fail_fast_and_on_failure() {
+        for extra in [
+            &["--skip-failed", "--fail-fast"][..],
+            &["--skip-failed", "--on-failure", "fail-fast"][..],
+        ] {
+            let mut argv = vec!["viprs", "in.png", "out.pmtiles"];
+            argv.extend_from_slice(extra);
+            assert!(PyramidArgs::try_parse_from(argv).is_err(), "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn a_backoff_above_the_core_cap_raises_the_cap_instead_of_being_clamped() {
+        match pyramid(&["--retries", "1", "--retry-backoff-ms", "9000"])
+            .pipeline
+            .failure_policy()
+        {
+            Some(FailurePolicy::RetryThenFail(p)) => {
+                assert_eq!(p.initial_backoff, Duration::from_secs(9));
+                assert!(p.max_backoff >= p.initial_backoff);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drop_blanks_conflicts_with_both_placeholder_flags() {
+        for other in [&["--skip-blank"][..], &["--blank-tolerance", "3"][..]] {
+            let mut argv = vec!["viprs", "in.png", "out.pmtiles", "--drop-blanks"];
+            argv.extend_from_slice(other);
+            assert!(PyramidArgs::try_parse_from(argv).is_err(), "{other:?}");
+        }
+    }
+
+    fn refusal(extra: &[&str]) -> Option<String> {
+        let args = pyramid(extra);
+        let target = match target_of(&args) {
+            Ok(t) => t,
+            Err(r) => return Some(r.message),
+        };
+        check_combinations(&args, &target).err().map(|r| r.message)
+    }
+
+    #[test]
+    fn combinations_that_mean_nothing_are_refused_before_anything_is_read() {
+        let cases: &[(&[&str], &str)] = &[
+            (&["--dedupe-memory-bytes", "519"], "floor"),
+            (
+                &["--storage", "directory", "--pmtiles-layout", "arrival"],
+                "PMTiles archive",
+            ),
+            (&["--checksum"], "tile tree"),
+            (&["--resume"], "tile tree"),
+            (&["--object-store-root", "/tmp/x"], "s3:// sink"),
+            (
+                &["--storage", "directory", "--region", "0,0,4,4", "--resume"],
+                "not resumable",
+            ),
+            (
+                &[
+                    "--storage",
+                    "directory",
+                    "--region",
+                    "0,0,4,4",
+                    "--events",
+                    "json",
+                ],
+                "per-tile events",
+            ),
+            (&["--sink", "s3://"], "names no bucket"),
+            (&["--sink", "s3://../escaped"], "not a bucket name"),
+            (&["--sink", "s3://./x"], "not a bucket name"),
+        ];
+        for (extra, needle) in cases {
+            let got = refusal(extra);
+            assert!(
+                got.as_deref().is_some_and(|m| m.contains(needle)),
+                "{extra:?} must be refused mentioning {needle:?}, got {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_source_hash_needs_a_file_to_hash() {
+        let args = PyramidArgs::try_parse_from([
+            "viprs",
+            "-",
+            "out",
+            "--storage",
+            "directory",
+            "--manifest-source-hash",
+        ])
+        .unwrap();
+        let target = target_of(&args).unwrap();
+        let refused = check_combinations(&args, &target).unwrap_err();
+        assert!(refused.message.contains("stdin"), "{refused:?}");
+    }
+
+    #[test]
+    fn combinations_that_mean_something_pass() {
+        for extra in [
+            &[][..],
+            &["--pmtiles-layout", "arrival", "--ordered-emission"][..],
+            &["--dedupe-memory-bytes", "520"][..],
+            &[
+                "--storage",
+                "directory",
+                "--checksum",
+                "--checkpoint-every",
+                "5",
+            ][..],
+            &["--storage", "directory", "--region", "0,0,4,4"][..],
+            &[
+                "--sink",
+                "s3://tiles/run-1",
+                "--object-store-root",
+                "/tmp/x",
+            ][..],
+        ] {
+            assert_eq!(refusal(extra), None, "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn an_s3_uri_splits_into_bucket_and_prefix() {
+        let args = pyramid(&["--sink", "s3://tiles//run-1/"]);
+        assert_eq!(
+            target_of(&args),
+            Ok(Target::ObjectStore {
+                bucket: "tiles".into(),
+                prefix: "run-1".into()
+            })
+        );
+    }
+
+    fn plan(width: u32, height: u32, tile: u32) -> PyramidPlan {
+        PyramidPlanner::new(width, height, tile, 0, Layout::Xyz)
+            .expect("a valid plan")
+            .plan()
+    }
+
+    #[test]
+    fn the_dedupe_window_stops_at_a_slot_for_every_planned_tile() {
+        let p = plan(200, 100, 64);
+        let tiles = p.total_tile_count() as usize;
+        let useful = tiles.div_ceil(DEDUPE_WINDOW_WAYS) * DEDUPE_MEMORY_FLOOR;
+        assert_eq!(dedupe_window_bytes(usize::MAX, &p), useful);
+        assert_eq!(dedupe_window_bytes(64_000_000_000, &p), useful);
+        assert_eq!(
+            dedupe_window_bytes(DEDUPE_MEMORY_FLOOR, &p),
+            DEDUPE_MEMORY_FLOOR,
+            "a budget under the ceiling is left alone"
+        );
+        assert!(useful >= tiles * 65, "every tile has a slot");
+    }
+
+    #[test]
+    fn the_level_rasters_are_every_level_below_the_top() {
+        let p = plan(2048, 2048, 256);
+        let bytes = lower_level_bytes(&p, PixelFormat::Rgb8);
+        let top = p.levels.iter().max_by_key(|l| l.level).unwrap();
+        let all: u64 = p
+            .levels
+            .iter()
+            .map(|l| u64::from(l.width) * u64::from(l.height) * 3)
+            .sum();
+        assert_eq!(
+            bytes,
+            all - u64::from(top.width) * u64::from(top.height) * 3
+        );
+        assert!(bytes > 0);
+    }
+
+    #[test]
+    fn events_go_out_under_fixed_names() {
+        let coord = TileCoord::new(3, 1, 2);
+        assert_eq!(
+            event_name(&EngineEvent::tile_completed(coord)),
+            "tile_completed"
+        );
+        assert_eq!(
+            event_name(&EngineEvent::LevelCompleted {
+                level: 3,
+                tiles_produced: 4
+            }),
+            "level_completed"
+        );
+        assert_eq!(
+            event_name(&EngineEvent::CheckpointFlushed { tiles: 9 }),
+            "checkpoint_flushed"
+        );
+        assert_eq!(
+            event_name(&EngineEvent::Finished {
+                total_tiles: 1,
+                levels: 1
+            }),
+            "finished"
+        );
+    }
+
+    #[test]
+    fn a_json_event_line_leads_with_its_version_and_name() {
+        let line = json_line("tile_completed", coord_fields(TileCoord::new(3, 1, 2)));
+        assert_eq!(
+            line,
+            r#"{"v":1,"event":"tile_completed","level":3,"col":1,"row":2}"#
         );
     }
 

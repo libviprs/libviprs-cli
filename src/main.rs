@@ -12,11 +12,10 @@ use std::time::Instant;
 
 use clap::{ArgGroup, Parser, ValueEnum};
 use libviprs::{
-    BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
-    DirectoryPyramidReader, EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink,
-    GeoCoord, GeoTransform, Layout, ManifestBuilder, ManifestV1, MigrateOptions, PmTilesSink,
-    PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy, TileFormat, extract_page_image,
-    migrate_to_pmtiles,
+    BlankTileStrategy, ChecksumAlgo, CollectingObserver, DedupeStrategy, DirectoryPyramidReader,
+    EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout,
+    ManifestV1, MigrateOptions, PyramidPlanner, Raster, ResumeMode, RetryPolicy, TileFormat,
+    extract_page_image, migrate_to_pmtiles,
     streaming::{BudgetPolicy, compute_strip_height, estimate_streaming_memory},
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
 };
@@ -1063,7 +1062,9 @@ fn maybe_init_tracing(level: &Option<String>) {
     {
         use tracing_subscriber::EnvFilter;
         // @doc-snippet:begin slot=tracing-init imports=tracing_subscriber::EnvFilter
+        // stderr, like every other diagnostic: stdout carries `--events`.
         tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
             // @doc-test: phase3_tracing.rs::emits_pipeline_span:371
             .with_env_filter(EnvFilter::new(_level)) // @doc-flag: trace-level kind=param param_name=trace-level
             .init();
@@ -1081,254 +1082,50 @@ fn maybe_init_tracing(level: &Option<String>) {
 }
 
 fn run_pyramid(args: PyramidArgs) {
+    // Ctrl-C first, before either driver is picked, so every engine below
+    // stops at a tile boundary on it and the run exits 130.
+    let cancel = pipeline::install_sigint();
     if pipeline::takes_over(&args) {
-        return pipeline::run(args);
+        return pipeline::run(args, cancel);
     }
+
+    // What is left is `--packfile`, and a fresh `--memory-budget` run into a
+    // tile tree, on the streaming engines. Both resolve every flag before the
+    // input is touched: a usage error must not depend on whether the file
+    // happens to decode, and a refused run must not have written anything.
     let start = Instant::now();
-
-    // Resolve every flag combination before the input is touched. A usage error
-    // must not depend on whether the file happens to decode, and a refused run
-    // must not have written anything by the time it is refused.
     let sink_uri = resolve_sink_uri(&args);
-    let to_archive = sink_uri.starts_with("pmtiles://");
-    let layout = resolve_layout(&args, to_archive);
-    let tile_format = resolve_tile_format(&args, to_archive);
+    let layout = resolve_layout(&args, false);
+    let tile_format = resolve_tile_format(&args, false);
 
-    // Initialise tracing if requested (exits with an error when the feature is off).
-    maybe_init_tracing(&args.trace_level);
+    let pipeline::Prepared { raster, plan } = pipeline::prepare(&args, layout);
+    let engine_config = pipeline::engine_config(&args);
+    let events = pipeline::EventPrinter::new(pipeline::EventsArg::None);
 
-    // Load the source raster
-    let raster = load_source(&args);
-
-    let w = raster.width();
-    let h = raster.height();
-    eprintln!(
-        "Source: {}x{} {:?} ({:.1} MB)",
-        w,
-        h,
-        raster.format(),
-        raster.data().len() as f64 / (1024.0 * 1024.0)
-    );
-
-    // Geo-reference (optional)
-    if let Some(geo) = build_geo_transform(&args, w, h) {
-        let bounds = geo.image_bounds(w, h);
-        eprintln!(
-            "Geo bounds: ({:.6}, {:.6}) → ({:.6}, {:.6})",
-            bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y
+    let (result, output, resumable) = if let Some(path) = sink_uri.strip_prefix("packfile://") {
+        let (result, output) = run_pyramid_packfile(
+            path,
+            &raster,
+            &plan,
+            tile_format,
+            engine_config,
+            resolve_resume_mode(&args),
+            cancel,
         );
-    }
-
-    // Plan (the layout was resolved against the storage backend above).
-    // @doc-snippet:begin slot=planner imports=PyramidPlanner,Layout
-    let planner = match PyramidPlanner::new(
-        w,
-        h,
-        // @doc-test: blank_tile_strategy.rs::emit_solid_white_matches_expected:138
-        args.tile_size, // @doc-flag: tile-size kind=param param_name=tile-size
-        // @doc-test: builder_sink_fs.rs::two_arg_new_defaults_to_png:47
-        args.overlap, // @doc-flag: overlap kind=param param_name=overlap
-        // @doc-test: google_centre_pyramid.rs::google_centre_portrait_plan_structure:107
-        layout, // @doc-flag: layout kind=param param_name=layout
-    ) {
-        // @doc-test: google_centre_pyramid.rs::google_centre_portrait_plan_structure:107
-        Ok(p) => p.with_centre(args.centre), // @doc-flag: centre kind=append
-        Err(e) => {
-            eprintln!("Error creating pyramid plan: {e}");
-            process::exit(1);
-        }
-    };
-    // @doc-snippet:end slot=planner
-
-    // Pre-render memory check
-    let peak_memory = planner.estimate_peak_memory();
-    let (canvas_w, canvas_h) = planner.canvas_dimensions();
-    eprintln!(
-        "Memory estimate: {:.1} MB peak (canvas: {}x{}, source: {}x{})",
-        peak_memory as f64 / (1024.0 * 1024.0),
-        canvas_w,
-        canvas_h,
-        w,
-        h
-    );
-
-    // @doc-snippet:begin slot=memory-limit
-    // @doc-test: streaming_engine.rs::estimate_streaming_memory_reasonable:435
-    if args.memory_limit > 0 {
-        // @doc-flag: memory-limit kind=param param_name=memory-limit
-        let limit_bytes = mb_to_bytes(args.memory_limit);
-        if peak_memory > limit_bytes {
-            eprintln!(
-                "Error: estimated peak memory ({:.1} MB) exceeds --memory-limit ({} MB)",
-                peak_memory as f64 / (1024.0 * 1024.0),
-                args.memory_limit
-            );
-            eprintln!("Hint: reduce --dpi or image dimensions to lower memory usage");
-            process::exit(1);
-        }
-    }
-    // @doc-snippet:end slot=memory-limit
-
-    let plan = planner.plan();
-    eprintln!(
-        "Plan: {} levels, {} tiles, tile_size={}, overlap={}",
-        plan.level_count(),
-        plan.total_tile_count(),
-        args.tile_size,
-        args.overlap
-    );
-
-    // Resolve engine configuration
-    let blank_strategy = build_blank_tile_strategy(&args);
-    let failure_policy = build_failure_policy(&args);
-    let dedupe_strategy = build_dedupe_strategy(&args);
-    let checksum_algo: ChecksumAlgo = args.checksum_algo.clone().into();
-
-    // Manifest builder (attached to sinks that support it)
-    let manifest_builder = if args.manifest_emit_checksums {
-        Some(ManifestBuilder::new().with_checksums(checksum_algo))
+        (result, output, pipeline::Resumable::No)
     } else {
-        None
+        let dir = pipeline::tree_dir(&args, &sink_uri);
+        let sink = pipeline::tree_sink(&args, &dir, &plan, tile_format);
+        let result = run_generate(&args, &raster, &plan, &sink, engine_config, cancel);
+        (result, dir, pipeline::Resumable::Yes)
     };
-
-    // Engine config
-    // @doc-snippet:begin slot=engine-config imports=EngineConfig,BlankTileStrategy,FailurePolicy,DedupeStrategy,RetryPolicy
-    let mut engine_config = EngineConfig::default()
-        // @doc-test: builder_engine_surface.rs::builder_honours_with_concurrency:100
-        .with_concurrency(args.concurrency) // @doc-flag: concurrency kind=appendChain
-        // @doc-test: builder_engine_surface.rs::builder_honours_with_buffer_size:119
-        .with_buffer_size(args.buffer_size) // @doc-flag: buffer-size kind=appendChain
-        // @doc-test: blank_tile_strategy.rs::placeholder_solid_white_matches_expected:201
-        .with_blank_tile_strategy(blank_strategy) // @doc-flag: skip-blank kind=append
-        // @doc-test: phase3_blank_tolerance.rs::engine_with_tolerance_writes_placeholder_for_near_white_tiles:248
-        // @doc-flag: blank-tolerance kind=append
-        // @doc-test: phase3_retry.rs::retries_on_transient_errors:256
-        // @doc-flag: retry-max kind=param param_name=retry-max
-        // @doc-test: phase3_retry.rs::retries_on_transient_errors:256
-        // @doc-flag: retry-backoff kind=param param_name=retry-backoff
-        // @doc-test: builder_resume_retry.rs::builder_with_failure_policy_accepts_every_variant:145
-        .with_failure_policy(failure_policy); // @doc-flag: failure-policy kind=param param_name=failure-policy
-
-    if let Some(ds) = dedupe_strategy {
-        // @doc-test: phase3_dedupe_blanks.rs::blanks_dedupe_manifest_lists_references:364
-        // @doc-flag: dedupe-blanks kind=append
-        // @doc-test: phase3_dedupe_blanks.rs::all_mode_dedupes_identical_non_blank_tiles:467
-        engine_config = engine_config.with_dedupe_strategy(ds); // @doc-flag: dedupe-all kind=append
-    }
-    // @doc-snippet:end slot=engine-config
-
-    // Build the sink the resolved URI names.
-    let resume_mode = resolve_resume_mode(&args);
-
-    // We dispatch on the URI scheme.  The code below builds the appropriate
-    // sink and then runs the engine.  Feature-gated variants fall back to a
-    // friendly error when the feature is not compiled in.
-    if let Some(rest) = sink_uri.strip_prefix("s3://") {
-        run_pyramid_s3(
-            rest,
-            &args,
-            &raster,
-            &plan,
-            tile_format,
-            engine_config,
-            resume_mode,
-            start,
-        );
-    } else if let Some(rest) = sink_uri.strip_prefix("pmtiles://") {
-        run_pyramid_pmtiles(
-            rest,
-            &args,
-            &raster,
-            &plan,
-            tile_format,
-            engine_config,
-            resume_mode,
-            start,
-        );
-    } else if let Some(rest) = sink_uri.strip_prefix("packfile://") {
-        run_pyramid_packfile(
-            rest,
-            &args,
-            &raster,
-            &plan,
-            tile_format,
-            engine_config,
-            resume_mode,
-            start,
-        );
-    } else {
-        // fs:// (strip optional scheme prefix)
-        let base_dir = if let Some(p) = sink_uri.strip_prefix("fs://") {
-            PathBuf::from(p)
-        } else if let Some(output) = args.output.clone() {
-            // A `--sink` naming a scheme this build does not know has always
-            // fallen through to the positional output, and that stays true.
-            output
-        } else {
-            PathBuf::from(&sink_uri)
-        };
-
-        // Build FsSink with Phase 3 options
-        // @doc-snippet:begin slot=sink-fs imports=FsSink,TileFormat,ChecksumMode,ChecksumAlgo,ManifestBuilder
-        let mut sink = FsSink::new(&base_dir, plan.clone())
-            // @doc-test: builder_sink_fs.rs::with_format_overrides_default:62
-            .with_format(tile_format); // @doc-flag: format kind=param param_name=format
-        // @doc-test: builder_sink_fs.rs::with_format_overrides_default:62
-        // @doc-flag: quality kind=param param_name=quality
-        if let Some(mb) = manifest_builder {
-            // @doc-test: builder_sink_fs.rs::compose_format_checksums_manifest_resume:110
-            sink = sink.with_manifest(mb); // @doc-flag: manifest-emit-checksums kind=append
-        }
-        if args.manifest_emit_checksums {
-            // @doc-test: phase3_checksum.rs::emit_only_populates_manifest_checksums:223
-            sink = sink.with_checksums(ChecksumMode::EmitOnly, checksum_algo); // @doc-flag: checksum-algo kind=param param_name=checksum-algo
-        }
-        if let Some(ds) = build_dedupe_strategy(&args) {
-            sink = sink.with_dedupe(ds);
-        }
-        if args.resume {
-            sink = sink.with_resume(true);
-        }
-        // @doc-snippet:end slot=sink-fs
-
-        // The resumable entry point honours `resume_mode` (Overwrite wipes
-        // the output, Resume continues from a checkpoint, Verify checks).
-        // The streaming / MapReduce paths do not yet understand resume modes,
-        // so we only route through `run_generate` when `--memory-budget` is
-        // supplied *and* the user has not explicitly asked for resume/verify.
-        let result = if args.memory_budget.is_some()
-            && !matches!(resume_mode, ResumeMode::Resume | ResumeMode::Verify)
-        {
-            // Budgeted streaming / MapReduce path. Default here is still
-            // overwrite-in-place (no wipe); that's acceptable because the
-            // user opted into a different engine.
-            run_generate(&args, &raster, &plan, &sink, engine_config, start)
-        } else {
-            let policy = match resume_mode {
-                ResumeMode::Overwrite => ResumePolicy::overwrite(),
-                ResumeMode::Resume => ResumePolicy::resume(),
-                ResumeMode::Verify => ResumePolicy::verify(),
-            };
-            match EngineBuilder::new(&raster, plan.clone(), &sink)
-                .with_config(engine_config.clone())
-                .with_resume(policy)
-                .run()
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("Error generating pyramid: {e}");
-                    process::exit(1);
-                }
-            }
-        };
-
-        finish_run(result, &base_dir, start);
-    }
+    pipeline::conclude(result, &output, start, resumable, &events);
 }
 
-/// Entry point for the monolithic / streaming / mapreduce generation paths
-/// (filesystem sink only).  Returns the [`libviprs::EngineResult`] for
-/// summary printing.
+/// Entry point for the streaming / mapreduce generation paths behind
+/// `--memory-budget` (filesystem sink only). Hands the engine's answer back for
+/// [`pipeline::conclude`] to turn into the summary and the exit code, so a
+/// Ctrl-C here exits 130 like every other run.
 ///
 /// Routes through [`EngineBuilder`] so the CLI never constructs a
 /// `StreamingConfig` / `MapReduceConfig` / free-function call by hand —
@@ -1339,8 +1136,8 @@ fn run_generate(
     plan: &libviprs::PyramidPlan,
     sink: &FsSink,
     engine_config: EngineConfig,
-    _start: Instant,
-) -> libviprs::EngineResult {
+    cancel: libviprs::CancelToken,
+) -> Result<libviprs::EngineResult, libviprs::EngineError> {
     let observer = CollectingObserver::new();
 
     // Pick the engine kind + memory budget up-front so the diagnostic logging
@@ -1438,7 +1235,8 @@ fn run_generate(
         .with_buffer_size(engine_config.buffer_size)
         .with_background_rgb(engine_config.background_rgb)
         .with_blank_strategy(engine_config.blank_tile_strategy)
-        .with_failure_policy(engine_config.failure_policy.clone());
+        .with_failure_policy(engine_config.failure_policy.clone())
+        .with_cancel(cancel);
     if let Some(ds) = engine_config.dedupe_strategy {
         builder = builder.with_dedupe(ds);
     }
@@ -1455,14 +1253,9 @@ fn run_generate(
     // @doc-test: builder_resume_matrix.rs::monolithic_verify_with_raster_source:134
     // @doc-flag: verify kind=appendChain
 
-    match builder.run() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Error generating pyramid: {e}");
-            process::exit(1);
-        }
-    }
+    let result = builder.run();
     // @doc-snippet:end slot=engine-builder
+    result
 }
 
 /// Print the post-run summary line.
@@ -1482,89 +1275,6 @@ fn finish_run(result: libviprs::EngineResult, output: &std::path::Path, start: I
     eprintln!("{summary}");
     eprintln!("Output: {}", output.display());
     // @doc-snippet:end slot=finish
-}
-
-// ---------------------------------------------------------------------------
-// S3 sink dispatch (feature-gated)
-// ---------------------------------------------------------------------------
-
-#[allow(clippy::too_many_arguments)]
-fn run_pyramid_s3(
-    _rest: &str,
-    _args: &PyramidArgs,
-    _raster: &Raster,
-    _plan: &libviprs::PyramidPlan,
-    _tile_format: TileFormat,
-    _engine_config: EngineConfig,
-    _resume_mode: ResumeMode,
-    _start: Instant,
-) {
-    #[cfg(feature = "s3")]
-    {
-        // @doc-snippet:begin slot=sink-s3 imports=ObjectStoreSink
-        // TODO Phase 3: parse bucket/prefix from _rest, build ObjectStoreConfig,
-        // construct ObjectStoreSink, run generate_pyramid_resumable or
-        // generate_pyramid_observed as appropriate.
-        // @doc-test: phase3_packfile.rs::tar_sink_produces_valid_archive:177
-        // @doc-flag: sink kind=override
-        eprintln!("Error: s3:// sink is not yet fully wired (Phase 3 TODO).");
-        process::exit(2);
-        // @doc-snippet:end slot=sink-s3
-    }
-    #[cfg(not(feature = "s3"))]
-    {
-        eprintln!("Error: s3:// sink requires the `s3` feature — rebuild with `--features s3`.");
-        process::exit(1);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// PMTiles sink dispatch (always compiled)
-// ---------------------------------------------------------------------------
-
-/// Generate a pyramid straight into one PMTiles v3 archive.
-///
-/// Structurally the same as [`run_pyramid_packfile`]: build the sink, map the
-/// resume mode onto a policy, run the engine, print the summary against the
-/// path the sink actually wrote. The difference is that nothing here is
-/// feature-gated, because the container lives in the core crate unconditionally
-/// and `libviprs-tests` builds this binary with `--no-default-features`.
-#[allow(clippy::too_many_arguments)]
-fn run_pyramid_pmtiles(
-    path: &str,
-    args: &PyramidArgs,
-    raster: &Raster,
-    plan: &libviprs::PyramidPlan,
-    tile_format: TileFormat,
-    engine_config: EngineConfig,
-    resume_mode: ResumeMode,
-    start: Instant,
-) {
-    // @doc-snippet:begin slot=sink-pmtiles imports=PmTilesSink,TileFormat
-    // @doc-test: cli_e2e.rs::pyramid_default_output_is_a_pmtiles_archive:1
-    // @doc-flag: storage kind=param param_name=storage
-    let sink = match PmTilesSink::try_new(path, plan.clone(), tile_format) {
-        Ok(s) => s,
-        Err(e) => operational_error(&format!("creating the PMTiles archive failed: {e}")),
-    };
-    // @doc-snippet:end slot=sink-pmtiles
-
-    let policy = match resume_mode {
-        ResumeMode::Overwrite => ResumePolicy::overwrite(),
-        ResumeMode::Resume => ResumePolicy::resume(),
-        ResumeMode::Verify => ResumePolicy::verify(),
-    };
-    let result = match EngineBuilder::new(raster, plan.clone(), &sink)
-        .with_config(engine_config.clone())
-        .with_resume(policy)
-        .run()
-    {
-        Ok(r) => r,
-        Err(e) => operational_error(&format!("generating pyramid: {e}")),
-    };
-
-    let _ = args;
-    finish_run(result, sink.out_path(), start);
 }
 
 // ---------------------------------------------------------------------------
@@ -2488,20 +2198,23 @@ impl libviprs::PyramidReader for GuardedTreeReader {
 // Packfile sink dispatch (feature-gated)
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
+/// Generate a pyramid into a tar, tar.gz or zip packfile. Hands the engine's
+/// answer and the path written back for [`pipeline::conclude`].
 fn run_pyramid_packfile(
     _path: &str,
-    _args: &PyramidArgs,
     _raster: &Raster,
     _plan: &libviprs::PyramidPlan,
     _tile_format: TileFormat,
     _engine_config: EngineConfig,
     _resume_mode: ResumeMode,
-    _start: Instant,
+    _cancel: libviprs::CancelToken,
+) -> (
+    Result<libviprs::EngineResult, libviprs::EngineError>,
+    PathBuf,
 ) {
     #[cfg(feature = "packfile")]
     {
-        use libviprs::{PackfileFormat, PackfileSink};
+        use libviprs::{PackfileFormat, PackfileSink, ResumePolicy};
 
         // Infer archive format from path extension.
         let path_lower = _path.to_lowercase();
@@ -2516,10 +2229,7 @@ fn run_pyramid_packfile(
         // @doc-snippet:begin slot=sink-packfile imports=PackfileSink,PackfileFormat,TileFormat
         let sink = match PackfileSink::new(_path, fmt, _plan.clone(), _tile_format) {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error creating packfile sink: {e}");
-                process::exit(1);
-            }
+            Err(e) => operational_error(&format!("creating packfile sink: {e}")),
         };
         // @doc-snippet:end slot=sink-packfile
 
@@ -2528,26 +2238,18 @@ fn run_pyramid_packfile(
             ResumeMode::Resume => ResumePolicy::resume(),
             ResumeMode::Verify => ResumePolicy::verify(),
         };
-        let result = match EngineBuilder::new(_raster, _plan.clone(), &sink)
-            .with_config(_engine_config.clone())
+        let result = EngineBuilder::new(_raster, _plan.clone(), &sink)
+            .with_config(_engine_config)
             .with_resume(policy)
-            .run()
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Error generating pyramid: {e}");
-                process::exit(1);
-            }
-        };
-
-        finish_run(result, sink.out_path(), _start);
+            .with_cancel(_cancel)
+            .run();
+        (result, sink.out_path().to_path_buf())
     }
     #[cfg(not(feature = "packfile"))]
     {
-        eprintln!(
-            "Error: packfile:// sink requires the `packfile` feature — rebuild with `--features packfile`."
+        operational_error(
+            "packfile:// sink requires the `packfile` feature — rebuild with `--features packfile`.",
         );
-        process::exit(1);
     }
 }
 

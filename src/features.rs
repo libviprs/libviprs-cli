@@ -42,18 +42,19 @@ pub fn compiled() -> Vec<&'static str> {
 /// Arguments of `viprs features`.
 #[derive(clap::Parser)]
 pub struct FeaturesArgs {
-    /// Print `{"features": [...]}` instead of one name per line.
+    /// Print `{"v": 1, "features": [...]}` instead of one name per line.
     #[arg(long)]
     pub json: bool,
 }
 
 /// `viprs features [--json]`: one feature per line, or
-/// `{"features": [...]}` with `--json`. Always exits 0; an empty list is a
-/// valid answer for a `--no-default-features` build.
+/// `{"v": 1, "features": [...]}` with `--json`. `v` is the format's version,
+/// so a script can tell a shape it knows from a later one. Always exits 0; an
+/// empty list is a valid answer for a `--no-default-features` build.
 pub fn run(args: FeaturesArgs) {
     let features = compiled();
     if args.json {
-        println!("{}", serde_json::json!({ "features": features }));
+        println!("{}", serde_json::json!({ "v": 1, "features": features }));
     } else {
         for name in features {
             println!("{name}");

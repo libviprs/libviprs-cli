@@ -36,6 +36,19 @@ the `version` in `Cargo.toml`.
   password, whose page is rendered at 72 DPI. `plan --layout` also takes
   `zoomify` and `iiif`; `pyramid --layout` does not. A bad or non-finite
   `--geo-origin`, `--geo-scale`, `--affine` or `--background` is exit 2 (#68).
+- `viprs pyramid` pipeline controls: `--pmtiles-layout tile-id|arrival`,
+  `--ordered-emission`, `--dedupe-memory-bytes`, `--checkpoint-every`,
+  `--checkpoint-root`, `--retries`, `--retry-backoff-ms`, `--fail-fast`,
+  `--skip-failed`, `--checksum`, `--manifest-source-hash`, `--region`,
+  `--drop-blanks` and `--events none|text|json`. `--retries N` retries and then
+  fails; only `--skip-failed` skips a tile, and a run that skipped any exits 1.
+  `--drop-blanks` leaves blank tiles out and can't be combined with
+  `--skip-blank`, which writes a placeholder instead. Each `--events json` line
+  carries `"v":1` and a fixed event name (#66).
+- `viprs verify PATH` checks an archive or a tile tree and names every missing
+  or damaged tile, up to 50. `--source FILE` re-renders a tree and compares;
+  `--centre` and `--drop-blanks` say what the pyramid was written with, since
+  neither the manifest nor the archive records it yet (#66).
 
 ### Changed
 
@@ -47,6 +60,23 @@ the `version` in `Cargo.toml`.
 - `viprs pyramid` exits 2, not 1, for a malformed `--geo-origin` or
   `--geo-scale`, and refuses a non-finite one, since it now shares
   `viprs geo`'s parser (#68).
+- Every `viprs pyramid` run into an archive, a tile tree or `s3://` goes
+  through one driver; only `--packfile` and a fresh `--memory-budget` run
+  into a tree keep their own engines. Ctrl-C stops any run, those two
+  included, at the next tile with exit 130 instead of dying by the signal,
+  and a tile tree it leaves finishes with `--resume` (#66).
+- A tile tree run writes its resume checkpoint every 1000 tiles by default
+  (#66).
+- `--memory-budget` into an archive or `s3://`, or with `--resume` or
+  `--verify`, says on stderr that it does not apply. It always ran those on
+  the monolithic engine, without saying so (#66).
+- `--trace-level` output goes to stderr, so stdout carries only `--events`
+  (#66).
+- `viprs features --json` prints `{"v":1,"features":[...]}`; the `v` is new
+  (#66).
+- `s3://` sinks write through a local stub store behind a hidden
+  `--object-store-root DIR`, for testing, until the core has a network
+  transport. Without the `s3` feature an `s3://` sink exits 1 (#66).
 
 ### Fixed
 

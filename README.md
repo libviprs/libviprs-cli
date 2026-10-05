@@ -139,16 +139,19 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 |---|---|---|
 | `--pmtiles-layout tile-id\|arrival` | archive | `tile-id` (default) sorts at the end and is always clustered; `arrival` writes every byte once, in the order tiles came |
 | `--ordered-emission` | archive | Emit tiles in tile id order, so an `arrival` archive is byte-identical to the `tile-id` one |
-| `--dedupe-memory-bytes N` | archive | Writer's duplicate-tile window, about 65 bytes a tile; below 520 is refused |
+| `--dedupe-memory-bytes N` | archive | Writer's duplicate-tile window, about 65 bytes a tile; below 520 is refused, and above a slot for every planned tile it is lowered to that (the run says so) |
 | `--resume` / `--checkpoint-every N` / `--checkpoint-root DIR` | tree | Pick up an interrupted run; checkpoint every 1000 tiles by default |
-| `--retries N` / `--retry-backoff-ms MS` / `--fail-fast` | all | Retry failed writes, then skip and count the tile, or abort with `--fail-fast` |
-| `--checksum` / `--manifest-source-hash` | tree | Per-tile checksums (re-hashed before the run succeeds) and the source digest, in `manifest.json` |
+| `--retries N` / `--retry-backoff-ms MS` | all | Retry a failed write up to N times, then fail the run |
+| `--skip-failed` | all | Skip a tile that still fails and carry on; the run then exits 1 at the end, since the output has holes |
+| `--fail-fast` | all | Abort on the first failure (the default) |
+| `--checksum` / `--manifest-source-hash` | tree | Per-tile checksums (re-hashed before the run succeeds) and the BLAKE3 of the source file's bytes, in `manifest.json` |
 | `--region x,y,w,h` | all | Crop, then pyramid |
-| `--skip-blanks` | all | Leave blank tiles out altogether (`--skip-blank` writes a placeholder per blank tile instead) |
-| `--events none\|text\|json` | all | One line per engine event on stdout |
-| `--sink s3://bucket/prefix --object-store-root DIR` | object store | Needs the `s3` feature; writes through a local stub store, since this build has no network transport |
+| `--drop-blanks` | all | Leave blank tiles out altogether (`--skip-blank` writes a placeholder per blank tile instead; the two can't be combined) |
+| `--events none\|text\|json` | all | One line per engine event on stdout; each `json` line has `"v":1` and an `"event"` name |
 
-Ctrl-C stops a run at the next tile and exits 130. A tile tree it leaves behind finishes with the same command plus `--resume`, to exactly the bytes an uninterrupted run writes.
+`--memory-budget` streams a fresh run into a tile tree. Into an archive or an object store, or with `--resume` or `--verify`, the run uses the monolithic engine and says so on stderr. `--trace-level` output goes to stderr too, so stdout carries nothing but `--events`.
+
+Ctrl-C stops any pyramid run at the next tile and exits 130. A tile tree it leaves behind finishes with the same command plus `--resume`, to exactly the bytes an uninterrupted run writes.
 
 See the [pyramid command page](https://libviprs.org/cli/#pyramid) for the complete flag list (including `--memory-budget` and other tuning knobs) and an interactive Rust program generator.
 
@@ -241,7 +244,7 @@ $ viprs features
 pdfium
 
 $ viprs features --json
-{"features":["pdfium"]}
+{"v":1,"features":["pdfium"]}
 ```
 
 ### Loading and saving every codec
@@ -309,6 +312,8 @@ viprs verify tiles/
 # Re-render from the input and compare (byte for byte for --format raw trees)
 viprs verify tiles/ --source blueprint.png
 ```
+
+The manifest and the archive metadata don't record `--centre` or `--drop-blanks` yet, so a pyramid written with either needs the same flag on `verify`. Without it a centred pyramid gets checked against the uncentred grid, and every dropped blank shows up as a missing tile (the message says so). `--drop-blanks` can't be combined with `--source`, because the re-render expects every planned tile, and a PDF can't be a `--source`, because verify doesn't know the page, DPI or render mode the pyramid used. `--source` decodes through the same input path as every other command. A badly broken pyramid is reported up to 50 problems, then verify stops looking.
 
 ## PDF Handling
 
