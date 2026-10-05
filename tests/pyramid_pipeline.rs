@@ -674,6 +674,146 @@ fn an_s3_bucket_that_climbs_out_of_the_store_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
+// The s3:// sink writes through the core's DirectoryObjectStore (#87)
+// ---------------------------------------------------------------------------
+
+/// A bucket name the core's directory store refuses is still refused as a
+/// usage mistake, before the input is read: a backslash is one plain name to
+/// a Unix path parser, so only the store's own check catches it.
+#[cfg(all(unix, any(feature = "s3", feature = "object-store-sink")))]
+#[test]
+fn an_s3_bucket_the_directory_store_refuses_is_a_usage_error() {
+    let dir = unique_dir("bucket-backslash");
+    let input = off_grid(&dir);
+    let root = dir.join("store");
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        "--sink",
+        "s3://a\\b/run",
+        "--object-store-root",
+        s(&root),
+        "--tile-size",
+        "64",
+    ]);
+    let err = stderr(&out);
+    assert_eq!(code(&out), 2, "{err}");
+    assert!(err.contains("bucket"), "{err}");
+    assert!(
+        files_with(&dir, ".png").is_empty(),
+        "a refused run wrote tiles"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A symlink planted under the store root is not a way out of it: the core's
+/// store refuses every key that crosses one, so the run fails (exit 1) and
+/// nothing lands where the link points.
+#[cfg(all(unix, any(feature = "s3", feature = "object-store-sink")))]
+#[test]
+fn the_s3_sink_does_not_follow_a_symlink_under_the_store() {
+    let dir = unique_dir("store-symlink");
+    let input = off_grid(&dir);
+    let root = dir.join("store");
+    let outside = dir.join("outside");
+    std::fs::create_dir_all(root.join("tiles")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("tiles/run-1")).unwrap();
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        "--sink",
+        "s3://tiles/run-1",
+        "--object-store-root",
+        s(&root),
+        "--tile-size",
+        "64",
+    ]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        files_with(&outside, ".png").is_empty(),
+        "the store followed a symlink out of its root"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The store holds exactly the tiles a directory run writes, byte for byte,
+/// under `ROOT/bucket/prefix/<stem>_files`, and no staging file is left over.
+#[cfg(any(feature = "s3", feature = "object-store-sink"))]
+#[test]
+fn the_s3_sink_stores_the_tree_run_bytes() {
+    let dir = unique_dir("store-bytes");
+    let input = off_grid(&dir);
+    let root = dir.join("store");
+    let tree = dir.join("tree");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            "--sink",
+            "s3://tiles/run-1",
+            "--object-store-root",
+            s(&root),
+            "--tile-size",
+            "64",
+        ]),
+        "the s3 run",
+    );
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--tile-size",
+            "64",
+        ]),
+        "the tree run",
+    );
+    let tiles = |base: &Path| {
+        let mut out: Vec<(PathBuf, Vec<u8>)> = files_with(base, ".png")
+            .into_iter()
+            .map(|p| {
+                (
+                    p.strip_prefix(base).unwrap().to_path_buf(),
+                    std::fs::read(&p).unwrap(),
+                )
+            })
+            .collect();
+        out.sort();
+        out
+    };
+    let stored = tiles(&root.join("tiles/run-1/off-grid_files"));
+    assert!(!stored.is_empty(), "nothing landed in the store");
+    assert_eq!(
+        stored,
+        tiles(&tree),
+        "the stored tiles differ from the tree run's"
+    );
+    assert!(
+        files_with(&root, "part").is_empty(),
+        "a staging file was left in the store"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The stub store is the core's now; the CLI keeps no copy of its own.
+#[test]
+fn the_cli_keeps_no_private_object_store() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pipeline.rs");
+    let source = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !source.contains("LocalStore") && !source.contains("impl ObjectStore for"),
+        "src/pipeline.rs still carries its own ObjectStore"
+    );
+    assert!(
+        source.contains("DirectoryObjectStore::for_bucket"),
+        "src/pipeline.rs does not build the core's DirectoryObjectStore"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // --manifest-source-hash records the source file's bytes
 // ---------------------------------------------------------------------------
 

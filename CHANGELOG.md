@@ -55,6 +55,14 @@ the `version` in `Cargo.toml`.
 
 ### Changed
 
+- The stub store an `s3://` sink writes through under the hidden
+  `--object-store-root DIR` is the core's `DirectoryObjectStore` now, with
+  the same `DIR/bucket/key` layout and the same tile bytes; the CLI's private
+  copy is gone. The core's store is stricter: a bucket name with a backslash
+  is refused as a usage mistake (exit 2) like the other bad names, a key
+  that crosses a symlink under the root is refused, so the run fails (exit 1)
+  rather than write where the link points, and each object is staged through
+  a uniquely named `.libviprs-part` file (#87).
 - An op command that refuses a value on the command line alone now exits 2,
   the same as clap and the built-ins, with a hint naming the op's `--help`.
   That covers inverted or NaN `clamp` bounds, a `gamma --exponent` out of
