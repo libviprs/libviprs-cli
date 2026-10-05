@@ -32,11 +32,15 @@
 //! loaders here check the decoded geometry against all of them afterwards
 //! as well; a flag the help text promises is a flag every loader honours.
 //!
-//! `csvload` and `matrixload` are the two whose core decoders take no limits
-//! at all, so their grid is measured from the text and priced before the
-//! decode: width x height x 4 bytes, times the copies of the grid the core
-//! holds while it builds the raster, against `--max-alloc-bytes`. A ragged
-//! CSV is priced at the padded width, because that is what `csv_load` builds.
+//! `csvload` and `matrixload` go through the core's
+//! `Raster::csv_load_with_limits` / `matrix_load_with_limits`, which work out
+//! the grid's size from the text before building anything and check it
+//! against `max_coord`, `max_pixels` and, as one-band `f32`, against
+//! `max_alloc_bytes` (libviprs#1168). A ragged CSV is priced at the padded
+//! width, because that is what the core builds. The CLI used to measure and
+//! price the grid itself, at a copy count that stopped matching the core once
+//! it built the grid once (libviprs-cli#90); a refusal still names the flag to
+//! raise.
 //!
 //! # Where this departs from vips
 //!
@@ -801,64 +805,67 @@ fn decode(name: &str, m: &ArgMatches) -> Result<Raster> {
             }
             source(libviprs::decode_analyze_file(Path::new(spec), limits))?
         }
-        "csvload" => {
-            let bytes = read_input(spec, &limits, None)?;
-            let (w, h) = csv_geometry(&bytes);
-            check_dims(w, h, Some(CSV_GRID_COPIES), &limits)?;
-            core(Raster::csv_load(&bytes))?
-        }
-        "matrixload" => {
-            let bytes = read_input(spec, &limits, None)?;
-            if let Some((w, h)) = matrix_geometry(&bytes) {
-                check_dims(w, h, Some(MATRIX_GRID_COPIES), &limits)?;
-            }
-            core(Raster::matrix_load(&bytes))?
-        }
+        "csvload" => text_grid(Raster::csv_load_with_limits(
+            &read_input(spec, &limits, None)?,
+            limits,
+        ))?,
+        "matrixload" => text_grid(Raster::matrix_load_with_limits(
+            &read_input(spec, &limits, None)?,
+            limits,
+        ))?,
         other => bail!("no loader called {other}"),
     };
     Ok(raster)
 }
 
-/// The grid `Raster::csv_load` will build, read the way it reads it: the
-/// first non-empty row's comma- or TAB-separated field count is the width,
-/// the non-empty rows are the height. Counted before the decode so a
-/// declared-huge grid is refused before it is allocated.
-fn csv_geometry(bytes: &[u8]) -> (u64, u64) {
-    let text = String::from_utf8_lossy(bytes);
-    let mut rows = text.lines().filter(|l| !l.trim().is_empty());
-    let width = rows
-        .next()
-        .map_or(0, |l| l.split([',', '\t']).count() as u64);
-    (width, 1 + rows.count() as u64)
+/// A text loader's result, with the core's limit refusals reworded to name
+/// the `--max-*` flag to raise, in the words `check_dims` uses for every other
+/// loader. The core's own message names the `DecodeLimits` field, which is
+/// not something a command line can set.
+fn text_grid(r: std::result::Result<Raster, libviprs::source::SourceError>) -> Result<Raster> {
+    use libviprs::source::SourceError;
+    let too = |what: &str, got: u64, max: u64, flag: &str| {
+        anyhow!("image {what} {got} exceeds the decode limit of {max} (--{flag})")
+    };
+    r.map_err(|e| match e {
+        SourceError::CoordLimitExceeded {
+            width,
+            height,
+            max_coord,
+        } => too(
+            "axis",
+            width.max(height).into(),
+            max_coord.into(),
+            io::MAX_COORD,
+        ),
+        SourceError::DimensionLimitExceeded {
+            width,
+            height,
+            max_pixels,
+        } => too(
+            "pixel count",
+            u64::from(width) * u64::from(height),
+            max_pixels,
+            io::MAX_PIXELS,
+        ),
+        SourceError::AllocLimitExceeded {
+            needed_bytes,
+            max_alloc_bytes,
+            ..
+        } => too(
+            "byte size",
+            needed_bytes,
+            max_alloc_bytes,
+            io::MAX_ALLOC_BYTES,
+        ),
+        other => other.into(),
+    })
 }
 
-/// The `width height` a text matrix declares on its first line.
-fn matrix_geometry(bytes: &[u8]) -> Option<(u64, u64)> {
-    let text = std::str::from_utf8(bytes.get(..bytes.len().min(256))?).ok()?;
-    let mut it = text.lines().next()?.split_whitespace();
-    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
-}
-
-/// Copies of a `csvload` grid alive at once while `Raster::csv_load` builds
-/// it: the padded row vectors, the flattened samples (a growing Vec, which can
-/// sit at up to twice the grid while the rows drain into it), and the raster's
-/// own buffer. The core reserves none of them fallibly or under a limit, which
-/// is on the core tracking issue; until it does, this is priced here.
-const CSV_GRID_COPIES: u64 = 3;
-
-/// The same for `Raster::matrix_load`: the parsed samples (a growing Vec, so
-/// up to twice the grid) and the raster's buffer.
-const MATRIX_GRID_COPIES: u64 = 2;
-
-/// Bytes per sample of the one-band float raster both text loaders build.
-const F32_BYTES: u64 = 4;
-
-/// `w` x `h` against every geometry limit, and with `copies` the float grid
-/// a text loader builds (`w` x `h` x 4 bytes, `copies` times) against
-/// `max_alloc_bytes`. The products saturate rather than wrap, so a header
-/// claiming absurd dimensions is refused, never priced at a wrapped-around
-/// small number.
-fn check_dims(w: u64, h: u64, copies: Option<u64>, limits: &DecodeLimits) -> Result<()> {
+/// `w` x `h` against every geometry limit. The pixel product saturates rather
+/// than wraps, so absurd dimensions are refused, never counted as a
+/// wrapped-around small number.
+fn check_dims(w: u64, h: u64, limits: &DecodeLimits) -> Result<()> {
     let too = |what: &str, got: u64, max: u64, flag: &str| {
         Err(anyhow!(
             "image {what} {got} exceeds the decode limit of {max} (--{flag})"
@@ -877,24 +884,13 @@ fn check_dims(w: u64, h: u64, copies: Option<u64>, limits: &DecodeLimits) -> Res
     if pixels > limits.max_pixels {
         return too("pixel count", pixels, limits.max_pixels, io::MAX_PIXELS);
     }
-    if let Some(copies) = copies {
-        let bytes = pixels.saturating_mul(F32_BYTES).saturating_mul(copies);
-        if bytes > limits.max_alloc_bytes {
-            return too(
-                "byte size",
-                bytes,
-                limits.max_alloc_bytes,
-                io::MAX_ALLOC_BYTES,
-            );
-        }
-    }
     Ok(())
 }
 
 /// The decoded geometry against every limit the flags promise; see the module
 /// docs for why this runs after the core's own checks too.
 fn check_geometry(raster: &Raster, limits: &DecodeLimits) -> Result<()> {
-    check_dims(raster.width().into(), raster.height().into(), None, limits)
+    check_dims(raster.width().into(), raster.height().into(), limits)
 }
 
 #[cfg(test)]
@@ -938,47 +934,11 @@ mod tests {
     }
 
     #[test]
-    fn csv_geometry_reads_the_first_row_and_counts_the_rest() {
-        assert_eq!(csv_geometry(b"1\t2\t3\n4\t5\t6\n\n7,8,9\n"), (3, 3));
-        assert_eq!(csv_geometry(b""), (0, 1));
-    }
-
-    #[test]
-    fn matrix_geometry_reads_the_header() {
-        assert_eq!(matrix_geometry(b"3 2 1 0\n1 2 3\n4 5 6\n"), Some((3, 2)));
-        assert_eq!(matrix_geometry(b"nonsense\n"), None);
-    }
-
-    #[test]
     fn check_dims_names_the_flag_it_tripped() {
         let limits = DecodeLimits::default().with_max_pixels(10);
-        let err = check_dims(4, 4, None, &limits).unwrap_err().to_string();
+        let err = check_dims(4, 4, &limits).unwrap_err().to_string();
         assert!(err.contains("--max-pixels"), "{err}");
-        assert!(check_dims(2, 5, None, &limits).is_ok());
-    }
-
-    #[test]
-    fn check_dims_prices_the_grid_copies_without_wrapping() {
-        // The ragged CSV from the review, one 65535-field row and 16383
-        // one-field rows: inside every geometry default, about 4.3 GB a copy.
-        let limits = DecodeLimits::default();
-        assert!(check_dims(65_535, 16_384, None, &limits).is_ok());
-        let err = check_dims(65_535, 16_384, Some(CSV_GRID_COPIES), &limits)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("--max-alloc-bytes"), "{err}");
-        // Dimensions whose byte count overflows u64 still refuse cleanly.
-        let wide = DecodeLimits::default()
-            .with_max_width(u32::MAX)
-            .with_max_height(u32::MAX)
-            .with_max_coord(u32::MAX)
-            .with_max_pixels(u64::MAX)
-            .with_max_alloc_bytes(u64::MAX - 1);
-        let max = u64::from(u32::MAX);
-        let err = check_dims(max, max, Some(CSV_GRID_COPIES), &wide)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("--max-alloc-bytes"), "{err}");
+        assert!(check_dims(2, 5, &limits).is_ok());
     }
 
     fn command(name: &str) -> Command {
@@ -1026,9 +986,8 @@ mod tests {
 
     #[test]
     fn csvload_prices_the_grid_against_max_alloc_bytes_before_decoding() {
-        // 20x20 floats is 1600 bytes a copy, so a 1000 byte budget cannot hold
-        // even one of the copies csv_load makes, while every axis and pixel
-        // limit is far away.
+        // 20x20 floats is 1600 bytes, so a 1000 byte budget cannot hold the
+        // grid core builds, while every axis and pixel limit is far away.
         let scratch = Scratch::new("csv-price");
         let row = vec!["1"; 20].join(",");
         let csv = vec![row; 20].join("\n");
@@ -1042,8 +1001,8 @@ mod tests {
 
     #[test]
     fn csvload_prices_a_ragged_grid_at_the_padded_width() {
-        // One wide first row and short rows after it: csv_load pads every row
-        // to the first one's width, so the grid is 400 wide however few bytes
+        // One wide first row and short rows after it: core pads every row to
+        // the first one's width, so the grid is 400 wide however few bytes
         // the short rows take.
         let scratch = Scratch::new("csv-ragged");
         let mut csv = vec!["0"; 400].join(",");
