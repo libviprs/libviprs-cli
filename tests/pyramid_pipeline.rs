@@ -301,10 +301,11 @@ fn trace_output_stays_off_the_events_stream() {
 }
 
 // ---------------------------------------------------------------------------
-// viprs verify: --centre, --drop-blanks, and the re-renders it cannot do
+// viprs verify: centre and skip_blanks from the pyramid, the flags as
+// overrides for older ones, and the re-render it still cannot do (#85)
 // ---------------------------------------------------------------------------
 
-/// A centred raw tree, so a re-render would compare bytes.
+/// A centred raw tree, so a re-render compares bytes.
 fn centred_tree(dir: &Path, input: &Path) -> PathBuf {
     let tree = dir.join("centred");
     ok(
@@ -326,42 +327,13 @@ fn centred_tree(dir: &Path, input: &Path) -> PathBuf {
     tree
 }
 
-#[test]
-fn verify_takes_centre_for_a_centred_tree() {
-    let dir = unique_dir("verify-centre");
-    let input = off_grid(&dir);
-    let centred = centred_tree(&dir, &input);
-
-    let told = run(&["verify", s(&centred), "--centre"]);
-    assert_eq!(code(&told), 0, "{}", stderr(&told));
-
-    // The core's re-render cannot lay a source out on a centred grid, so
-    // the combination is refused rather than reported as damage.
-    let rerender = run(&["verify", s(&centred), "--centre", "--source", s(&input)]);
-    assert_eq!(code(&rerender), 2, "{}", stderr(&rerender));
-    assert!(
-        stderr(&rerender).contains("re-render"),
-        "{}",
-        stderr(&rerender)
-    );
-
-    // Without the flag the re-render is laid out on the uncentred grid and
-    // every tile comes out shifted; the failure names the flag.
-    let untold = run(&["verify", s(&centred), "--source", s(&input)]);
-    assert_eq!(code(&untold), 1, "{}", stderr(&untold));
-    assert!(stderr(&untold).contains("--centre"), "{}", stderr(&untold));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn verify_takes_drop_blanks_for_a_tree() {
-    let dir = unique_dir("verify-drop-tree");
-    let input = half_blank(&dir);
+/// A `--drop-blanks` tree with a manifest.
+fn dropped_tree(dir: &Path, input: &Path) -> PathBuf {
     let tree = dir.join("tree");
     ok(
         &run(&[
             "pyramid",
-            s(&input),
+            s(input),
             s(&tree),
             "--storage",
             "directory",
@@ -372,6 +344,116 @@ fn verify_takes_drop_blanks_for_a_tree() {
         ]),
         "the --drop-blanks tree",
     );
+    tree
+}
+
+/// Rewrite a tree's manifest (inside it, and the sibling copy if there is
+/// one) the way a writer from before `centre` and `skip_blanks` existed left
+/// it: neither key in the generation block.
+fn forget_generation_flags(tree: &Path) {
+    let inside = tree.join("manifest.json");
+    let mut sibling = tree.to_path_buf().into_os_string();
+    sibling.push(".manifest.json");
+    for path in [inside, PathBuf::from(sibling)] {
+        if !path.exists() {
+            continue;
+        }
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let generation = manifest["generation"]
+            .as_object_mut()
+            .expect("the manifest has a generation block");
+        generation.remove("centre");
+        generation.remove("skip_blanks");
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn verify_reads_centre_from_a_centred_tree() {
+    let dir = unique_dir("verify-centre");
+    let input = off_grid(&dir);
+    let centred = centred_tree(&dir, &input);
+
+    // The manifest says the plan was centred, so verify needs no flag.
+    let plain = run(&["verify", s(&centred)]);
+    assert_eq!(code(&plain), 0, "{}", stderr(&plain));
+
+    // The core's re-render lays a source out on a centred grid now
+    // (libviprs#1163), so --source checks a centred tree byte for byte,
+    // with or without the flag that repeats what the manifest says.
+    let rerender = run(&["verify", s(&centred), "--source", s(&input)]);
+    assert_eq!(code(&rerender), 0, "{}", stderr(&rerender));
+    assert!(
+        stdout(&rerender).contains("a re-render of the source"),
+        "{}",
+        stdout(&rerender)
+    );
+    let told = run(&["verify", s(&centred), "--centre", "--source", s(&input)]);
+    assert_eq!(code(&told), 0, "{}", stderr(&told));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_takes_centre_for_a_tree_that_does_not_record_it() {
+    let dir = unique_dir("verify-centre-old");
+    let input = off_grid(&dir);
+    let centred = centred_tree(&dir, &input);
+    forget_generation_flags(&centred);
+
+    // An older manifest reads as uncentred, so the flag is how to say it.
+    let told = run(&["verify", s(&centred), "--centre", "--source", s(&input)]);
+    assert_eq!(code(&told), 0, "{}", stderr(&told));
+
+    // Without it the re-render is laid out on the uncentred grid and the
+    // failure names the flag.
+    let untold = run(&["verify", s(&centred), "--source", s(&input)]);
+    assert_eq!(code(&untold), 1, "{}", stderr(&untold));
+    assert!(stderr(&untold).contains("--centre"), "{}", stderr(&untold));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_reads_skip_blanks_from_a_tree() {
+    let dir = unique_dir("verify-drop-tree");
+    let input = half_blank(&dir);
+    let tree = dropped_tree(&dir, &input);
+
+    let plain = run(&["verify", s(&tree)]);
+    assert_eq!(code(&plain), 0, "{}", stderr(&plain));
+    assert!(
+        stdout(&plain).contains("blank tiles dropped"),
+        "{}",
+        stdout(&plain)
+    );
+    let told = run(&["verify", s(&tree), "--drop-blanks"]);
+    assert_eq!(code(&told), 0, "{}", stderr(&told));
+
+    // The re-render still wants every planned tile on disk until the core
+    // can skip a dropped blank (libviprs#1174). That is the pyramid's doing,
+    // not the command line's, so it exits 1 and says so instead of listing
+    // every dropped blank as a missing tile.
+    let rerender = run(&["verify", s(&tree), "--source", s(&input)]);
+    assert_eq!(code(&rerender), 1, "{}", stderr(&rerender));
+    assert!(
+        stderr(&rerender).contains("re-render") && stderr(&rerender).contains("blank"),
+        "{}",
+        stderr(&rerender)
+    );
+    assert!(
+        !stderr(&rerender).contains("is missing"),
+        "{}",
+        stderr(&rerender)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_takes_drop_blanks_for_a_tree_that_does_not_record_it() {
+    let dir = unique_dir("verify-drop-tree-old");
+    let input = half_blank(&dir);
+    let tree = dropped_tree(&dir, &input);
+    forget_generation_flags(&tree);
 
     let told = run(&["verify", s(&tree), "--drop-blanks"]);
     assert_eq!(code(&told), 0, "{}", stderr(&told));
@@ -387,7 +469,7 @@ fn verify_takes_drop_blanks_for_a_tree() {
 }
 
 #[test]
-fn verify_takes_drop_blanks_for_an_archive() {
+fn verify_reads_skip_blanks_from_an_archive() {
     let dir = unique_dir("verify-drop-archive");
     let input = half_blank(&dir);
     let archive = dir.join("out.pmtiles");
@@ -403,16 +485,39 @@ fn verify_takes_drop_blanks_for_an_archive() {
         "the --drop-blanks archive",
     );
 
+    let plain = run(&["verify", s(&archive)]);
+    assert_eq!(code(&plain), 0, "{}", stderr(&plain));
+    assert!(
+        stdout(&plain).contains("blank tiles dropped"),
+        "{}",
+        stdout(&plain)
+    );
     let told = run(&["verify", s(&archive), "--drop-blanks"]);
     assert_eq!(code(&told), 0, "{}", stderr(&told));
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    let untold = run(&["verify", s(&archive)]);
-    assert_eq!(code(&untold), 1, "{}", stderr(&untold));
-    assert!(
-        stderr(&untold).contains("--drop-blanks"),
-        "{}",
-        stderr(&untold)
+#[test]
+fn verify_reads_centre_from_an_archive() {
+    let dir = unique_dir("verify-centre-archive");
+    let input = off_grid(&dir);
+    let archive = dir.join("out.pmtiles");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&archive),
+            "--tile-size",
+            "64",
+            "--centre",
+        ]),
+        "the centred archive",
     );
+
+    let plain = run(&["verify", s(&archive)]);
+    assert_eq!(code(&plain), 0, "{}", stderr(&plain));
+    let told = run(&["verify", s(&archive), "--centre"]);
+    assert_eq!(code(&told), 0, "{}", stderr(&told));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
