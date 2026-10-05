@@ -1,0 +1,806 @@
+//! End-to-end cells for the `viprs pyramid` pipeline controls and
+//! `viprs verify` (#66), driving the real binary.
+//!
+//! The wider suite lives in libviprs-tests (`tests/cli_pyramid_pipeline.rs`).
+//! These are the cells for the refusals, renames and exit codes this crate
+//! decides on its own, so a change to any of them goes red here, next to the
+//! code, rather than in another repository after the pin moves.
+//!
+//! The inputs are hand-written PPMs, which the core decodes in every build,
+//! so the cells need no pdfium and no image crate.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+fn viprs() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_viprs"))
+}
+
+fn run(args: &[&str]) -> Output {
+    viprs()
+        .args(args)
+        .output()
+        .expect("the viprs binary must be spawnable")
+}
+
+fn code(out: &Output) -> i32 {
+    out.status
+        .code()
+        .expect("the process must exit normally rather than via a signal")
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// A temp directory of this cell's own (cargo runs cells as threads of one
+/// process, so the pid alone would be shared).
+fn unique_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("viprs-pipe-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir must be creatable");
+    dir
+}
+
+/// Write a binary PPM whose pixel at `(x, y)` is `pixel(x, y)`.
+fn write_ppm(path: &Path, width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 3]) {
+    let mut bytes = format!("P6\n{width} {height}\n255\n").into_bytes();
+    bytes.reserve((width * height * 3) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            bytes.extend_from_slice(&pixel(x, y));
+        }
+    }
+    std::fs::write(path, bytes).expect("the PPM must be writable");
+}
+
+/// 256x128: a gradient on the left half, flat black on the right, so at a
+/// 64-pixel tile size the right half of the top level is blank tiles.
+fn half_blank(dir: &Path) -> PathBuf {
+    let path = dir.join("half.ppm");
+    write_ppm(&path, 256, 128, |x, y| {
+        if x < 128 {
+            [x as u8, y as u8, (x ^ y) as u8]
+        } else {
+            [0, 0, 0]
+        }
+    });
+    path
+}
+
+/// 200x100 of gradient, which does not fill a 64-pixel grid, so `--centre`
+/// moves every pixel.
+fn off_grid(dir: &Path) -> PathBuf {
+    let path = dir.join("off-grid.ppm");
+    write_ppm(&path, 200, 100, |x, y| [x as u8, y as u8, (x + y) as u8]);
+    path
+}
+
+fn s(p: &Path) -> &str {
+    p.to_str().expect("temp paths are UTF-8")
+}
+
+/// Every file under `root` whose name ends in `ext`.
+fn files_with(root: &Path, ext: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.to_string_lossy().ends_with(ext) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+fn ok(out: &Output, what: &str) {
+    assert_eq!(code(out), 0, "{what} failed:\n{}", stderr(out));
+}
+
+// ---------------------------------------------------------------------------
+// --drop-blanks (was --skip-blanks)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn drop_blanks_leaves_blank_tiles_out_and_conflicts_with_skip_blank() {
+    let dir = unique_dir("drop-blanks");
+    let input = half_blank(&dir);
+    let full = dir.join("full");
+    let dropped = dir.join("dropped");
+    let base = |out: &Path| {
+        vec![
+            "pyramid".to_string(),
+            s(&input).to_string(),
+            s(out).to_string(),
+            "--storage".into(),
+            "directory".into(),
+            "--tile-size".into(),
+            "64".into(),
+        ]
+    };
+
+    let args = base(&full);
+    ok(
+        &run(&args.iter().map(String::as_str).collect::<Vec<_>>()),
+        "the plain run",
+    );
+    let mut args = base(&dropped);
+    args.push("--drop-blanks".into());
+    ok(
+        &run(&args.iter().map(String::as_str).collect::<Vec<_>>()),
+        "the --drop-blanks run",
+    );
+    let (all, kept) = (
+        files_with(&full, ".png").len(),
+        files_with(&dropped, ".png").len(),
+    );
+    assert!(
+        kept < all,
+        "--drop-blanks kept {kept} of {all} tiles, so it dropped nothing"
+    );
+
+    // One letter apart and opposite in effect, so they cannot both be given.
+    let mut args = base(&dir.join("both"));
+    args.extend(["--drop-blanks".into(), "--skip-blank".into()]);
+    let both = run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(code(&both), 2, "{}", stderr(&both));
+    assert!(stderr(&both).contains("--skip-blank"), "{}", stderr(&both));
+
+    // The old spelling is gone rather than kept as a near-twin.
+    let mut args = base(&dir.join("old"));
+    args.push("--skip-blanks".into());
+    let old = run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(code(&old), 2, "{}", stderr(&old));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// --retries / --skip-failed
+// ---------------------------------------------------------------------------
+
+/// A pyramid into the stub object store with its root pointed at a regular
+/// file, so every tile write fails.
+#[cfg(any(feature = "s3", feature = "object-store-sink"))]
+fn failing_store_run(dir: &Path, extra: &[&str]) -> Output {
+    let input = off_grid(dir);
+    let root = dir.join("not-a-directory");
+    std::fs::write(&root, b"a file where the store wants a directory").unwrap();
+    let mut args = vec![
+        "pyramid",
+        s(&input),
+        "--sink",
+        "s3://bucket/run",
+        "--object-store-root",
+        s(&root),
+        "--tile-size",
+        "64",
+    ];
+    args.extend_from_slice(extra);
+    run(&args)
+}
+
+#[cfg(any(feature = "s3", feature = "object-store-sink"))]
+#[test]
+fn retries_alone_retries_then_fails_the_run() {
+    let dir = unique_dir("retries-fail");
+    let out = failing_store_run(&dir, &["--retries", "1", "--retry-backoff-ms", "1"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "every tile write failed and --retries alone must not turn that into a \
+         successful run with holes:\n{}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(any(feature = "s3", feature = "object-store-sink"))]
+#[test]
+fn skip_failed_skips_the_tiles_and_still_exits_1() {
+    let dir = unique_dir("skip-failed");
+    let out = failing_store_run(
+        &dir,
+        &["--retries", "1", "--retry-backoff-ms", "1", "--skip-failed"],
+    );
+    let err = stderr(&out);
+    assert_eq!(code(&out), 1, "{err}");
+    assert!(
+        err.contains("skipped"),
+        "the run must say tiles were skipped rather than fail some other way:\n{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// --events json and features --json carry a schema version
+// ---------------------------------------------------------------------------
+
+#[test]
+fn events_json_lines_carry_a_schema_version_and_fixed_names() {
+    let dir = unique_dir("events-v");
+    let input = off_grid(&dir);
+    let tree = dir.join("tree");
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        s(&tree),
+        "--storage",
+        "directory",
+        "--tile-size",
+        "64",
+        "--events",
+        "json",
+    ]);
+    ok(&out, "the --events json run");
+    let lines: Vec<serde_json::Value> = stdout(&out)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?}: {e}")))
+        .collect();
+    assert!(!lines.is_empty(), "no events at all");
+    for line in &lines {
+        assert_eq!(line["v"], 1, "every event line carries \"v\":1: {line}");
+        assert!(line["event"].is_string(), "{line}");
+    }
+    let names: Vec<&str> = lines.iter().filter_map(|l| l["event"].as_str()).collect();
+    for expected in ["level_started", "tile_completed", "level_completed"] {
+        assert!(names.contains(&expected), "no {expected} in {names:?}");
+    }
+    assert_eq!(names.last(), Some(&"summary"), "{names:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn features_json_carries_a_schema_version() {
+    let out = run(&["features", "--json"]);
+    ok(&out, "features --json");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(json["v"], 1, "{json}");
+    assert!(json["features"].is_array(), "{json}");
+}
+
+/// The subscriber writes to stderr, so `--events json` on stdout stays one
+/// JSON object per line. The core emits spans and no events today, so this
+/// cell guards the writer rather than catching anything printed now.
+#[cfg(feature = "tracing")]
+#[test]
+fn trace_output_stays_off_the_events_stream() {
+    let dir = unique_dir("trace-stderr");
+    let input = off_grid(&dir);
+    let tree = dir.join("tree");
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        s(&tree),
+        "--storage",
+        "directory",
+        "--events",
+        "json",
+        "--trace-level",
+        "trace",
+    ]);
+    ok(&out, "the traced run");
+    for line in stdout(&out).lines() {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(line).is_ok(),
+            "stdout carries something that is not an event: {line:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// viprs verify: --centre, --drop-blanks, and the re-renders it cannot do
+// ---------------------------------------------------------------------------
+
+/// A centred raw tree, so a re-render would compare bytes.
+fn centred_tree(dir: &Path, input: &Path) -> PathBuf {
+    let tree = dir.join("centred");
+    ok(
+        &run(&[
+            "pyramid",
+            s(input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--format",
+            "raw",
+            "--tile-size",
+            "64",
+            "--centre",
+            "--checksum",
+        ]),
+        "the centred tree",
+    );
+    tree
+}
+
+#[test]
+fn verify_takes_centre_for_a_centred_tree() {
+    let dir = unique_dir("verify-centre");
+    let input = off_grid(&dir);
+    let centred = centred_tree(&dir, &input);
+
+    let told = run(&["verify", s(&centred), "--centre"]);
+    assert_eq!(code(&told), 0, "{}", stderr(&told));
+
+    // The core's re-render cannot lay a source out on a centred grid, so
+    // the combination is refused rather than reported as damage.
+    let rerender = run(&["verify", s(&centred), "--centre", "--source", s(&input)]);
+    assert_eq!(code(&rerender), 2, "{}", stderr(&rerender));
+    assert!(
+        stderr(&rerender).contains("re-render"),
+        "{}",
+        stderr(&rerender)
+    );
+
+    // Without the flag the re-render is laid out on the uncentred grid and
+    // every tile comes out shifted; the failure names the flag.
+    let untold = run(&["verify", s(&centred), "--source", s(&input)]);
+    assert_eq!(code(&untold), 1, "{}", stderr(&untold));
+    assert!(stderr(&untold).contains("--centre"), "{}", stderr(&untold));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_takes_drop_blanks_for_a_tree() {
+    let dir = unique_dir("verify-drop-tree");
+    let input = half_blank(&dir);
+    let tree = dir.join("tree");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--tile-size",
+            "64",
+            "--drop-blanks",
+            "--checksum",
+        ]),
+        "the --drop-blanks tree",
+    );
+
+    let told = run(&["verify", s(&tree), "--drop-blanks"]);
+    assert_eq!(code(&told), 0, "{}", stderr(&told));
+
+    let untold = run(&["verify", s(&tree)]);
+    assert_eq!(code(&untold), 1, "{}", stderr(&untold));
+    assert!(
+        stderr(&untold).contains("--drop-blanks"),
+        "a missing tile on a tree that may have dropped blanks must name the flag:\n{}",
+        stderr(&untold)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_takes_drop_blanks_for_an_archive() {
+    let dir = unique_dir("verify-drop-archive");
+    let input = half_blank(&dir);
+    let archive = dir.join("out.pmtiles");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&archive),
+            "--tile-size",
+            "64",
+            "--drop-blanks",
+        ]),
+        "the --drop-blanks archive",
+    );
+
+    let told = run(&["verify", s(&archive), "--drop-blanks"]);
+    assert_eq!(code(&told), 0, "{}", stderr(&told));
+
+    let untold = run(&["verify", s(&archive)]);
+    assert_eq!(code(&untold), 1, "{}", stderr(&untold));
+    assert!(
+        stderr(&untold).contains("--drop-blanks"),
+        "{}",
+        stderr(&untold)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_refuses_the_re_renders_it_cannot_do() {
+    let dir = unique_dir("verify-refuse");
+    let input = off_grid(&dir);
+    let tree = dir.join("tree");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--tile-size",
+            "64",
+            "--checksum",
+        ]),
+        "the tree",
+    );
+
+    // The core's re-render wants every planned tile on disk.
+    let dropped = run(&["verify", s(&tree), "--drop-blanks", "--source", s(&input)]);
+    assert_eq!(code(&dropped), 2, "{}", stderr(&dropped));
+    assert!(
+        stderr(&dropped).contains("re-render"),
+        "{}",
+        stderr(&dropped)
+    );
+
+    // A PDF needs the page, DPI and render mode the pyramid used, and verify
+    // has none of them.
+    let pdf = dir.join("in.pdf");
+    std::fs::write(&pdf, b"%PDF-1.4 not read").unwrap();
+    let from_pdf = run(&["verify", s(&tree), "--source", s(&pdf)]);
+    assert_eq!(code(&from_pdf), 2, "{}", stderr(&from_pdf));
+    assert!(stderr(&from_pdf).contains("PDF"), "{}", stderr(&from_pdf));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--source` decodes through the same input path as every other command,
+/// so a format this build left out is refused naming its feature.
+#[cfg(not(feature = "svg"))]
+#[test]
+fn verify_source_goes_through_the_single_input_path() {
+    let dir = unique_dir("verify-svg");
+    let input = off_grid(&dir);
+    let tree = dir.join("tree");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--checksum",
+        ]),
+        "the tree",
+    );
+    let svg = dir.join("in.svg");
+    std::fs::write(
+        &svg,
+        "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'/>",
+    )
+    .unwrap();
+    let out = run(&["verify", s(&tree), "--source", s(&svg)]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("--features svg"), "{}", stderr(&out));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A manifest that claims a huge source makes every planned tile "missing".
+/// The report stops at a cap instead of printing (and holding) all of them.
+#[test]
+fn verify_caps_the_problems_it_lists() {
+    let dir = unique_dir("verify-cap");
+    let input = off_grid(&dir);
+    let tree = dir.join("tree");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--checksum",
+        ]),
+        "the tree",
+    );
+    let manifest_path = tree.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["source"]["width"] = 100_000.into();
+    manifest["source"]["height"] = 100_000.into();
+    let text = serde_json::to_vec(&manifest).unwrap();
+    std::fs::write(&manifest_path, &text).unwrap();
+    let mut sibling = tree.clone().into_os_string();
+    sibling.push(".manifest.json");
+    if Path::new(&sibling).exists() {
+        std::fs::write(&sibling, &text).unwrap();
+    }
+
+    let out = run(&["verify", s(&tree)]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let lines = stderr(&out).lines().count();
+    assert!(
+        lines <= 60,
+        "verify printed {lines} lines for one bad manifest"
+    );
+    assert!(stderr(&out).contains("more"), "{}", stderr(&out));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// The paths that used to stay on the old driver
+// ---------------------------------------------------------------------------
+
+#[test]
+fn memory_budget_into_an_archive_says_it_does_not_apply() {
+    let dir = unique_dir("budget-archive");
+    let input = off_grid(&dir);
+    let archive = dir.join("out.pmtiles");
+    let out = run(&["pyramid", s(&input), s(&archive), "--memory-budget", "64"]);
+    ok(&out, "--memory-budget into an archive");
+    assert!(archive.is_file(), "no archive was written");
+    assert!(
+        stderr(&out).contains("--memory-budget"),
+        "a budget the archive path ignores must be named, not dropped:\n{}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(any(feature = "s3", feature = "object-store-sink"))]
+#[test]
+fn memory_budget_with_an_s3_sink_runs_through_the_pipeline() {
+    let dir = unique_dir("budget-s3");
+    let input = off_grid(&dir);
+    let root = dir.join("store");
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        "--sink",
+        "s3://bucket/run",
+        "--object-store-root",
+        s(&root),
+        "--memory-budget",
+        "64",
+    ]);
+    let err = stderr(&out);
+    assert!(!err.contains("not yet fully wired"), "{err}");
+    assert_eq!(code(&out), 0, "{err}");
+    assert!(
+        !files_with(&root.join("bucket"), ".png").is_empty(),
+        "nothing landed in the store"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_stops_a_memory_budget_run_with_130() {
+    let dir = unique_dir("budget-sigint");
+    let input = dir.join("big.ppm");
+    write_ppm(&input, 4096, 4096, |x, y| {
+        [(x * 7) as u8, (y * 13) as u8, (x ^ y) as u8]
+    });
+    let tree = dir.join("tree");
+    let mut child = viprs()
+        .args([
+            "pyramid",
+            s(&input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--tile-size",
+            "32",
+            "--memory-budget",
+            "1",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+
+    // Interrupt once tiles are landing, so the run is mid-flight.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        assert!(Instant::now() < deadline, "no tile appeared within 120 s");
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("the run finished ({status}) before it could be interrupted");
+        }
+        if !files_with(&tree, ".png").is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let killed = Command::new("sh")
+        .args(["-c", &format!("kill -INT {}", child.id())])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the run did not stop within 60 s of Ctrl-C");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "a --memory-budget run must stop at a tile boundary and exit 130, got {status}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// The stub object store stays out of sight
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_stub_store_flag_is_not_advertised() {
+    let out = run(&["pyramid", "--help"]);
+    ok(&out, "pyramid --help");
+    assert!(
+        !stdout(&out).contains("--object-store-root"),
+        "the local stub store is a test seam, not user surface"
+    );
+}
+
+#[cfg(any(feature = "s3", feature = "object-store-sink"))]
+#[test]
+fn an_s3_bucket_that_climbs_out_of_the_store_is_refused() {
+    let dir = unique_dir("bucket-dotdot");
+    let input = off_grid(&dir);
+    let root = dir.join("store");
+    std::fs::create_dir_all(&root).unwrap();
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        "--sink",
+        "s3://../escaped",
+        "--object-store-root",
+        s(&root),
+    ]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(
+        files_with(&dir, ".png").is_empty(),
+        "a refused run wrote tiles"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// --manifest-source-hash records the source file's bytes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn manifest_source_hash_hashes_the_file_bytes() {
+    let dir = unique_dir("source-hash");
+    let ppm = off_grid(&dir);
+    // Same pixels, different bytes: one PNG stored, one compressed.
+    let a = dir.join("a.png");
+    let b = dir.join("b.png");
+    ok(
+        &run(&["pngsave", s(&ppm), s(&a), "--compression", "0"]),
+        "pngsave 0",
+    );
+    ok(
+        &run(&["pngsave", s(&ppm), s(&b), "--compression", "9"]),
+        "pngsave 9",
+    );
+    assert_ne!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+
+    let hash_of = |input: &Path, tag: &str| -> String {
+        let tree = dir.join(tag);
+        ok(
+            &run(&[
+                "pyramid",
+                s(input),
+                s(&tree),
+                "--storage",
+                "directory",
+                "--manifest-source-hash",
+            ]),
+            tag,
+        );
+        let m: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(tree.join("manifest.json")).unwrap()).unwrap();
+        m["source"]["bytes_hash"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no source.bytes_hash in {m}"))
+            .to_string()
+    };
+    assert_ne!(
+        hash_of(&a, "tree-a"),
+        hash_of(&b, "tree-b"),
+        "two files with the same pixels got one hash, so it is not a hash of the file"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manifest_source_hash_refuses_stdin() {
+    let dir = unique_dir("source-hash-stdin");
+    let tree = dir.join("tree");
+    let out = viprs()
+        .args([
+            "pyramid",
+            "-",
+            s(&tree),
+            "--storage",
+            "directory",
+            "--manifest-source-hash",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(stderr(&out).contains("stdin"), "{}", stderr(&out));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Memory: the estimate counts what the flags cost, and the dedupe window
+// stops at what the plan can use
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ordered_emission_counts_the_level_rasters_in_the_memory_estimate() {
+    let dir = unique_dir("ordered-estimate");
+    let input = dir.join("big.ppm");
+    // 2048x2048: the base estimate is 32.0 MB (source plus its copy at four
+    // bytes a pixel), and holding every lower level as well adds a few more.
+    write_ppm(&input, 2048, 2048, |x, y| [x as u8, y as u8, 0]);
+    let plain = run(&[
+        "pyramid",
+        s(&input),
+        s(&dir.join("plain.pmtiles")),
+        "--memory-limit",
+        "33",
+    ]);
+    ok(&plain, "the plain run under --memory-limit 33");
+    let ordered = run(&[
+        "pyramid",
+        s(&input),
+        s(&dir.join("ordered.pmtiles")),
+        "--memory-limit",
+        "33",
+        "--ordered-emission",
+    ]);
+    assert_eq!(
+        code(&ordered),
+        1,
+        "--ordered-emission holds every level at once and the estimate must say so:\n{}",
+        stderr(&ordered)
+    );
+    assert!(
+        stderr(&ordered).contains("--memory-limit"),
+        "{}",
+        stderr(&ordered)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dedupe_memory_bytes_beyond_the_plan_is_lowered_and_said() {
+    let dir = unique_dir("dedupe-clamp");
+    let input = off_grid(&dir);
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        s(&dir.join("out.pmtiles")),
+        "--dedupe-memory-bytes",
+        "268435456",
+    ]);
+    ok(&out, "a huge --dedupe-memory-bytes");
+    let err = stderr(&out);
+    assert!(
+        err.contains("--dedupe-memory-bytes") && err.contains("lowered"),
+        "a window wider than the plan can use must be lowered, and the run must say so:\n{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

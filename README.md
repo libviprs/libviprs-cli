@@ -131,6 +131,28 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | [`--geo-scale`](https://libviprs.org/cli/#flag-geo-scale) | | Pixel scale as `"sx,sy"` (degrees/pixel) |
 | [`--render`](https://libviprs.org/cli/#flag-render) | off | Use PDFium for vector PDF rendering |
 
+#### Pipeline controls
+
+`--layout` picks the pyramid scheme. It is not `--pmtiles-layout`, which only decides where the tile bytes sit inside an archive.
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--pmtiles-layout tile-id\|arrival` | archive | `tile-id` (default) sorts at the end and is always clustered; `arrival` writes every byte once, in the order tiles came |
+| `--ordered-emission` | archive | Emit tiles in tile id order, so an `arrival` archive is byte-identical to the `tile-id` one |
+| `--dedupe-memory-bytes N` | archive | Writer's duplicate-tile window, about 65 bytes a tile; below 520 is refused, and above a slot for every planned tile it is lowered to that (the run says so) |
+| `--resume` / `--checkpoint-every N` / `--checkpoint-root DIR` | tree | Pick up an interrupted run; checkpoint every 1000 tiles by default |
+| `--retries N` / `--retry-backoff-ms MS` | all | Retry a failed write up to N times, then fail the run |
+| `--skip-failed` | all | Skip a tile that still fails and carry on; the run then exits 1 at the end, since the output has holes |
+| `--fail-fast` | all | Abort on the first failure (the default) |
+| `--checksum` / `--manifest-source-hash` | tree | Per-tile checksums (re-hashed before the run succeeds) and the BLAKE3 of the source file's bytes, in `manifest.json` |
+| `--region x,y,w,h` | all | Crop, then pyramid |
+| `--drop-blanks` | all | Leave blank tiles out altogether (`--skip-blank` writes a placeholder per blank tile instead; the two can't be combined) |
+| `--events none\|text\|json` | all | One line per engine event on stdout; each `json` line has `"v":1` and an `"event"` name |
+
+`--memory-budget` streams a fresh run into a tile tree. Into an archive or an object store, or with `--resume` or `--verify`, the run uses the monolithic engine and says so on stderr. `--trace-level` output goes to stderr too, so stdout carries nothing but `--events`.
+
+Ctrl-C stops any pyramid run at the next tile and exits 130. A tile tree it leaves behind finishes with the same command plus `--resume`, to exactly the bytes an uninterrupted run writes.
+
 See the [pyramid command page](https://libviprs.org/cli/#pyramid) for the complete flag list (including `--memory-budget` and other tuning knobs) and an interactive Rust program generator.
 
 ### [`viprs info`](https://libviprs.org/cli/#info)
@@ -222,7 +244,7 @@ $ viprs features
 pdfium
 
 $ viprs features --json
-{"features":["pdfium"]}
+{"v":1,"features":["pdfium"]}
 ```
 
 ### Loading and saving every codec
@@ -275,6 +297,23 @@ The password comes from, in order:
 ### `viprs geo`
 
 `viprs geo pixel-to-geo X Y`, `geo-to-pixel X Y` and `tile-center COL ROW --tile-size N` map points through a transform given as `--geo-origin X,Y --geo-scale X,Y` (the same pair `viprs pyramid` takes, through the same parser) or as the six affine coefficients `--affine a,b,c,d,e,f`. Each prints `x,y`; `geo-to-pixel` exits 1 for a transform that cannot be inverted. A value that isn't a finite number (NaN, `inf`, or something like `1e400` that overflows) is a usage error, exit 2, on `geo` and `pyramid` alike.
+
+### `viprs verify`
+
+Check a finished pyramid and name any tile that is missing or damaged. Exit 0 with a summary, or exit 1 with one line per bad tile.
+
+```bash
+# An archive: plan, structure, every tile present and decoded
+viprs verify blueprint.pmtiles
+
+# A tree written with --checksum: every tile against its recorded checksum
+viprs verify tiles/
+
+# Re-render from the input and compare (byte for byte for --format raw trees)
+viprs verify tiles/ --source blueprint.png
+```
+
+The manifest and the archive metadata don't record `--centre` or `--drop-blanks` yet, so a pyramid written with either needs the same flag on `verify`. Without it a centred pyramid gets checked against the uncentred grid, and every dropped blank shows up as a missing tile (the message says so). `--drop-blanks` can't be combined with `--source`, because the re-render expects every planned tile, and a PDF can't be a `--source`, because verify doesn't know the page, DPI or render mode the pyramid used. `--source` decodes through the same input path as every other command. A badly broken pyramid is reported up to 50 problems, then verify stops looking.
 
 ## PDF Handling
 
