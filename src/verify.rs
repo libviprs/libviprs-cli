@@ -34,12 +34,11 @@
 //! blanks read as one that did not. A missing tile on a pyramid that records
 //! neither says which flag to try.
 //!
-//! The re-render lays a source out on a centred grid (libviprs#1163), so
-//! `--source` checks a centred tree too. It still expects every planned tile
-//! on disk, so it cannot check a pyramid that dropped its blanks until
-//! libviprs#1174 lands: `--drop-blanks --source` is refused with exit 2, and
-//! `--source` on a tree whose manifest records dropped blanks exits 1 saying
-//! so, rather than listing every dropped blank as a missing tile.
+//! The re-render lays a source out on a centred grid (libviprs#1163) and,
+//! told the run skipped blanks, accepts a planned tile that is absent when
+//! its re-render is blank (libviprs#1174), so `--source` checks a centred
+//! tree and a `--drop-blanks` one as well as a plain one. A missing tile
+//! whose re-render has content still fails.
 //!
 //! Every failure names the tile. A verify that says "corrupt" and not where is
 //! a verify somebody has to rerun by hand to use. A pyramid with thousands of
@@ -94,7 +93,7 @@ pub(crate) struct VerifyArgs {
     /// A planned tile that is absent is then a dropped blank rather than a
     /// missing tile; every tile that is there is still checked. A pyramid
     /// records this itself, so the flag is only for one written before it
-    /// did. Cannot be combined with `--source` yet (libviprs#1174).
+    /// did.
     #[arg(long)]
     pub(crate) drop_blanks: bool,
 }
@@ -102,26 +101,18 @@ pub(crate) struct VerifyArgs {
 /// `viprs verify`: exit 0 and a summary on stdout, or exit 1 naming what is
 /// wrong on stderr.
 pub(crate) fn run(args: VerifyArgs) {
-    if let Some(source) = &args.source {
-        if args.drop_blanks {
-            usage_error(
-                "--drop-blanks cannot be combined with --source",
-                "the re-render expects every planned tile on disk, and a pyramid written \
-                 with --drop-blanks leaves its blank tiles out (libviprs#1174). Verify it \
-                 without --source; the manifest checksums still cover every tile it kept",
-            );
-        }
-        if is_pdf(source) {
-            usage_error(
-                &format!(
-                    "{} is a PDF, and verify cannot re-render one",
-                    source.display()
-                ),
-                "the re-render needs the page, DPI and render mode the pyramid used, and \
-                 verify has none of them. Extract the page as an image first \
-                 (`viprs pdf extract`) and pass that",
-            );
-        }
+    if let Some(source) = &args.source
+        && is_pdf(source)
+    {
+        usage_error(
+            &format!(
+                "{} is a PDF, and verify cannot re-render one",
+                source.display()
+            ),
+            "the re-render needs the page, DPI and render mode the pyramid used, and \
+             verify has none of them. Extract the page as an image first \
+             (`viprs pdf extract`) and pass that",
+        );
     }
     let told = Flags {
         centre: args.centre,
@@ -421,16 +412,6 @@ fn verify_tree(dir: &Path, source: Option<&Path>, told: Flags) {
     let g = &m.generation;
     let format: TileFormat = g.format;
     let flags = told.with_recorded(g.centre, g.skip_blanks);
-    if source.is_some() && flags.drop_blanks {
-        // `run` already refused --drop-blanks with --source, so this is the
-        // manifest's say-so: the input decides it, hence exit 1.
-        operational_error(&format!(
-            "{} was written with --drop-blanks (its manifest says so), and the re-render \
-             cannot check a pyramid that left its blank tiles out yet (libviprs#1174). \
-             Verify it without --source; the manifest checksums still cover every tile it kept",
-            dir.display()
-        ));
-    }
     let plan = plan_for(
         dir,
         m.source.width,
@@ -526,7 +507,9 @@ fn rerender(
     }
     let strips = RasterStripSource::new(&raster);
     let sink = FsSink::new(dir, plan.clone()).with_format(format);
-    let mut config = EngineConfig::default().with_blank_tile_strategy(m.generation.blank_strategy);
+    let mut config = EngineConfig::default()
+        .with_blank_tile_strategy(m.generation.blank_strategy)
+        .skip_blanks(flags.drop_blanks);
     config.background_rgb = m.generation.background_rgb;
     // `viprs pyramid` hands the core the BLAKE3 of the input file on every
     // tree run from a file, and the core folds it into the plan hash the

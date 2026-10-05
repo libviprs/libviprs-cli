@@ -91,10 +91,9 @@ the `version` in `Cargo.toml`.
   archive metadata, so a pyramid written with `--centre` or `--drop-blanks`
   verifies without repeating the flag. The flags stay as overrides for a
   pyramid written before the core recorded them, and only ever add.
-  `--centre --source` is no longer refused: the re-render checks a centred
-  tree. `--drop-blanks --source` is still refused (exit 2), and `--source` on
-  a tree that records dropped blanks exits 1, until libviprs#1174 lets the
-  re-render skip a dropped blank (#85).
+  `--centre --source` and `--drop-blanks --source` are no longer refused: the
+  re-render checks a centred tree and one that dropped its blanks, and still
+  fails a missing tile whose re-render has content (#85).
 - An op command that refuses a value on the command line alone now exits 2,
   the same as clap and the built-ins, with a hint naming the op's `--help`.
   That covers inverted or NaN `clamp` bounds, a `gamma --exponent` out of
