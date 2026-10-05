@@ -13,9 +13,10 @@ use std::time::Instant;
 use clap::{ArgGroup, Parser, ValueEnum};
 use libviprs::{
     BlankTileStrategy, ChecksumAlgo, ChecksumMode, CollectingObserver, DedupeStrategy,
-    EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink, GeoCoord, GeoTransform, Layout,
-    ManifestBuilder, PmTilesSink, PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy,
-    TileFormat, extract_page_image,
+    DirectoryPyramidReader, EngineBuilder, EngineConfig, EngineKind, FailurePolicy, FsSink,
+    GeoCoord, GeoTransform, Layout, ManifestBuilder, ManifestV1, MigrateOptions, PmTilesSink,
+    PyramidPlanner, Raster, ResumeMode, ResumePolicy, RetryPolicy, TileFormat, extract_page_image,
+    migrate_to_pmtiles,
     streaming::{BudgetPolicy, compute_strip_height, estimate_streaming_memory},
     streaming_mapreduce::{compute_inflight_strips, estimate_mapreduce_peak_memory},
 };
@@ -514,6 +515,9 @@ enum PmtilesCommand {
 
     /// Unpack an archive back into a loose `{z}/{x}/{y}` tile tree.
     Extract(PmtilesExtractArgs),
+
+    /// Pack a loose `{z}/{x}/{y}` tile tree into an archive.
+    Pack(PmtilesPackArgs),
 }
 
 #[derive(Parser)]
@@ -554,6 +558,76 @@ struct PmtilesExtractArgs {
 
     /// Directory to write the `{z}/{x}/{y}.{ext}` tree into.
     output: PathBuf,
+}
+
+/// `viprs pmtiles pack`: the inverse of `extract`.
+///
+/// Every plan field is either read from a manifest or named on the command
+/// line, and the two routes are mutually exclusive so that two descriptions of
+/// one plan can never disagree. There is no third route and there must not be
+/// one: see the doc on [`run_pmtiles_pack`].
+#[derive(Parser)]
+#[command(group(
+    ArgGroup::new("plan_from_manifest")
+        .arg("manifest")
+        .conflicts_with("plan_explicit"),
+))]
+#[command(group(
+    ArgGroup::new("plan_explicit")
+        .args(["width", "height", "tile_size", "overlap", "layout", "format"])
+        .multiple(true),
+))]
+struct PmtilesPackArgs {
+    /// The `{z}/{x}/{y}` tile tree to pack.
+    input: PathBuf,
+
+    /// The `.pmtiles` archive to write.
+    archive: PathBuf,
+
+    /// Take the plan from the manifest.json of a `viprs pyramid` run that
+    /// wrote one (for example with `--manifest-emit-checksums`).
+    ///
+    /// That run puts it inside the tree and beside it. With neither this nor
+    /// any plan flag given, `<INPUT>/manifest.json` is used when it is there
+    /// (and under 16 MiB), and the run says so.
+    #[arg(long)]
+    manifest: Option<PathBuf>,
+
+    /// Source image width in pixels.
+    ///
+    /// Deliberately has no default. A tree cannot be packed without knowing
+    /// the grid that placed it, and a default here would be a guess wearing a
+    /// number.
+    #[arg(long)]
+    width: Option<u32>,
+
+    /// Source image height in pixels. No default, for the same reason.
+    #[arg(long)]
+    height: Option<u32>,
+
+    /// Tile size in pixels.
+    #[arg(long)]
+    tile_size: Option<u32>,
+
+    /// Tile overlap in pixels.
+    #[arg(long)]
+    overlap: Option<u32>,
+
+    /// Tile layout that placed the tree.
+    #[arg(long)]
+    layout: Option<LayoutArg>,
+
+    /// Encoding the stored tiles are in.
+    #[arg(long)]
+    format: Option<FormatArg>,
+
+    /// The tree was written with the image centred in the grid.
+    ///
+    /// Outside the manifest group on purpose: `GenerationSettings` records
+    /// tile size, overlap, layout and format but NOT centring, so a manifest
+    /// cannot answer this and a centred tree still needs to be told.
+    #[arg(long)]
+    centre: bool,
 }
 
 /// CLI representation of the checksum algorithm (maps to [`ChecksumAlgo`]).
@@ -1637,6 +1711,7 @@ fn run_pmtiles(args: PmtilesArgs) {
         PmtilesCommand::Tile(a) => run_pmtiles_tile(a),
         PmtilesCommand::Verify(a) => run_pmtiles_verify(a),
         PmtilesCommand::Extract(a) => run_pmtiles_extract(a),
+        PmtilesCommand::Pack(a) => run_pmtiles_pack(a),
     }
 }
 
@@ -1843,6 +1918,509 @@ fn run_pmtiles_extract(args: PmtilesExtractArgs) {
     }
 
     println!("Extracted {written} tiles to {}", args.output.display());
+}
+
+/// `viprs pmtiles pack <tree> <archive>`: the inverse of `extract`.
+///
+/// **This command will not guess a plan, and this is where somebody proposes a
+/// `--guess` flag.** `DirectoryPyramidReader::try_open` refuses to infer one
+/// because a directory of tiles does not say what its level indices mean, how
+/// big a tile is, or which layout placed it. Guess wrong about the layout, the
+/// level base, the tile size or the row axis and every tile lands at the wrong
+/// tile id, producing a structurally perfect archive that `viprs pmtiles
+/// verify` passes and that a round trip through our own reader cannot catch,
+/// because the reader resolves through the same wrong plan. Getting the row
+/// axis wrong flips y, and the archive looks right until it is opened over a
+/// real basemap. See libviprs#1118.
+///
+/// So the plan arrives one of two ways and they are mutually exclusive at parse
+/// time: a manifest, which is reporting rather than guessing, or the explicit
+/// flags, where `--width` and `--height` have no defaults so the command cannot
+/// run blind.
+///
+/// The refusals ask the library's own gates rather than restating them, so
+/// they cannot drift: `layout_is_zxy` for a layout PMTiles cannot address,
+/// `TileType::try_from_tile_format` for `TileFormat::Raw`, and
+/// `tile_coord_to_zxy` on the top level's far corner for a plan too deep to
+/// address. They run before the tree is opened, which is what makes a bad plan
+/// on the command line a usage error (2) rather than a failure halfway into a
+/// walk of billions of coordinates. A plan out of a manifest that fails the
+/// same gates is an operational failure (1).
+///
+/// Packing nothing is a failure too. A wrong `--format` or the wrong
+/// directory visits every coordinate, finds nothing, and the writer would
+/// publish a valid empty archive; this exits 1 instead and removes that
+/// archive. Absent tiles and tile-shaped files the plan never visited are
+/// warnings, because a `--skip-blank` tree legitimately has holes.
+///
+/// An interrupted pack simply restarts: the writer stages to a temp file and
+/// renames, so a half-done archive never wears the final name.
+fn run_pmtiles_pack(args: PmtilesPackArgs) {
+    // Where the plan came from decides what a bad plan is. Named on the
+    // command line it is the person's typo and a usage error (2); read out of
+    // a manifest it is a file that does not say what it should (1).
+    enum PlanSource {
+        Flags,
+        Manifest(PathBuf),
+        TreeManifest(PathBuf),
+    }
+
+    let explicit = args.width.is_some()
+        || args.height.is_some()
+        || args.tile_size.is_some()
+        || args.overlap.is_some()
+        || args.layout.is_some()
+        || args.format.is_some();
+    let source = match args.manifest.clone() {
+        Some(path) => PlanSource::Manifest(path),
+        None if !explicit => match manifest_inside_tree(&args.input) {
+            Some(path) => PlanSource::TreeManifest(path),
+            None => PlanSource::Flags,
+        },
+        None => PlanSource::Flags,
+    };
+    let from_flags = matches!(source, PlanSource::Flags);
+    let refuse = |message: &str, hint: &str| refuse_pack_plan(from_flags, message, hint);
+
+    let (width, height, tile_size, overlap, layout, format) = match &source {
+        PlanSource::Manifest(path) | PlanSource::TreeManifest(path) => {
+            let manifest = match ManifestV1::read_from(path) {
+                Ok(m) => m,
+                Err(e) => operational_error(&format!("reading {}: {e}", path.display())),
+            };
+            (
+                manifest.source.width,
+                manifest.source.height,
+                manifest.generation.tile_size,
+                manifest.generation.overlap,
+                manifest.generation.layout,
+                manifest.generation.format,
+            )
+        }
+        PlanSource::Flags => {
+            let (Some(width), Some(height)) = (args.width, args.height) else {
+                usage_error(
+                    "pack needs the grid that placed the tree, and --width/--height were not given",
+                    "pass --width and --height (plus --tile-size, --overlap, --layout and --format \
+                     if they were not the defaults), or point --manifest at the manifest.json a \
+                     `viprs pyramid` run wrote (for example with --manifest-emit-checksums). \
+                     There is no inference here on purpose: a wrong plan produces an archive that \
+                     verifies and is still wrong",
+                );
+            };
+            let layout: Layout = args.layout.unwrap_or(LayoutArg::Xyz).into();
+            let format = match args.format.unwrap_or(FormatArg::Png) {
+                // Quality does not describe an existing tile, it describes one
+                // being encoded, and pack copies payloads through byte for
+                // byte. The library reads the tile type off this and nothing
+                // re-encodes, so the number is inert.
+                FormatArg::Jpeg => TileFormat::Jpeg { quality: 80 },
+                FormatArg::Png => TileFormat::Png,
+                FormatArg::Raw => TileFormat::Raw,
+                FormatArg::Webp => TileFormat::Webp,
+            };
+            (
+                width,
+                height,
+                args.tile_size.unwrap_or(256),
+                args.overlap.unwrap_or(0),
+                layout,
+                format,
+            )
+        }
+    };
+
+    let planner = match PyramidPlanner::new(width, height, tile_size, overlap, layout) {
+        Ok(p) => p.with_centre(args.centre),
+        Err(e) => refuse(
+            &format!("that plan does not describe a pyramid: {e}"),
+            "check --width, --height, --tile-size and --overlap",
+        ),
+    };
+
+    // The three refusals below are the library's own gates, asked up front
+    // rather than restated, so they cannot drift from what the writer checks.
+    // Asking them here, before anything is opened, is what makes them usage
+    // errors instead of a failure halfway into a walk.
+    if !libviprs::sink_pmtiles::layout_is_zxy(layout) {
+        refuse(
+            &format!(
+                "the {} layout is not addressed by (z, x, y), so PMTiles has no tile ids for it",
+                layout_name(layout)
+            ),
+            "only an xyz or google tree can be packed",
+        );
+    }
+    if let Err(e) = libviprs::pmtiles::TileType::try_from_tile_format(format) {
+        refuse(
+            &format!(
+                "--format {} cannot go in an archive: {e}",
+                format_name(format)
+            ),
+            "PMTiles stores encoded tiles; pack a png, jpeg or webp tree",
+        );
+    }
+    let plan = planner.plan();
+    // Every other level is smaller than the top one, so the top level's far
+    // corner is the one coordinate that decides whether the whole plan is
+    // addressable. Checked before the walk: `--width 4294967295 --tile-size 1`
+    // plans fine and would otherwise stat billions of absent coordinates
+    // before the writer ever saw a tile it could refuse.
+    if let Some(top) = plan.levels.iter().max_by_key(|l| l.level) {
+        let corner = libviprs::planner::TileCoord {
+            level: top.level,
+            col: top.cols.saturating_sub(1),
+            row: top.rows.saturating_sub(1),
+        };
+        if let Err(e) = libviprs::sink_pmtiles::tile_coord_to_zxy(corner) {
+            refuse(
+                &format!(
+                    "that plan's top level is zoom {} with {}x{} tiles, which PMTiles cannot \
+                     address: {e}",
+                    top.level, top.cols, top.rows
+                ),
+                "check --width, --height and --tile-size for a slipped digit",
+            );
+        }
+    }
+
+    match &source {
+        PlanSource::Flags => println!("Plan (from the command line):"),
+        PlanSource::Manifest(path) => println!("Plan (from {}):", path.display()),
+        PlanSource::TreeManifest(path) => {
+            println!("Plan (from {}, found in the tree):", path.display())
+        }
+    }
+    println!("  width x height      : {width} x {height}");
+    println!("  tile size           : {tile_size}");
+    println!("  overlap             : {overlap}");
+    println!("  layout              : {}", layout_name(layout));
+    println!("  format              : {}", format_name(format));
+    println!(
+        "  centre              : {}",
+        if args.centre { "yes" } else { "no" }
+    );
+
+    let inner = match DirectoryPyramidReader::try_open(&args.input, plan.clone(), format) {
+        Ok(r) => r,
+        Err(e) => operational_error(&format!("opening {}: {e}", args.input.display())),
+    };
+
+    // Counted before the walk, so a tree with nothing of this format in it is
+    // refused before an archive exists, and so the walk's own counts can be
+    // held against what is really on disk afterwards.
+    let census = tile_shaped_files(&args.input, format.extension());
+    if census.matching == 0 {
+        operational_error(&format!(
+            "no tiles to pack: {} holds no {{z}}/{{x}}/{{y}}.{} files{}",
+            args.input.display(),
+            format.extension(),
+            census.describe_others(),
+        ));
+    }
+
+    let reader = GuardedTreeReader::new(inner, tile_size, overlap);
+    let report = match migrate_to_pmtiles(&reader, &plan, &args.archive, MigrateOptions::default())
+    {
+        Ok(r) => r,
+        Err(e) => operational_error(&format!("packing {}: {e}", args.input.display())),
+    };
+
+    if report.tiles_written == 0 {
+        // The writer has already published a valid, empty archive under the
+        // final name. It is this run's own output, and leaving it there is how
+        // an empty archive ends up being served.
+        let _ = std::fs::remove_file(&report.out_path);
+        operational_error(&format!(
+            "no tiles were packed: the plan visited {} coordinates and found none of the {} \
+             .{} files in {}, so the plan does not match the tree{}",
+            report.coords_visited,
+            census.matching,
+            format.extension(),
+            args.input.display(),
+            census.describe_others(),
+        ));
+    }
+
+    println!("Wrote {}", report.out_path.display());
+    println!("  coordinates visited : {}", report.coords_visited);
+    println!("  tiles written       : {}", report.tiles_written);
+    println!("  tiles absent        : {}", report.tiles_absent);
+    println!("  distinct payloads   : {}", report.distinct_payloads);
+    println!(
+        "  tile format         : {}",
+        format_name(report.tile_format)
+    );
+
+    // Warnings, not failures: a --skip-blank tree legitimately has holes, and
+    // the archive that was written is exactly what the plan found.
+    if report.tiles_absent > 0 {
+        eprintln!(
+            "Warning: {} of the {} tiles the plan names were absent from the tree. That is \
+             expected for a tree written with --skip-blank; otherwise check the plan.",
+            report.tiles_absent, report.coords_visited
+        );
+    }
+    let unvisited = census.matching.saturating_sub(report.tiles_written);
+    if unvisited > 0 {
+        eprintln!(
+            "Warning: {unvisited} tile-shaped .{} file(s) in the tree were never visited by the \
+             plan and are not in the archive, so the plan probably does not match the tree.",
+            format.extension()
+        );
+    }
+    if !census.others.is_empty() {
+        eprintln!(
+            "Warning: the tree also holds tile-shaped files in another format, which were not \
+             packed{}",
+            census.describe_others()
+        );
+    }
+}
+
+/// Refuse a pack plan as a usage error when it came off the command line, or
+/// as an operational failure when a manifest supplied it.
+fn refuse_pack_plan(from_flags: bool, message: &str, hint: &str) -> ! {
+    if from_flags {
+        usage_error(message, hint)
+    } else {
+        operational_error(message)
+    }
+}
+
+/// The largest `manifest.json` pack will pick up from inside a tree on its
+/// own. A real one is a few hundred bytes, plus a checksum line per tile when
+/// checksums were asked for, so this is generous; past it the file is not
+/// read unasked, and `--manifest` still takes it explicitly.
+const TREE_MANIFEST_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// `<tree>/manifest.json`, when it is a regular file small enough to read
+/// unasked. A link, a directory or an oversized file is passed over with a
+/// warning rather than followed.
+fn manifest_inside_tree(tree: &Path) -> Option<PathBuf> {
+    let path = tree.join("manifest.json");
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.is_file() {
+        eprintln!(
+            "Warning: {} is not a regular file, so it was not used as the plan",
+            path.display()
+        );
+        return None;
+    }
+    if meta.len() > TREE_MANIFEST_MAX_BYTES {
+        eprintln!(
+            "Warning: {} is {} bytes, more than pack reads unasked; pass it with --manifest to use it",
+            path.display(),
+            meta.len()
+        );
+        return None;
+    }
+    Some(path)
+}
+
+fn layout_name(layout: Layout) -> String {
+    format!("{layout:?}").to_lowercase()
+}
+
+fn format_name(format: TileFormat) -> &'static str {
+    match format {
+        TileFormat::Png => "png",
+        TileFormat::Jpeg { .. } => "jpeg",
+        TileFormat::Raw => "raw",
+        TileFormat::Webp => "webp",
+    }
+}
+
+/// What a tree holds that is shaped like a `{z}/{x}/{y}.{ext}` tile.
+struct TileCensus {
+    /// Files under the extension the plan reads.
+    matching: u64,
+    /// Files under any other extension, by extension.
+    others: std::collections::BTreeMap<String, u64>,
+}
+
+impl TileCensus {
+    fn describe_others(&self) -> String {
+        if self.others.is_empty() {
+            return String::new();
+        }
+        let listed: Vec<String> = self
+            .others
+            .iter()
+            .map(|(ext, n)| format!("{n} .{ext}"))
+            .collect();
+        format!(
+            " (it does hold {} tile-shaped files: pass the --format they are in)",
+            listed.join(", ")
+        )
+    }
+}
+
+/// Count the tile-shaped files under `root` without following a link.
+///
+/// Three levels deep and numeric at every level, which is the shape both
+/// addressable layouts write (`z/x/y` and google's `z/y/x`). A symlinked file
+/// counts, so the tile read that refuses it is reached; a symlinked directory
+/// is not descended into.
+fn tile_shaped_files(root: &Path, ext: &str) -> TileCensus {
+    let mut census = TileCensus {
+        matching: 0,
+        others: std::collections::BTreeMap::new(),
+    };
+    let numeric = |name: &std::ffi::OsStr| {
+        name.to_str()
+            .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let dirs = |dir: &Path| -> Vec<std::fs::DirEntry> {
+        std::fs::read_dir(dir)
+            .map(|entries| entries.flatten().collect())
+            .unwrap_or_default()
+    };
+    for z in dirs(root) {
+        if !(z.file_type().is_ok_and(|t| t.is_dir()) && numeric(&z.file_name())) {
+            continue;
+        }
+        for x in dirs(&z.path()) {
+            if !(x.file_type().is_ok_and(|t| t.is_dir()) && numeric(&x.file_name())) {
+                continue;
+            }
+            for y in dirs(&x.path()) {
+                if y.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                let path = y.path();
+                let (Some(stem), Some(found)) = (path.file_stem(), path.extension()) else {
+                    continue;
+                };
+                if !numeric(stem) {
+                    continue;
+                }
+                match found.to_str() {
+                    Some(e) if e == ext => census.matching += 1,
+                    Some(e) => *census.others.entry(e.to_string()).or_default() += 1,
+                    None => {}
+                }
+            }
+        }
+    }
+    census
+}
+
+/// A [`DirectoryPyramidReader`] whose tile reads take a tile path as it is.
+///
+/// The library reader is a plain `fs::read`, which follows a symlink to
+/// wherever it points and reads a FIFO or `/dev/zero` until it blocks or runs
+/// out of memory. Pack copies whatever it reads into an archive somebody else
+/// will serve, so every component of a tile path is checked with
+/// `symlink_metadata`, anything that is not a regular file is refused with the
+/// reason, and one tile is capped at what a tile of the plan's size could
+/// weigh. Everything else is the library reader's.
+struct GuardedTreeReader {
+    inner: DirectoryPyramidReader,
+    max_tile_bytes: u64,
+    tile_side: u64,
+}
+
+impl GuardedTreeReader {
+    fn new(inner: DirectoryPyramidReader, tile_size: u32, overlap: u32) -> Self {
+        let tile_side = u64::from(tile_size) + 2 * u64::from(overlap);
+        // 16 bytes a pixel covers a 16-bit RGBA PNG stored with no
+        // compression at all, the heaviest tile any supported format can
+        // encode, and the 1 MiB covers container overhead on a small tile.
+        let max_tile_bytes = tile_side
+            .saturating_mul(tile_side)
+            .saturating_mul(16)
+            .saturating_add(1024 * 1024);
+        Self {
+            inner,
+            max_tile_bytes,
+            tile_side,
+        }
+    }
+
+    fn refused(path: &Path, why: &str) -> libviprs::PyramidReadError {
+        libviprs::PyramidReadError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} {why}", path.display()),
+        ))
+    }
+}
+
+impl libviprs::PyramidReader for GuardedTreeReader {
+    fn describe(&self) -> Result<libviprs::PyramidDescription, libviprs::PyramidReadError> {
+        self.inner.describe()
+    }
+
+    fn tile(
+        &self,
+        coord: libviprs::planner::TileCoord,
+    ) -> Result<Option<Vec<u8>>, libviprs::PyramidReadError> {
+        use std::io::Read;
+
+        let format = self.inner.tile_format().unwrap_or(TileFormat::Png);
+        let Some(relative) = self.inner.plan().tile_path(coord, format.extension()) else {
+            return Ok(None);
+        };
+        let relative = PathBuf::from(relative);
+        let components: Vec<_> = relative.components().collect();
+        let mut path = self.inner.base_dir().to_path_buf();
+        for (i, component) in components.iter().enumerate() {
+            path.push(component);
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+            if meta.file_type().is_symlink() {
+                return Err(Self::refused(
+                    &path,
+                    "is a symlink; pack reads tiles as regular files and does not follow links",
+                ));
+            }
+            if i + 1 < components.len() {
+                if !meta.is_dir() {
+                    // A file where a level directory should be holds no tile
+                    // for this coordinate.
+                    return Ok(None);
+                }
+                continue;
+            }
+            if !meta.is_file() {
+                return Err(Self::refused(&path, "is not a regular file"));
+            }
+            if meta.len() > self.max_tile_bytes {
+                return Err(Self::refused(
+                    &path,
+                    &format!(
+                        "is {} bytes, larger than the {} bytes any {}px tile can weigh",
+                        meta.len(),
+                        self.max_tile_bytes,
+                        self.tile_side
+                    ),
+                ));
+            }
+        }
+
+        // Read through a cap as well as checking the length, because the file
+        // can grow between the stat and the read.
+        let file = std::fs::File::open(&path)?;
+        let mut bytes = Vec::new();
+        file.take(self.max_tile_bytes + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > self.max_tile_bytes {
+            return Err(Self::refused(
+                &path,
+                &format!(
+                    "grew past the {} bytes any {}px tile can weigh while it was read",
+                    self.max_tile_bytes, self.tile_side
+                ),
+            ));
+        }
+        Ok(Some(bytes))
+    }
+
+    fn tile_format(&self) -> Option<TileFormat> {
+        self.inner.tile_format()
+    }
 }
 
 // ---------------------------------------------------------------------------
