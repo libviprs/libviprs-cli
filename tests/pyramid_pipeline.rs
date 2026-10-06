@@ -686,6 +686,105 @@ fn verify_source_names_a_different_source_99() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The top level of a tree: its highest-numbered level directory.
+fn top_level_of(tree: &Path) -> u32 {
+    std::fs::read_dir(tree)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .max()
+        .expect("the tree has numbered level directories")
+}
+
+/// The off-grid input with one pixel nudged, inside top-level tile 2_1 at a
+/// 64-pixel tile size.
+fn nudged_off_grid(dir: &Path) -> PathBuf {
+    let path = dir.join("nudged.ppm");
+    write_ppm(&path, 200, 100, |x, y| {
+        let p = [x as u8, y as u8, (x + y) as u8];
+        if (x, y) == (150, 70) {
+            [p[0].wrapping_add(17), p[1], p[2]]
+        } else {
+            p
+        }
+    });
+    path
+}
+
+/// When the manifest records the source digest (`--manifest-source-hash`),
+/// verify re-renders a different source with the recorded one, so the plan
+/// hash matches and the failure names the tile (libviprs-cli#103).
+#[test]
+fn verify_source_names_the_changed_tile_when_the_manifest_records_the_digest_103() {
+    let dir = unique_dir("verify-103-named");
+    let input = off_grid(&dir);
+    let tree = dir.join("recorded");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--format",
+            "raw",
+            "--tile-size",
+            "64",
+            "--checksum",
+            "--manifest-source-hash",
+        ]),
+        "the tree with a recorded digest",
+    );
+    ok(
+        &run(&["verify", s(&tree), "--source", s(&input)]),
+        "verify against its own source",
+    );
+    let other = nudged_off_grid(&dir);
+    let out = run(&["verify", s(&tree), "--source", s(&other)]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let tile = format!("{}/2_1.raw", top_level_of(&tree));
+    assert!(
+        stderr(&out).contains(&tile) && stderr(&out).contains("does not match a re-render"),
+        "verify --source must name {tile}:\n{}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Without a recorded digest verify can't re-render a different source, and
+/// says how to get a tree it can (libviprs-cli#103).
+#[test]
+fn verify_source_points_at_manifest_source_hash_103() {
+    let dir = unique_dir("verify-103-hint");
+    let input = off_grid(&dir);
+    let tree = dir.join("unrecorded");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&tree),
+            "--storage",
+            "directory",
+            "--format",
+            "raw",
+            "--tile-size",
+            "64",
+            "--checksum",
+        ]),
+        "the tree without a recorded digest",
+    );
+    let other = nudged_off_grid(&dir);
+    let out = run(&["verify", s(&tree), "--source", s(&other)]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("made from a different source")
+            && stderr(&out).contains("--manifest-source-hash"),
+        "{}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--source` decodes through the same input path as every other command,
 /// so a format this build left out is refused naming its feature.
 #[cfg(not(feature = "svg"))]

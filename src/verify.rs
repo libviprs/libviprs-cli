@@ -508,15 +508,23 @@ fn rerender(
     // `viprs pyramid` hands the core the BLAKE3 of the input file on every
     // tree run from a file, and the core folds it into the plan hash the
     // checkpoint records (#88), so the re-render has to fold in the same
-    // digest. A tree written from stdin, or before #88, has none, so a
-    // mismatch with the digest gets one more try without it.
-    let digest = crate::pipeline::hash_source_file(source)
-        .unwrap_or_else(|e| operational_error(&format!("hashing {}: {e}", source.display())));
+    // digest. The manifest records that digest under --manifest-source-hash,
+    // and when it does it wins over the --source file's own: a different file
+    // then still reaches the pixel comparison, which names the tile (#103).
+    // A tree written from stdin, or before #88, has no digest, so a mismatch
+    // with one gets one more try without it.
+    let recorded = m.source.bytes_hash.clone();
+    let digest = match &recorded {
+        Some(d) => d.clone(),
+        None => crate::pipeline::hash_source_file(source)
+            .unwrap_or_else(|e| operational_error(&format!("hashing {}: {e}", source.display()))),
+    };
     let hashed = config.clone().with_source_content_hash(digest);
     let mut outcome = verify_from_strip_source(&strips, plan, &sink, &hashed, &NoopObserver);
     if matches!(outcome, Err(EngineError::PlanHashMismatch { .. })) {
         outcome = verify_from_strip_source(&strips, plan, &sink, &config, &NoopObserver);
     }
+    let plan_differs = matches!(outcome, Err(EngineError::PlanHashMismatch { .. }));
     let problem = match outcome {
         Ok(_) => return,
         Err(EngineError::ChecksumMismatch { tile, .. }) => {
@@ -540,6 +548,13 @@ fn rerender(
         Err(e) => fail_one(&format!("{}: {e}", dir.display())),
     };
     eprintln!("Error: {problem}");
+    if plan_differs && recorded.is_none() {
+        eprintln!(
+            "Hint: the manifest does not record the source digest, so verify cannot \
+             re-render a different file and name the tiles that differ. A tree written with \
+             --manifest-source-hash records it"
+        );
+    }
     if !flags.centre {
         eprintln!(
             "Hint: a pyramid written with --centre sits on a different grid. This tree's \
