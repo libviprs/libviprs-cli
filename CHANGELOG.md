@@ -141,6 +141,12 @@ the `version` in `Cargo.toml`.
 
 ### Fixed
 
+- `verify TREE --source OTHER` names the tile a different source changes
+  again, for a tree whose manifest records the source digest
+  (`--manifest-source-hash`): the re-render uses the recorded digest, so the
+  plan hash matches and the comparison reaches the pixels. Without one it
+  says the tree was made from a different source and points at that flag
+  (#103).
 - `verify TREE --source INPUT` passes a tree written from a file again. Since
   #88 the run folds the input's digest into the plan hash its checkpoint
   records, and the re-render left it out, so every such tree failed with a
