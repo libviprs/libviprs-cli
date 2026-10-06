@@ -8,6 +8,10 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
+- `pyramid --events` now prints `tile_skipped_on_resume` for each tile a
+  `--resume` run found already done, and `retry_attempted` (with the tile and
+  its `attempt`, from 1) for each retry `--retries` makes. The core never sent
+  either until libviprs#1166, so this needs a core at 27bf4417 or later (#98).
 - `viprs info --json`, one JSON object per file in the `{"v": 1, ...}` shape
   `features --json` uses, with the exact decoded size (#82).
 - `viprs pyramid --format webp`, which writes lossless WebP tiles (#60).

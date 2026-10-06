@@ -1364,6 +1364,135 @@ fn resume_refuses_a_different_source_of_the_same_size() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Every line of an `--events json` run's stdout, parsed.
+fn event_lines(out: &Output) -> Vec<serde_json::Value> {
+    stdout(out)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?}: {e}")))
+        .collect()
+}
+
+/// A resumed run prints one `tile_skipped_on_resume` line for each tile the
+/// checkpoint already held, so those lines and the `tile_completed` ones
+/// together cover every tile of the plan exactly once (#98, once
+/// libviprs#1166 made the core emit them). The summary's `tiles_skipped`
+/// is the blank-tile count and does not include resumed tiles, so it is not
+/// the number to match here.
+#[cfg(unix)]
+#[test]
+fn resume_events_name_every_tile_it_skipped() {
+    let dir = unique_dir("resume-skipped-events");
+    let input = dir.join("input.ppm");
+    square(&input, false);
+    let tree = dir.join("tree");
+    interrupt_tree_run(&input, &tree, 20);
+
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        s(&tree),
+        "--storage",
+        "directory",
+        "--tile-size",
+        "32",
+        "--concurrency",
+        "1",
+        "--resume",
+        "--events",
+        "json",
+    ]);
+    ok(&out, "the resumed --events json run");
+    let lines = event_lines(&out);
+    let skipped: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == "tile_skipped_on_resume")
+        .collect();
+    assert!(
+        !skipped.is_empty(),
+        "the interrupted run had finished tiles, so the resume must skip some"
+    );
+    let planned: u64 = lines
+        .iter()
+        .filter(|l| l["event"] == "level_started")
+        .map(|l| l["tile_count"].as_u64().unwrap())
+        .sum();
+    let completed = lines
+        .iter()
+        .filter(|l| l["event"] == "tile_completed")
+        .count();
+    assert_eq!(
+        (skipped.len() + completed) as u64,
+        planned,
+        "every planned tile is either skipped on resume or completed, once"
+    );
+    for line in &skipped {
+        for field in ["level", "col", "row"] {
+            assert!(line[field].is_u64(), "no {field} on {line}");
+        }
+    }
+    // A tile is either skipped or completed in a resumed run, never both.
+    let key = |l: &serde_json::Value| (l["level"].as_u64(), l["col"].as_u64(), l["row"].as_u64());
+    for done in lines.iter().filter(|l| l["event"] == "tile_completed") {
+        assert!(
+            !skipped.iter().any(|s| key(s) == key(done)),
+            "{done} was reported as completed and as skipped on resume"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every retry shows up as a `retry_attempted` line with its tile and its
+/// attempt number, and the lines add up to the summary's `retry_count`.
+/// The failing store makes every tile fail every retry, so each tile
+/// reports attempts 1..=N.
+#[cfg(any(feature = "s3", feature = "object-store-sink"))]
+#[test]
+fn retry_events_match_the_summary_retry_count() {
+    let dir = unique_dir("retry-events");
+    let out = failing_store_run(
+        &dir,
+        &[
+            "--retries",
+            "2",
+            "--retry-backoff-ms",
+            "1",
+            "--skip-failed",
+            "--events",
+            "json",
+        ],
+    );
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let lines = event_lines(&out);
+    let retries: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == "retry_attempted")
+        .collect();
+    let summary = lines.last().expect("no events at all");
+    assert_eq!(summary["event"], "summary", "{summary}");
+    let counted = summary["retry_count"].as_u64().unwrap();
+    assert!(
+        counted > 0,
+        "every write failed, so there were retries: {summary}"
+    );
+    assert_eq!(
+        retries.len() as u64,
+        counted,
+        "one retry_attempted line per retry, matching the summary"
+    );
+    for line in &retries {
+        for field in ["level", "col", "row"] {
+            assert!(line[field].is_u64(), "no {field} on {line}");
+        }
+        let attempt = line["attempt"].as_u64().unwrap_or(0);
+        assert!((1..=2).contains(&attempt), "attempt out of range on {line}");
+    }
+    assert!(
+        retries.iter().any(|l| l["attempt"] == 1) && retries.iter().any(|l| l["attempt"] == 2),
+        "--retries 2 must show attempt 1 and attempt 2"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The source digest is the core's to record now (libviprs#1164): the CLI
 /// hands it to the run and the manifest builder, and no longer patches
 /// `manifest.json` after the sink has written it.
