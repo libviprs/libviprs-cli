@@ -63,7 +63,10 @@ clap = { version = "4", features = ["derive"] }
 # SIGINT -> CancelToken, so Ctrl-C stops a pyramid at a tile boundary and
 # leaves a job `--resume` can finish (libviprs-cli#66).
 ctrlc = "3"
-libviprs = { path = "../libviprs" }
+# TEMPORARY (libviprs#1199): the core's `PageSizing` is not released yet, so this
+# points at the core branch fix/1199-page-size-matches-libvips. It cannot merge
+# as is. After the core release, replace it with the released version.
+libviprs = { path = "../wt-1199-core" }
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }

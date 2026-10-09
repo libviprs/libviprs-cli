@@ -8,6 +8,12 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
+- `--page-sizing <exact|legacy-truncated>` on `pyramid` and `plan`. The
+  default, `exact`, sizes a PDF page the way libvips does (`rint(pts * dpi / 72)`,
+  ties to even), so Letter at 300 dpi is 2550x3300 and A3 is 3508x4961.
+  `legacy-truncated` keeps the 0.5.x sizes, which came out 0 to 2 px smaller
+  for some pages. This changes the default raster size of `--render` and of
+  `plan`/`--match-page-size` on a PDF (libviprs#1199).
 - `pyramid --events` now prints `tile_skipped_on_resume` for each tile a
   `--resume` run found already done, and `retry_attempted` (with the tile and
   its `attempt`, from 1) for each retry `--retries` makes. The core never sent

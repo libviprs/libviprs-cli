@@ -2962,7 +2962,11 @@ fn test_image_refuses_a_zero_dimension_as_a_usage_error() {
 /// The smallest PDF lopdf opens: one page with the given MediaBox, no images.
 /// The xref offsets are computed rather than typed, so the file is valid
 /// rather than repaired on load.
-fn write_minimal_pdf(path: &std::path::Path, width_pts: u32, height_pts: u32) {
+fn write_minimal_pdf(
+    path: &std::path::Path,
+    width_pts: impl std::fmt::Display,
+    height_pts: impl std::fmt::Display,
+) {
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
@@ -3096,4 +3100,68 @@ fn svgload_refuses_a_gzipped_document_on_stdin() {
     );
     assert!(!out.exists(), "a refused load wrote {}", out.display());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// `--page-sizing` (libviprs#1199)
+// ---------------------------------------------------------------------------
+
+/// The `Image: WxH` line of `plan <pdf> --dpi 300 [--page-sizing ..]`, which
+/// reads the PDF with lopdf and never touches pdfium.
+fn plan_pdf_dims(pdf: &std::path::Path, sizing: Option<&str>) -> String {
+    let mut args = vec!["plan", pdf.to_str().unwrap(), "--dpi", "300"];
+    if let Some(s) = sizing {
+        args.extend(["--page-sizing", s]);
+    }
+    let out = run(&args);
+    assert_eq!(
+        code(&out),
+        0,
+        "plan stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.lines()
+        .find_map(|l| l.strip_prefix("Image: ").map(str::to_owned))
+        .unwrap_or_else(|| panic!("plan printed no Image line:\n{text}"))
+}
+
+#[test]
+fn plan_pdf_letter_at_300_dpi_is_exact_by_default_and_truncated_on_request() {
+    let dir = unique_dir("page-sizing-letter");
+    let pdf = dir.join("letter.pdf");
+    write_minimal_pdf(&pdf, 612, 792);
+    assert_eq!(plan_pdf_dims(&pdf, None), "2550x3300");
+    assert_eq!(plan_pdf_dims(&pdf, Some("exact")), "2550x3300");
+    // The f32 truncation of the 0.5.x arithmetic. `plan` must print exactly what
+    // the core's `LegacyTruncated` gives, and that has to be a smaller raster
+    // than the exact one (the height is 3299.9998 before the cast).
+    let (w, h) = libviprs::PageSizing::LegacyTruncated.pixel_dims(612.0, 792.0, 300);
+    assert!(h < 3300, "legacy Letter height should truncate, got {h}");
+    assert_eq!(
+        plan_pdf_dims(&pdf, Some("legacy-truncated")),
+        format!("{w}x{h}")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn plan_pdf_a3_at_300_dpi_matches_libvips() {
+    let dir = unique_dir("page-sizing-a3");
+    let pdf = dir.join("a3.pdf");
+    write_minimal_pdf(&pdf, "841.89", "1190.55");
+    assert_eq!(plan_pdf_dims(&pdf, None), "3508x4961");
+    // Whatever the core's legacy policy gives, `plan` must print the same.
+    let (w, h) = libviprs::PageSizing::LegacyTruncated.pixel_dims(841.89, 1190.55, 300);
+    assert_eq!(
+        plan_pdf_dims(&pdf, Some("legacy-truncated")),
+        format!("{w}x{h}")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn page_sizing_refuses_an_unknown_policy_as_a_usage_error() {
+    let out = run(&["plan", "100", "--height", "100", "--page-sizing", "floor"]);
+    assert_eq!(code(&out), 2);
 }
