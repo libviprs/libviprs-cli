@@ -70,7 +70,7 @@ jobs:
       - run: cargo clippy --all-targets --features full -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --no-default-features -- -D warnings -W clippy::incompatible_msrv -W deprecated
 
-  # 1.97 is the core's MSRV, and this crate is a thin driver for it, so the
+  # 1.99 is the core's MSRV, and this crate is a thin driver for it, so the
   # floor cannot be lower than the library it links (issue #43). The guard
   # below is the point of the job as much as the check is: the pin, the
   # `rust-version` in Cargo.toml and the README badge drifted apart once
@@ -92,7 +92,7 @@ jobs:
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           git clone --depth 1 --branch "$BRANCH" https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs 2>/dev/null \
             || git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
-      - uses: dtolnay/rust-toolchain@1.97
+      - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - name: Every MSRV claim agrees
         run: |
