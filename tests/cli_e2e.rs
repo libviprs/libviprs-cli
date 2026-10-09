@@ -3165,3 +3165,128 @@ fn page_sizing_refuses_an_unknown_policy_as_a_usage_error() {
     let out = run(&["plan", "100", "--height", "100", "--page-sizing", "floor"]);
     assert_eq!(code(&out), 2);
 }
+
+// ---------------------------------------------------------------------------
+// `--page-sizing` on the rest of the PDF commands (libviprs-cli#109)
+// ---------------------------------------------------------------------------
+
+fn plan_pdf_stdout(pdf: &std::path::Path, extra: &[&str]) -> String {
+    let mut args = vec!["plan", pdf.to_str().unwrap(), "--dpi", "300"];
+    args.extend_from_slice(extra);
+    let out = run(&args);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn page_sizing_legacy_is_a_short_spelling_of_legacy_truncated() {
+    let dir = unique_dir("page-sizing-alias");
+    let pdf = dir.join("letter.pdf");
+    write_minimal_pdf(&pdf, 612, 792);
+    assert_eq!(
+        plan_pdf_dims(&pdf, Some("legacy")),
+        plan_pdf_dims(&pdf, Some("legacy-truncated"))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn plan_names_the_page_sizing_rule_next_to_a_pdf_raster_size() {
+    let dir = unique_dir("page-sizing-plan-line");
+    let pdf = dir.join("letter.pdf");
+    write_minimal_pdf(&pdf, 612, 792);
+    assert!(plan_pdf_stdout(&pdf, &[]).contains("Page sizing: exact\n"));
+    assert!(
+        plan_pdf_stdout(&pdf, &["--page-sizing", "legacy"])
+            .contains("Page sizing: legacy-truncated\n")
+    );
+    // A plan from bare numbers has no PDF page behind it, so no rule to name.
+    let out = run(&["plan", "100", "--height", "100"]);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("Page sizing"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pdf_info_dpi_prints_the_raster_size_under_the_chosen_rule() {
+    let dir = unique_dir("page-sizing-pdf-info");
+    let pdf = dir.join("letter.pdf");
+    write_minimal_pdf(&pdf, 612, 792);
+    let p = pdf.to_str().unwrap();
+    let out = run(&["pdf", "info", p, "--dpi", "300"]);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        text.contains("-> 2550x3300 px at 300 dpi (exact)"),
+        "got:\n{text}"
+    );
+    let (w, h) = libviprs::PageSizing::LegacyTruncated.pixel_dims(612.0, 792.0, 300);
+    let out = run(&["pdf", "info", p, "--dpi", "300", "--page-sizing", "legacy"]);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        text.contains(&format!("-> {w}x{h} px at 300 dpi (legacy-truncated)")),
+        "got:\n{text}"
+    );
+    // Without --dpi there is no raster to size, and the output is as it was.
+    let out = run(&["pdf", "info", p]);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(" px at "));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pdf_page_sizing_needs_a_dpi_to_apply_to() {
+    let dir = unique_dir("page-sizing-needs-dpi");
+    let pdf = dir.join("letter.pdf");
+    write_minimal_pdf(&pdf, 612, 792);
+    let png = dir.join("out.png");
+    let out = run(&[
+        "pdf",
+        "extract",
+        pdf.to_str().unwrap(),
+        png.to_str().unwrap(),
+        "--page-sizing",
+        "exact",
+    ]);
+    assert_eq!(code(&out), 2, "{}", String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "pdfium")]
+#[test]
+fn pdf_extract_dpi_follows_page_sizing() {
+    let dir = unique_dir("page-sizing-extract");
+    let pdf = dir.join("letter.pdf");
+    write_minimal_pdf(&pdf, 612, 792);
+    let png = dir.join("out.png");
+    let mut results = Vec::new();
+    for sizing in ["exact", "legacy"] {
+        let out = run(&[
+            "pdf",
+            "extract",
+            pdf.to_str().unwrap(),
+            png.to_str().unwrap(),
+            "--dpi",
+            "300",
+            "--page-sizing",
+            sizing,
+        ]);
+        if code(&out) != 0
+            && String::from_utf8_lossy(&out.stderr)
+                .to_lowercase()
+                .contains("pdfium")
+        {
+            eprintln!("skipping: no libpdfium here");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+        results.push(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    assert!(results[0].contains("Wrote 2550x3300"), "got {}", results[0]);
+    let (w, h) = libviprs::PageSizing::LegacyTruncated.pixel_dims(612.0, 792.0, 300);
+    assert!(
+        results[1].contains(&format!("Wrote {w}x{h}")),
+        "got {}",
+        results[1]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

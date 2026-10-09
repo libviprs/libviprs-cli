@@ -63,10 +63,11 @@ clap = { version = "4", features = ["derive"] }
 # SIGINT -> CancelToken, so Ctrl-C stops a pyramid at a tile boundary and
 # leaves a job `--resume` can finish (libviprs-cli#66).
 ctrlc = "3"
-# TEMPORARY (libviprs#1199): the core's `PageSizing` is not released yet, so this
-# points at the core branch fix/1199-page-size-matches-libvips. It cannot merge
-# as is. After the core release, replace it with the released version.
-libviprs = { path = "../wt-1199-core" }
+# TEMPORARY (libviprs#1199): `PageSizing` and the `*_with` render calls are merged
+# into the core's `pdfium_latest` branch but not released. This pins the merge
+# commit. It cannot ship as is: after the 0.6.0 release replace it with
+# `libviprs = "0.6"`, refresh Cargo.lock, and bump this crate to 0.5.0.
+libviprs = { git = "https://github.com/libviprs/libviprs", rev = "9e049281d685b2397934bf22d5f84ce1aabdc975" }
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }

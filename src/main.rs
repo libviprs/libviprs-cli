@@ -586,11 +586,22 @@ enum StorageArg {
 /// one.
 /// `--page-sizing`: the CLI face of `libviprs::PageSizing` (libviprs#1199).
 #[derive(Clone, Copy, ValueEnum)]
-enum PageSizingArg {
+pub(crate) enum PageSizingArg {
     /// The libvips size: `rint(pts * (dpi / 72.0))`, ties to even.
     Exact,
     /// The 0.5.x size: f32 truncation, then pdfium aspect-fit.
+    #[value(alias = "legacy")]
     LegacyTruncated,
+}
+
+impl PageSizingArg {
+    /// The spelling `--page-sizing` prints back, in `plan` and `pdf info`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            PageSizingArg::Exact => "exact",
+            PageSizingArg::LegacyTruncated => "legacy-truncated",
+        }
+    }
 }
 
 impl From<PageSizingArg> for libviprs::PageSizing {
@@ -2441,6 +2452,9 @@ fn run_plan(args: PlanArgs) {
     let (canvas_w, canvas_h) = planner.canvas_dimensions();
 
     println!("Image: {}x{}", w, h);
+    if plan_input_is_pdf(&args) {
+        println!("Page sizing: {}", args.page_sizing.name());
+    }
     println!(
         "Canvas: {}x{} ({:.1} MB)",
         canvas_w,
@@ -2506,6 +2520,16 @@ fn run_test_image(args: TestImageArgs) {
         raster.format(),
         args.output.display()
     );
+}
+
+/// True when `plan` read its size from a PDF page, so the sizing rule is part
+/// of what the printed size means.
+fn plan_input_is_pdf(args: &PlanArgs) -> bool {
+    args.width_or_input.parse::<u32>().is_err()
+        && std::path::Path::new(&args.width_or_input)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
 }
 
 fn resolve_plan_dimensions(args: &PlanArgs) -> (u32, u32) {

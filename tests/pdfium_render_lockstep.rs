@@ -204,7 +204,6 @@ fn cargo_recorded_no_ignored_patch() {
 
 #[test]
 fn pdfium_render_resolves_from_the_registry_at_the_core_version() {
-    let required = core_requirement("pdfium-render");
     let locked = locked_packages("pdfium-render");
 
     // The positive control. This crate builds `pdfium` by default, so an empty
@@ -225,6 +224,26 @@ fn pdfium_render_resolves_from_the_registry_at_the_core_version() {
         .as_deref()
         .expect("pdfium-render is not a workspace member, so it must carry a source");
 
+    // While `libviprs` is a git dependency on the core's `pdfium_latest` branch
+    // (libviprs#1199, until 0.6.0 is out), that core builds against the
+    // libviprs/pdfium-render fork on `pdfium_8085`, which is what the single
+    // lock entry has to be. There is no registry version to compare to then,
+    // and `../libviprs` is a different checkout from the one cargo built. Once
+    // the dependency is a crates.io version this branch stops applying and the
+    // strict checks below run again.
+    let cargo_toml = read(&manifest_dir().join("Cargo.toml"));
+    let core_is_git = cargo_toml
+        .lines()
+        .any(|l| l.trim_start().starts_with("libviprs = {") && l.contains("git = "));
+    if core_is_git {
+        assert!(
+            source.starts_with("git+https://github.com/libviprs/pdfium-render?branch=pdfium_8085#"),
+            "with the core as a git dependency, pdfium-render must be the fork the core \
+             pins (branch pdfium_8085); got {source}"
+        );
+        return;
+    }
+
     assert!(
         source.starts_with("registry+"),
         "pdfium-render must resolve from the registry, not a fork; got {source}\n\
@@ -234,6 +253,7 @@ fn pdfium_render_resolves_from_the_registry_at_the_core_version() {
          does not build against."
     );
 
+    let required = core_requirement("pdfium-render");
     assert_eq!(
         pkg.version, required,
         "the core declares pdfium-render {required} but this crate's lockfile \

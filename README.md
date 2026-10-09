@@ -128,7 +128,7 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | [`--quality`](https://libviprs.org/cli/#flag-quality) | 85 | JPEG quality (1-100); `webp` is lossless and ignores it |
 | [`--dpi`](https://libviprs.org/cli/#flag-dpi) | 150 | PDF rasterization DPI |
 | [`--page`](https://libviprs.org/cli/#flag-page) | 1 | PDF page number (1-based) |
-| [`--page-sizing`](https://libviprs.org/cli/#flag-page-sizing) | exact | PDF raster size at `--dpi`: `exact` is the libvips size (round to nearest), `legacy-truncated` keeps the 0.5.x size, which is 0 to 2 px smaller for some pages. `plan` takes it too |
+| [`--page-sizing`](https://libviprs.org/cli/#flag-page-sizing) | exact | PDF raster size at `--dpi`: `exact` is the libvips size (round to nearest), `legacy-truncated` (or `legacy`) keeps the 0.5.x size, which is 0 to 2 px smaller for some pages. `pyramid`, `plan`, `pdf extract --dpi` and `pdf info --dpi` take it, and `plan` and `pdf info --dpi` print which rule they used |
 | [`--concurrency`](https://libviprs.org/cli/#flag-concurrency) | 0 | Worker threads (0 = single-threaded) |
 | [`--geo-origin`](https://libviprs.org/cli/#flag-geo-origin) | | Geo origin as `"lon,lat"` |
 | [`--geo-scale`](https://libviprs.org/cli/#flag-geo-scale) | | Pixel scale as `"sx,sy"` (degrees/pixel) |

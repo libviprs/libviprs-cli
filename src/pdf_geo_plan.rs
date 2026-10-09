@@ -56,7 +56,7 @@ use libviprs::{
     planner::TileCoord,
 };
 
-use crate::{operational_error, ops, usage_error};
+use crate::{PageSizingArg, operational_error, ops, usage_error};
 
 // ===========================================================================
 // viprs pdf
@@ -170,6 +170,16 @@ struct PdfInfoArgs {
 
     #[command(flatten)]
     password: PasswordArgs,
+
+    /// Also print the raster size each page comes out at when rendered at this
+    /// DPI, under `--page-sizing`.
+    #[arg(long, value_name = "DPI", value_parser = clap::value_parser!(u32).range(1..))]
+    dpi: Option<u32>,
+
+    /// How a page's pixel size comes out of `--dpi`: `exact` (the libvips
+    /// size) or `legacy-truncated` (`legacy`), the 0.5.x size.
+    #[arg(long, value_enum, default_value_t = PageSizingArg::Exact, requires = "dpi")]
+    page_sizing: PageSizingArg,
 }
 
 #[derive(Parser)]
@@ -224,6 +234,11 @@ struct PdfExtractArgs {
     /// it, the DPI is lowered until the page fits, and the DPI used is reported.
     #[arg(long, value_name = "PIXELS", requires = "dpi")]
     render_budget: Option<u64>,
+
+    /// How the page's pixel size comes out of `--dpi`: `exact` (the libvips
+    /// size, the default) or `legacy-truncated` (`legacy`), the 0.5.x size.
+    #[arg(long, value_enum, default_value_t = PageSizingArg::Exact, requires = "dpi")]
+    page_sizing: PageSizingArg,
 }
 
 pub fn run_pdf(args: PdfArgs) {
@@ -293,6 +308,17 @@ fn run_pdf_info(args: PdfInfoArgs) {
                     page.height_pts,
                     if page.has_images { " (has images)" } else { "" }
                 );
+                if let Some(dpi) = args.dpi {
+                    let (w, h) = libviprs::PageSizing::from(args.page_sizing).pixel_dims(
+                        page.width_pts,
+                        page.height_pts,
+                        dpi,
+                    );
+                    println!(
+                        "    -> {w}x{h} px at {dpi} dpi ({})",
+                        args.page_sizing.name()
+                    );
+                }
             }
         }
         Err(e) => pdf_failure(
@@ -350,7 +376,14 @@ fn run_pdf_extract(args: PdfExtractArgs) {
         extract_page_image_with_background(&args.input, page_u32, &bg)
             .unwrap_or_else(|e| pdf_failure("rendering with a background", &args.input, &e))
     } else if let Some(dpi) = args.dpi {
-        render_at_dpi(&args.input, args.page, page_u32, dpi, args.render_budget)
+        render_at_dpi(
+            &args.input,
+            args.page,
+            page_u32,
+            dpi,
+            args.render_budget,
+            args.page_sizing.into(),
+        )
     } else {
         // With no password this asks with an empty one, so a file that needs
         // one is reported as needing it instead of failing on its streams.
@@ -385,10 +418,13 @@ fn render_at_dpi(
     page_u32: u32,
     dpi: u32,
     budget: Option<u64>,
+    sizing: libviprs::PageSizing,
 ) -> libviprs::Raster {
     match budget {
         Some(max_pixels) => {
-            match libviprs::pdf::render_page_pdfium_budgeted(path, page, dpi, max_pixels) {
+            match libviprs::pdf::render_page_pdfium_budgeted_with(
+                path, page, dpi, max_pixels, sizing,
+            ) {
                 Ok(done) => {
                     eprintln!(
                         "Rendered at {} DPI ({} the {max_pixels} pixel render budget, asked for {dpi})",
@@ -400,13 +436,20 @@ fn render_at_dpi(
                 Err(e) => operational_error(&format!("rendering within a budget: {e}")),
             }
         }
-        None => libviprs::extract_page_image_dpi(path, page_u32, f64::from(dpi))
+        None => libviprs::pdf::extract_page_image_dpi_with(path, page_u32, f64::from(dpi), sizing)
             .unwrap_or_else(|e| operational_error(&format!("rendering at {dpi} DPI: {e}"))),
     }
 }
 
 #[cfg(not(feature = "pdfium"))]
-fn render_at_dpi(_: &Path, _: usize, _: u32, _: u32, _: Option<u64>) -> libviprs::Raster {
+fn render_at_dpi(
+    _: &Path,
+    _: usize,
+    _: u32,
+    _: u32,
+    _: Option<u64>,
+    _: libviprs::PageSizing,
+) -> libviprs::Raster {
     operational_error(
         "--dpi needs the `pdfium` feature, which was not compiled into this binary \
          (use a default-features build)",
