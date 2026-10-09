@@ -59,6 +59,8 @@ the `version` in `Cargo.toml`.
 
 ### Changed
 
+- The minimum supported Rust version goes from 1.97 to 1.99, in step with the
+  core (libviprs#1200).
 - `--events` names come from the core (`EngineEvent::name`, libviprs#1169)
   instead of the CLI's own table, so `pipeline_complete` goes out under its
   name instead of `unknown`; every other name is unchanged and `"v"` stays 1.
