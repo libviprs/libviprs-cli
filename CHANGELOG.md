@@ -6,7 +6,7 @@ the `version` in `Cargo.toml`.
 
 ## [Unreleased]
 
-## [0.5.0] — 2026-10-09
+## [0.6.0] — 2026-10-09
 
 ### Added
 
@@ -80,7 +80,9 @@ the `version` in `Cargo.toml`.
 
 - The `libviprs` dependency is the crates.io release, `libviprs = "0.6"` (it was a
   path dependency), which resolves `pdfium-render` 0.9.4 from the registry. This
-  release is 0.5.0 because the default PDF raster size changes (see `--page-sizing`
+  release is 0.6.0, not 0.5.0 (0.5 is skipped to line up with libviprs 0.6.0, and
+  the CLI goes from 0.4.0 straight to 0.6.0), and the default PDF raster size
+  changes (see `--page-sizing`
   above). `rust-version` is 1.99, which the core needs.
 - The minimum supported Rust version goes from 1.97 to 1.99, in step with the
   core (libviprs#1200).
