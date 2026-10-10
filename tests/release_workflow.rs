@@ -512,3 +512,59 @@ fn the_version_gates_run_before_anything_is_built() {
         "build must wait on the gate job so a refused release builds nothing"
     );
 }
+
+/// 0.5.0 was never released: the CLI went from 0.4.0 to 0.6.0 to line up with
+/// libviprs 0.6.0, so a `## [0.5.0]` heading would claim a version nobody got.
+#[test]
+fn changelog_has_no_phantom_0_5_release() {
+    let changelog = read("CHANGELOG.md");
+    assert!(
+        !changelog.lines().any(|l| l.starts_with("## [0.5")),
+        "CHANGELOG.md has a 0.5.x section, but 0.5 was skipped"
+    );
+}
+
+/// The cut has to leave `--locked` buildable and the notes findable: the
+/// manifest version, the lockfile entry and a sealed CHANGELOG heading agree,
+/// and `[Unreleased]` is bare.
+#[test]
+fn cargo_version_lockfile_and_changelog_agree() {
+    let version = cargo_value("version");
+    let lock = read("Cargo.lock");
+    let mut lines = lock.lines();
+    let mut locked = None;
+    while let Some(l) = lines.next() {
+        if l == "name = \"libviprs-cli\"" {
+            locked = lines
+                .next()
+                .and_then(|v| v.strip_prefix("version = "))
+                .map(|v| v.trim_matches('"').to_string());
+            break;
+        }
+    }
+    assert_eq!(
+        locked.as_deref(),
+        Some(version.as_str()),
+        "Cargo.lock's libviprs-cli entry is not {version}, `--locked` would fail"
+    );
+
+    let changelog = read("CHANGELOG.md");
+    let heads: Vec<&str> = changelog
+        .lines()
+        .filter(|l| l.starts_with("## ["))
+        .collect();
+    assert_eq!(heads.first(), Some(&"## [Unreleased]"));
+    assert!(
+        heads
+            .get(1)
+            .is_some_and(|h| h.starts_with(&format!("## [{version}] "))),
+        "the section right below [Unreleased] must be {version}: {heads:?}"
+    );
+    let after_unreleased = changelog
+        .lines()
+        .skip_while(|l| *l != "## [Unreleased]")
+        .skip(1)
+        .take_while(|l| !l.starts_with("## ["))
+        .any(|l| !l.trim().is_empty());
+    assert!(!after_unreleased, "[Unreleased] must be bare after a cut");
+}
