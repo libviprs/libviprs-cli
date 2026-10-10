@@ -70,9 +70,10 @@ the `version` in `Cargo.toml`.
 
 ### Changed
 
-- The `libviprs` dependency is a git dependency on the core's `pdfium_latest`
-  merge commit (9e049281) until the core's 0.6.0 is released; it has to become
-  a crates.io version then. `rust-version` is 1.99, which the core now needs.
+- The `libviprs` dependency is the crates.io release, `libviprs = "0.6"` (it was a
+  path dependency), which resolves `pdfium-render` 0.9.4 from the registry. This
+  release is 0.5.0 because the default PDF raster size changes (see `--page-sizing`
+  above). `rust-version` is 1.99, which the core needs.
 - The minimum supported Rust version goes from 1.97 to 1.99, in step with the
   core (libviprs#1200).
 - `--events` names come from the core (`EngineEvent::name`, libviprs#1169)

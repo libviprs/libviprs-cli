@@ -21,9 +21,10 @@
 //!   `[[package]]` stanza, so counting stanzas cannot tell an applied patch from
 //!   an ignored one. `[[patch.unused]]` can, and is what cargo itself uses.
 //!
-//! `../libviprs` is always present when these run: it is this crate's path
-//! dependency, so `cargo test` cannot have built the binary without it, and CI
-//! clones it to that exact location before every job.
+//! `libviprs` is a crates.io dependency, so the lockfile has to show
+//! `pdfium-render` from the registry as well. The version it must match is read
+//! from `../libviprs/Cargo.toml`, which CI clones to that location before every
+//! job (so a local checkout should be at the same release as the lockfile).
 
 use std::path::{Path, PathBuf};
 
@@ -223,26 +224,6 @@ fn pdfium_render_resolves_from_the_registry_at_the_core_version() {
         .source
         .as_deref()
         .expect("pdfium-render is not a workspace member, so it must carry a source");
-
-    // While `libviprs` is a git dependency on the core's `pdfium_latest` branch
-    // (libviprs#1199, until 0.6.0 is out), that core builds against the
-    // libviprs/pdfium-render fork on `pdfium_8085`, which is what the single
-    // lock entry has to be. There is no registry version to compare to then,
-    // and `../libviprs` is a different checkout from the one cargo built. Once
-    // the dependency is a crates.io version this branch stops applying and the
-    // strict checks below run again.
-    let cargo_toml = read(&manifest_dir().join("Cargo.toml"));
-    let core_is_git = cargo_toml
-        .lines()
-        .any(|l| l.trim_start().starts_with("libviprs = {") && l.contains("git = "));
-    if core_is_git {
-        assert!(
-            source.starts_with("git+https://github.com/libviprs/pdfium-render?branch=pdfium_8085#"),
-            "with the core as a git dependency, pdfium-render must be the fork the core \
-             pins (branch pdfium_8085); got {source}"
-        );
-        return;
-    }
 
     assert!(
         source.starts_with("registry+"),
