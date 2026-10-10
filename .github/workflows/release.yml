@@ -93,7 +93,10 @@ jobs:
           TAG: ${{ steps.v.outputs.tag }}
         run: |
           set -uo pipefail
-          out="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>&1)"
+          # `gh api` exits 1 on the 404 that means the tag is free, and steps run
+          # under bash -e, so the status is swallowed here and the output is
+          # what gets classified below.
+          out="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>&1)" || true
           case "$out" in
             *"Not Found"*)
               echo "$TAG does not exist yet, good." ;;
