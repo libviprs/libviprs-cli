@@ -568,3 +568,20 @@ fn cargo_version_lockfile_and_changelog_agree() {
         .any(|l| !l.trim().is_empty());
     assert!(!after_unreleased, "[Unreleased] must be bare after a cut");
 }
+
+/// Issue #112: steps run under `bash -e`, and `gh api` exits 1 on the 404 that
+/// means "this tag does not exist". An assignment that can fail on the happy
+/// path has to be guarded, or the step dies before it looks at the output.
+#[test]
+fn tag_exists_probe_survives_the_404_it_is_looking_for() {
+    let text = workflow();
+    let line = text
+        .lines()
+        .map(code)
+        .find(|l| l.starts_with("out=\"$(gh api") && l.contains("git/ref/tags"))
+        .expect("no tag-exists probe");
+    assert!(
+        line.ends_with("|| true"),
+        "the probe aborts the step on a 404 under bash -e: {line}"
+    );
+}
