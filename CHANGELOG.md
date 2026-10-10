@@ -6,6 +6,8 @@ the `version` in `Cargo.toml`.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-09
+
 ### Added
 
 - Release binaries. A push to the `release` branch now builds `viprs` for
