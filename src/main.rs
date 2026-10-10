@@ -28,10 +28,10 @@ use libviprs::pmtiles::{
     tileid_to_zxy,
 };
 // PDFium vector rasterisation is gated behind the `pdfium` feature (on by
-// default). Without it the `--render` path is compiled out and `render_page_pdfium`
+// default). Without it the `--render` path is compiled out and `render_page_pdfium_with`
 // does not exist in the core crate, so the import is feature-gated too.
 #[cfg(feature = "pdfium")]
-use libviprs::pdf::render_page_pdfium;
+use libviprs::pdf::render_page_pdfium_with;
 
 /// Per-family op registry (`CLI_CONTRACT.md` §6). The pyramid/info/plan/
 /// test-image commands below stay in `main.rs` untouched; every op family is
@@ -209,6 +209,14 @@ struct PyramidArgs {
     /// DPI for PDF rendering/page-size scaling (default matches libvips).
     #[arg(long, default_value = "72", value_parser = clap::value_parser!(u32).range(1..))]
     dpi: u32,
+
+    /// How a PDF page's pixel size comes out of --dpi. `exact` (default) is
+    /// the size libvips gives, round to nearest at `dpi / 72`. `legacy-truncated`
+    /// keeps the 0.5.x sizes, which are 0 to 2 px smaller for some pages.
+    ///
+    /// See also: [interactive example](https://libviprs.org/cli/#flag-page-sizing).
+    #[arg(long, value_enum, default_value_t = PageSizingArg::Exact)]
+    page_sizing: PageSizingArg,
 
     /// PDF page number to extract (1-based, only used for PDF inputs).
     #[arg(long, default_value = "1", value_parser = page_number)]
@@ -474,6 +482,12 @@ struct PlanArgs {
     #[arg(long, default_value = "72", value_parser = clap::value_parser!(u32).range(1..))]
     dpi: u32,
 
+    /// How a PDF page's pixel size comes out of --dpi (only used when input
+    /// is a PDF). `exact` (default) is the size libvips gives. `legacy-truncated`
+    /// keeps the 0.5.x sizes.
+    #[arg(long, value_enum, default_value_t = PageSizingArg::Exact)]
+    page_sizing: PageSizingArg,
+
     /// PDF page number (1-based, only used when input is a PDF).
     #[arg(long, default_value = "1", value_parser = page_number)]
     page: usize,
@@ -570,6 +584,35 @@ enum StorageArg {
 /// right extension, for as long as this flag refused the format. Reading an
 /// archive somebody else wrote was never the same claim as being able to write
 /// one.
+/// `--page-sizing`: the CLI face of `libviprs::PageSizing` (libviprs#1199).
+#[derive(Clone, Copy, ValueEnum)]
+pub(crate) enum PageSizingArg {
+    /// The libvips size: `rint(pts * (dpi / 72.0))`, ties to even.
+    Exact,
+    /// The 0.5.x size: f32 truncation, then pdfium aspect-fit.
+    #[value(alias = "legacy")]
+    LegacyTruncated,
+}
+
+impl PageSizingArg {
+    /// The spelling `--page-sizing` prints back, in `plan` and `pdf info`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            PageSizingArg::Exact => "exact",
+            PageSizingArg::LegacyTruncated => "legacy-truncated",
+        }
+    }
+}
+
+impl From<PageSizingArg> for libviprs::PageSizing {
+    fn from(a: PageSizingArg) -> Self {
+        match a {
+            PageSizingArg::Exact => libviprs::PageSizing::Exact,
+            PageSizingArg::LegacyTruncated => libviprs::PageSizing::LegacyTruncated,
+        }
+    }
+}
+
 #[derive(Clone, ValueEnum)]
 enum FormatArg {
     Png,
@@ -2409,6 +2452,9 @@ fn run_plan(args: PlanArgs) {
     let (canvas_w, canvas_h) = planner.canvas_dimensions();
 
     println!("Image: {}x{}", w, h);
+    if plan_input_is_pdf(&args) {
+        println!("Page sizing: {}", args.page_sizing.name());
+    }
     println!(
         "Canvas: {}x{} ({:.1} MB)",
         canvas_w,
@@ -2476,6 +2522,16 @@ fn run_test_image(args: TestImageArgs) {
     );
 }
 
+/// True when `plan` read its size from a PDF page, so the sizing rule is part
+/// of what the printed size means.
+fn plan_input_is_pdf(args: &PlanArgs) -> bool {
+    args.width_or_input.parse::<u32>().is_err()
+        && std::path::Path::new(&args.width_or_input)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+}
+
 fn resolve_plan_dimensions(args: &PlanArgs) -> (u32, u32) {
     // Try parsing as a number first
     if let Ok(w) = args.width_or_input.parse::<u32>() {
@@ -2513,12 +2569,11 @@ fn resolve_plan_dimensions(args: &PlanArgs) -> (u32, u32) {
             Ok(info) => {
                 let page_info = info.pages.iter().find(|p| p.page_number == args.page);
                 match page_info {
-                    Some(p) => {
-                        let scale = args.dpi as f64 / 72.0;
-                        let w = (p.width_pts * scale) as u32;
-                        let h = (p.height_pts * scale) as u32;
-                        (w, h)
-                    }
+                    Some(p) => libviprs::PageSizing::from(args.page_sizing).pixel_dims(
+                        p.width_pts,
+                        p.height_pts,
+                        args.dpi,
+                    ),
                     None => {
                         eprintln!(
                             "Page {} not found in PDF (has {} pages)",
@@ -2575,13 +2630,13 @@ fn load_source(args: &PyramidArgs) -> Raster {
         .unwrap_or("")
         .to_lowercase();
 
-    // @doc-snippet:begin slot=load-source imports=Raster,extract_page_image,render_page_pdfium,decode_file
+    // @doc-snippet:begin slot=load-source imports=Raster,extract_page_image,render_page_pdfium_with,decode_file
     if ext == "pdf" {
         // @doc-test: pdfium_integration.rs::libviprs_pdfium_render_paths:34
         if args.render {
             // @doc-flag: render kind=override
             // `--render` requires the `pdfium` feature. When the binary is built
-            // `--no-default-features` (pdfium-free), `render_page_pdfium` is absent,
+            // `--no-default-features` (pdfium-free), `render_page_pdfium_with` is absent,
             // so this path is compiled out and the flag fails loudly instead.
             #[cfg(not(feature = "pdfium"))]
             {
@@ -2601,8 +2656,9 @@ fn load_source(args: &PyramidArgs) -> Raster {
                     args.page, args.dpi
                 );
                 // @doc-test: pdfium_integration.rs::libviprs_pdfium_render_paths:34
-                match render_page_pdfium(&path, args.page, args.dpi) {
+                match render_page_pdfium_with(&path, args.page, args.dpi, args.page_sizing.into()) {
                     // @doc-flag: dpi kind=param param_name=dpi
+                    // @doc-flag: page-sizing kind=param param_name=sizing
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("Error rendering PDF with pdfium: {e}");
@@ -2637,12 +2693,11 @@ fn load_source(args: &PyramidArgs) -> Raster {
                     Ok(info) => {
                         let page_info = info.pages.iter().find(|p| p.page_number == args.page);
                         match page_info {
-                            Some(p) => {
-                                let scale = args.dpi as f64 / 72.0;
-                                let w = (p.width_pts * scale) as u32;
-                                let h = (p.height_pts * scale) as u32;
-                                (w, h)
-                            }
+                            Some(p) => libviprs::PageSizing::from(args.page_sizing).pixel_dims(
+                                p.width_pts,
+                                p.height_pts,
+                                args.dpi,
+                            ),
                             None => {
                                 eprintln!("Page {} not found in PDF", args.page);
                                 process::exit(1);

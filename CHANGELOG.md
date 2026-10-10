@@ -8,6 +8,17 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
+- `--page-sizing <exact|legacy-truncated>` on `pyramid` and `plan`. The
+  default, `exact`, sizes a PDF page the way libvips does (`rint(pts * dpi / 72)`,
+  ties to even), so Letter at 300 dpi is 2550x3300 and A3 is 3508x4961.
+  `legacy-truncated` keeps the 0.5.x sizes, which came out 0 to 2 px smaller
+  for some pages. This changes the default raster size of `--render` and of
+  `plan`/`--match-page-size` on a PDF (libviprs#1199).
+- `--page-sizing` also on `pdf extract --dpi` (with or without `--render-budget`),
+  and `legacy` as a short spelling of `legacy-truncated`. `plan` on a PDF prints
+  a `Page sizing:` line, and `pdf info --dpi N` prints each page's raster size
+  under the chosen rule. No size arithmetic is left in the CLI, it all goes
+  through the core's `PageSizing` (libviprs-cli#109).
 - `pyramid --events` now prints `tile_skipped_on_resume` for each tile a
   `--resume` run found already done, and `retry_attempted` (with the tile and
   its `attempt`, from 1) for each retry `--retries` makes. The core never sent
@@ -59,6 +70,10 @@ the `version` in `Cargo.toml`.
 
 ### Changed
 
+- The `libviprs` dependency is the crates.io release, `libviprs = "0.6"` (it was a
+  path dependency), which resolves `pdfium-render` 0.9.4 from the registry. This
+  release is 0.5.0 because the default PDF raster size changes (see `--page-sizing`
+  above). `rust-version` is 1.99, which the core needs.
 - The minimum supported Rust version goes from 1.97 to 1.99, in step with the
   core (libviprs#1200).
 - `--events` names come from the core (`EngineEvent::name`, libviprs#1169)

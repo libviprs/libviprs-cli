@@ -181,6 +181,7 @@ fn the_pyramid_flag_ids_are_the_set_the_site_knows() {
         "overlap",
         "overwrite",
         "page",
+        "page-sizing",
         "parallel",
         "quality",
         "render",

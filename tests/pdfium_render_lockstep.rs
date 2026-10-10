@@ -21,9 +21,10 @@
 //!   `[[package]]` stanza, so counting stanzas cannot tell an applied patch from
 //!   an ignored one. `[[patch.unused]]` can, and is what cargo itself uses.
 //!
-//! `../libviprs` is always present when these run: it is this crate's path
-//! dependency, so `cargo test` cannot have built the binary without it, and CI
-//! clones it to that exact location before every job.
+//! `libviprs` is a crates.io dependency, so the lockfile has to show
+//! `pdfium-render` from the registry as well. The version it must match is read
+//! from `../libviprs/Cargo.toml`, which CI clones to that location before every
+//! job (so a local checkout should be at the same release as the lockfile).
 
 use std::path::{Path, PathBuf};
 
@@ -204,7 +205,6 @@ fn cargo_recorded_no_ignored_patch() {
 
 #[test]
 fn pdfium_render_resolves_from_the_registry_at_the_core_version() {
-    let required = core_requirement("pdfium-render");
     let locked = locked_packages("pdfium-render");
 
     // The positive control. This crate builds `pdfium` by default, so an empty
@@ -234,6 +234,7 @@ fn pdfium_render_resolves_from_the_registry_at_the_core_version() {
          does not build against."
     );
 
+    let required = core_requirement("pdfium-render");
     assert_eq!(
         pkg.version, required,
         "the core declares pdfium-render {required} but this crate's lockfile \
