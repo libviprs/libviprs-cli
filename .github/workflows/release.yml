@@ -1,0 +1,285 @@
+name: release
+
+# Builds the `viprs` binary for Linux x64 and macOS arm64 and publishes a
+# GitHub release. It runs when a push lands on the `release` branch, the same
+# branch name the core uses, so the cut is: merge `main` into `release` (see
+# RELEASING.md). That push publishes for real.
+#
+# Four jobs:
+#   prepare    reads the version from Cargo.toml, refuses a CHANGELOG with no
+#              sealed `## [X.Y.Z]` section, and refuses a tag that exists.
+#   build      one cell per target, smoke-tests the packaged binary.
+#   checksums  writes SHA256SUMS over both tarballs.
+#   publish    the only job with `contents: write`. Creates the annotated tag
+#              and the release. Skipped on a dry run.
+#
+# `workflow_dispatch` with `dry_run` (the default) runs everything up to and
+# including SHA256SUMS and publishes nothing. GitHub only offers dispatch for
+# a workflow file that is on the default branch.
+#
+# Features: the default set (`default = ["pdfium"]` in Cargo.toml), exactly what
+# `cargo install` gives. `pdfium` binds libpdfium at runtime, so the tarball
+# does not carry it (see README, Installation).
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and package only, publish nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Must stay MAJOR.MINOR-equal to `rust-version` in Cargo.toml.
+  # tests/release_workflow.rs checks that.
+  RUST_VERSION: "1.99.0"
+
+# One release at a time, and never cancel one that is half way through.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Check version and changelog
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the version from Cargo.toml
+        id: v
+        run: |
+          set -euo pipefail
+          version="$(awk -F'"' '/^version *= *"/ { print $2; exit }' Cargo.toml)"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Cargo.toml version '$version' is not X.Y.Z"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing libviprs-cli $version"
+
+      - name: Require a sealed CHANGELOG section
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Everything under `## [X.Y.Z]` up to the next `## [` heading.
+          awk -v want="## [$VERSION]" '
+            index($0, "## [") == 1 { on = (index($0, want) == 1); next }
+            on { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md has no non-empty '## [$VERSION]' section. Seal Unreleased under that heading first (RELEASING.md)."
+            exit 1
+          fi
+          echo "Release notes for $VERSION:"
+          cat release-notes.md
+
+      - name: Refuse a tag that already exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          set -uo pipefail
+          out="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>&1)"
+          case "$out" in
+            *"Not Found"*)
+              echo "$TAG does not exist yet, good." ;;
+            *'"ref"'*)
+              echo "::error::Tag $TAG already exists. Bump the version in Cargo.toml and seal a new CHANGELOG section."
+              exit 1 ;;
+            *)
+              echo "::error::Could not tell whether $TAG exists: $out"
+              exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # ubuntu-22.04 on purpose: the binary links the runner's glibc, and
+          # building on the older image keeps it running on more distros.
+          - label: linux-x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - label: mac-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target "$TARGET" --no-self-update
+          rustup default "$RUST_VERSION"
+          rustc --version
+          cargo --version
+
+      - name: Build
+        run: cargo build --release --locked --target "$TARGET"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          NAME="libviprs-cli-v${VERSION}-${TARGET}"
+          mkdir -p "dist/$NAME"
+          cp "target/${TARGET}/release/viprs" "dist/$NAME/viprs"
+          strip "dist/$NAME/viprs"
+          cp README.md LICENSE "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          tar -tzf "dist/$NAME.tar.gz"
+
+      # Test what ships: unpack the tarball somewhere clean and run that copy.
+      # `viprs` has no --version flag (clap's is not enabled), so the checks
+      # are the layout, --help, `features` (which must list pdfium, the
+      # default feature), and a round trip that needs no libpdfium: write a
+      # synthetic image and read its size back.
+      - name: Smoke test the tarball
+        run: |
+          set -euo pipefail
+          got="$(tar -tzf "dist/$NAME.tar.gz" | LC_ALL=C sort | tr '\n' ' ')"
+          want="$NAME/ $NAME/LICENSE $NAME/README.md $NAME/viprs "
+          if [ "$got" != "$want" ]; then
+            echo "::error::unexpected tarball layout: $got"
+            exit 1
+          fi
+          rm -rf smoke && mkdir smoke
+          tar -C smoke -xzf "dist/$NAME.tar.gz"
+          bin="$PWD/smoke/$NAME/viprs"
+          file "$bin"
+          "$bin" --help > /dev/null
+          "$bin" features | tee features.txt
+          grep -qx pdfium features.txt
+          (
+            cd smoke
+            "$bin" test-image probe.png --width 64 --height 48
+            "$bin" info --json probe.png | tee info.json
+            grep -q '"width":64' info.json
+            grep -q '"height":48' info.json
+          )
+          # A plain run must not have needed libpdfium to get this far.
+          echo "smoke ok on $TARGET"
+
+      - name: Checksum this tarball
+        run: |
+          cd dist
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$NAME.tar.gz"
+          else
+            shasum -a 256 "$NAME.tar.gz"
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/libviprs-cli-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  checksums:
+    name: SHA256SUMS
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Write and verify SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin; do
+            test -f "libviprs-cli-v${VERSION}-${target}.tar.gz" || { echo "::error::missing the $target tarball"; exit 1; }
+          done
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 2
+          sha256sum libviprs-cli-v"${VERSION}"-*.tar.gz > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Tag and release
+    needs: [prepare, build, checksums]
+    # Not on a dry run, and only ever from the release branch.
+    if: github.ref == 'refs/heads/release' && !inputs.dry_run
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: notes
+
+      # The annotated tag goes in through the git data API (a tag object, then
+      # the ref), so no checkout, no git push and no credential on disk. The
+      # token only ever lives in the environment of this job.
+      - name: Create the annotated tag
+        run: |
+          set -euo pipefail
+          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f tag="$TAG" \
+            -f message="libviprs-cli $VERSION" \
+            -f object="$GITHUB_SHA" \
+            -f type=commit \
+            --jq .sha)"
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" \
+            -f sha="$tag_object" > /dev/null
+          echo "Tagged $TAG at $GITHUB_SHA"
+
+      - name: Create the release
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "libviprs-cli $VERSION" \
+            --notes-file notes/release-notes.md \
+            dist/libviprs-cli-v"${VERSION}"-x86_64-unknown-linux-gnu.tar.gz \
+            dist/libviprs-cli-v"${VERSION}"-aarch64-apple-darwin.tar.gz \
+            dist/SHA256SUMS
