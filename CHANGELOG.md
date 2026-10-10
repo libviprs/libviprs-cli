@@ -6,6 +6,20 @@ the `version` in `Cargo.toml`.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-10-09
+
+### Fixed
+
+- `pdf info` and `plan` now size a cropped PDF page the way the render does.
+  They used to report the MediaBox while `--render` used the CropBox, so the
+  two disagreed on any page with a smaller CropBox (libviprs#1209,
+  libviprs-cli#114).
+
+### Changed
+
+- Depends on libviprs 0.6.1, and `Cargo.toml` now asks for `"0.6.1"` rather
+  than `"0.6"` so the CropBox fix is guaranteed and not left to the lock.
+
 ## [0.6.0] — 2026-10-09
 
 ### Added

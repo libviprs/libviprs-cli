@@ -1283,9 +1283,9 @@ dependencies = [
 
 [[package]]
 name = "libviprs"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18925886c940865c176f8bb3e4e9556265666949aef37e5e20059f896c811832"
+checksum = "737604ee685290b42441d1a60490bdea69dfb52bda7adde7f28000a4966723fb"
 dependencies = [
  "ab_glyph",
  "blake3",
@@ -1318,7 +1318,7 @@ dependencies = [
 
 [[package]]
 name = "libviprs-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "clap",
