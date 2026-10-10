@@ -17,6 +17,46 @@ Full reference, including a flag-by-flag interactive program generator, lives at
 
 ## Installation
 
+### Prebuilt binary
+
+Each [release](https://github.com/libviprs/libviprs-cli/releases) has two tarballs, built with the default features (so `--render` is there, see below), plus a `SHA256SUMS` file:
+
+| Platform | Tarball |
+|---|---|
+| Linux x64 (glibc) | `libviprs-cli-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS arm64 | `libviprs-cli-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
+
+Each one unpacks to a directory with the `viprs` binary, this README and the LICENSE. Download the tarball for your machine and `SHA256SUMS` into the same directory, then check it before you unpack anything:
+
+```bash
+# Linux
+sha256sum --check --ignore-missing SHA256SUMS
+
+# macOS
+shasum -a 256 --check --ignore-missing SHA256SUMS
+
+tar xzf libviprs-cli-vX.Y.Z-<target>.tar.gz
+./libviprs-cli-vX.Y.Z-<target>/viprs features
+```
+
+Everything except `--render` on a vector PDF works with just that binary. For `--render`, put libpdfium next to it. The binary loads libpdfium at runtime and never looks in the current directory (on purpose, a planted library there would otherwise get loaded), so you point it at the folder with `PDFIUM_PATH`, or install the library where the system finds it. The release tarballs do not carry libpdfium. I take it from the [libviprs-dep `pdfium-8085` release](https://github.com/libviprs/libviprs-dep/releases/tag/pdfium-8085), which is the build this version is tested against:
+
+```bash
+cd libviprs-cli-vX.Y.Z-<target>
+
+# Linux x64
+curl -L https://github.com/libviprs/libviprs-dep/releases/download/pdfium-8085/pdfium-linux-x64.tgz | tar xz
+export PDFIUM_PATH="$PWD/pdfium-linux-x64/lib"
+
+# macOS arm64
+curl -L https://github.com/libviprs/libviprs-dep/releases/download/pdfium-8085/pdfium-mac-arm64.tgz | tar xz
+export PDFIUM_PATH="$PWD/pdfium-mac-arm64/lib"
+```
+
+If you downloaded in a browser and macOS refuses to open the binary or the library, `xattr -d com.apple.quarantine` on it clears that (nothing here is signed or notarised). `curl` does not set the flag.
+
+### From source
+
 ```bash
 cargo install --path .
 ```

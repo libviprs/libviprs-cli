@@ -6,8 +6,16 @@ the `version` in `Cargo.toml`.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-09
+
 ### Added
 
+- Release binaries. A push to the `release` branch now builds `viprs` for
+  Linux x64 (`x86_64-unknown-linux-gnu`) and macOS arm64
+  (`aarch64-apple-darwin`) with the default features on Rust 1.99.0, and
+  publishes a GitHub release with both tarballs and a `SHA256SUMS` file.
+  libpdfium is not bundled, the README says where to get it. The sequence is
+  in `RELEASING.md` (#110).
 - `--page-sizing <exact|legacy-truncated>` on `pyramid` and `plan`. The
   default, `exact`, sizes a PDF page the way libvips does (`rint(pts * dpi / 72)`,
   ties to even), so Letter at 300 dpi is 2550x3300 and A3 is 3508x4961.
@@ -72,7 +80,9 @@ the `version` in `Cargo.toml`.
 
 - The `libviprs` dependency is the crates.io release, `libviprs = "0.6"` (it was a
   path dependency), which resolves `pdfium-render` 0.9.4 from the registry. This
-  release is 0.5.0 because the default PDF raster size changes (see `--page-sizing`
+  release is 0.6.0, not 0.5.0 (0.5 is skipped to line up with libviprs 0.6.0, and
+  the CLI goes from 0.4.0 straight to 0.6.0), and the default PDF raster size
+  changes (see `--page-sizing`
   above). `rust-version` is 1.99, which the core needs.
 - The minimum supported Rust version goes from 1.97 to 1.99, in step with the
   core (libviprs#1200).
