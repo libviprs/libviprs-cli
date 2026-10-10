@@ -8,6 +8,12 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
+- Release binaries. A push to the `release` branch now builds `viprs` for
+  Linux x64 (`x86_64-unknown-linux-gnu`) and macOS arm64
+  (`aarch64-apple-darwin`) with the default features on Rust 1.99.0, and
+  publishes a GitHub release with both tarballs and a `SHA256SUMS` file.
+  libpdfium is not bundled, the README says where to get it. The sequence is
+  in `RELEASING.md` (#110).
 - `--page-sizing <exact|legacy-truncated>` on `pyramid` and `plan`. The
   default, `exact`, sizes a PDF page the way libvips does (`rint(pts * dpi / 72)`,
   ties to even), so Letter at 300 dpi is 2550x3300 and A3 is 3508x4961.
