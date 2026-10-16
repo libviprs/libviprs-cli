@@ -38,7 +38,7 @@ env:
   CARGO_TERM_COLOR: always
   # Must stay MAJOR.MINOR-equal to `rust-version` in Cargo.toml.
   # tests/release_workflow.rs checks that.
-  RUST_VERSION: "1.99.0"
+  RUST_VERSION: "1.99.1"
 
 # One release at a time, and never cancel one that is half way through.
 concurrency:

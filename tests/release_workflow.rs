@@ -256,7 +256,7 @@ fn rust_pin_matches_cargo_toml_rust_version() {
         declared,
         "release.yml builds with Rust {pin} but Cargo.toml declares rust-version {declared}"
     );
-    assert_eq!(pin, "1.99.0", "the release is pinned to Rust 1.99.0");
+    assert_eq!(pin, "1.99.1", "the release is pinned to Rust 1.99.1");
     assert!(
         text.lines()
             .map(code)
