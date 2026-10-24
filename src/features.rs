@@ -19,6 +19,7 @@ use libviprs::{AvifError, Jp2kError, JxlError};
 /// them rather than itself. `default` is not here for the same reason.
 const FEATURES: &[(&str, bool)] = &[
     ("avif", cfg!(feature = "avif")),
+    ("dwg-acadsharp", cfg!(feature = "dwg-acadsharp")),
     ("jp2k", cfg!(feature = "jp2k")),
     ("jxl", cfg!(feature = "jxl")),
     ("object-store-sink", cfg!(feature = "object-store-sink")),

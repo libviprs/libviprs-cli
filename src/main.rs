@@ -52,6 +52,7 @@ mod pdf_geo_plan;
 /// The pipeline controls on `viprs pyramid`, and `viprs verify`
 /// (libviprs-cli#66).
 mod pipeline;
+mod vector;
 mod verify;
 
 /// Upper bound, in megabytes, accepted for `--memory-limit` and
@@ -119,6 +120,13 @@ enum Command {
     /// Check a finished pyramid (a PMTiles archive or a tile tree) and name
     /// any tile that is missing or damaged.
     Verify(verify::VerifyArgs),
+
+    /// Turn a DWG into a vector PMTiles archive, and inspect or check one.
+    ///
+    /// `views`, `build` and `report` read a drawing and need a build with the
+    /// `dwg-acadsharp` feature; `info` and `validate` read a PMTiles file and
+    /// work in every build.
+    Vector(vector::VectorArgs),
 }
 
 #[derive(Parser)]
@@ -869,7 +877,7 @@ fn main() {
     match matches.subcommand() {
         Some((
             "pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features" | "pdf" | "geo"
-            | "verify",
+            | "verify" | "vector",
             _,
         )) => {
             let cli = Cli::from_arg_matches(&matches)
@@ -884,6 +892,7 @@ fn main() {
                 Command::Pdf(args) => pdf_geo_plan::run_pdf(args),
                 Command::Geo(args) => pdf_geo_plan::run_geo(args),
                 Command::Verify(args) => verify::run(args),
+                Command::Vector(args) => vector::run(args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
