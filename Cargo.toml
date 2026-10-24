@@ -42,6 +42,12 @@ avif = ["libviprs/avif"]
 svg = ["libviprs/svg"]
 jxl = ["libviprs/jxl"]
 jp2k = ["libviprs/jp2k"]
+# The DWG reader behind `viprs vector views|build|report`: ACadSharp through
+# `acadsharp-rs`, over a NativeAOT archive that crate's build script links (it
+# finds one through ACADSHARP_NATIVE_DIR and downloads nothing). Without this
+# feature those three commands exit 1 and name it; `vector info` and `vector
+# validate` read a PMTiles file and work either way.
+dwg-acadsharp = ["libviprs/dwg-acadsharp"]
 # Everything above except `pdfium-static`, which trades the runtime-binding
 # pdfium path for a link-time one and cannot be on for a build that has no
 # static libpdfium to link.
@@ -55,6 +61,7 @@ full = [
     "svg",
     "jxl",
     "jp2k",
+    "dwg-acadsharp",
 ]
 
 [dependencies]
@@ -63,7 +70,11 @@ clap = { version = "4", features = ["derive"] }
 # SIGINT -> CancelToken, so Ctrl-C stops a pyramid at a tile boundary and
 # leaves a job `--resume` can finish (libviprs-cli#66).
 ctrlc = "3"
-libviprs = "0.6.1"
+# The vector path (`viprs vector`, libviprs#1035) is not in a release of the
+# core yet, so this points at the core branch that carries it (stacked on the
+# hardening branch of libviprs#1245). It has to become a crates.io version once
+# the core releases, and this crate cannot merge before that.
+libviprs = { git = "https://github.com/libviprs/libviprs", rev = "8de8e9b884318b87ea51548a7f3b1311832a8a5d" }
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }

@@ -6,6 +6,25 @@ the `version` in `Cargo.toml`.
 
 ## [Unreleased]
 
+### Added
+
+- `viprs vector` (libviprs#1035, part of libviprs#1028): `views`, `build`
+  (`convert` is an alias), `report`, `info` and `validate`, a thin driver over
+  the core's `vector::convert`, so the command line and a Rust caller share one
+  engine. `build` writes through a staged file and an atomic rename, takes
+  `--view`, `--max-zoom`, `--name`, `--hardened` and `--timeout`, and a run that
+  fails, times out (exit 1) or is stopped with Ctrl-C (exit 130) leaves nothing
+  at the output. `report` is a build that writes nothing. `info` and `validate`
+  read a `.pmtiles` file and work in every build; the three that read a drawing
+  need the new `dwg-acadsharp` feature (in `full`) and otherwise exit 1 naming
+  it. `--json` on every command prints `{"v": 1, ...}`.
+
+### Changed
+
+- `libviprs` is a git dependency pinned to a core main revision (`8de8e9b8`,
+  which carries `vector::convert` and the hardening from libviprs#1245) until the
+  core releases, and `Cargo.lock` moved with it.
+
 ## [0.6.1] — 2026-10-09
 
 ### Fixed

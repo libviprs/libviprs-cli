@@ -73,6 +73,7 @@ cargo install --path .
 | `svg` | SVG rasterising: a `.svg` file, or any input whose root element is `svg` (the core sniffs it by content); a gzipped `.svgz` is refused |
 | `jxl` | JPEG XL decoding |
 | `jp2k` | JPEG 2000 decoding |
+| `dwg-acadsharp` | the DWG reader behind `viprs vector views`, `build` and `report` (ACadSharp through `acadsharp-rs`, over a native library, see [`viprs vector`](#viprs-vector)) |
 | `object-store-sink` | the core's injected-backend object-store sink |
 | `s3` | the `s3://` sink arm (the core treats `s3` as a deprecated alias for `object-store-sink`) |
 | `packfile` | the `packfile://` tar/zip sink |
@@ -98,7 +99,7 @@ One contract for every command, built-ins and ops alike:
 | `0` | Success. |
 | `1` | Operational failure: an input that cannot be read or decoded, an I/O error, an op that refuses its input (or a value only the input can rule out), a check that found a problem (`verify`, `pmtiles verify`), a pyramid that skipped tiles under `--skip-failed`, or a feature this build left out (the message names the `--features` flag to rebuild with). |
 | `2` | Usage mistake: an unknown flag, a missing or conflicting argument (including a required mode flag such as `webpsave`'s `--lossless`), a value clap, a built-in or an op refuses on the command line alone, or a combination of flags that has no meaning. Nothing is written. |
-| `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself; any other command dies by the signal, which a shell reports as 130 too. |
+| `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself, and `vector build` and `vector report` do the same (nothing is left at the output); any other command dies by the signal, which a shell reports as 130 too. |
 
 A missing feature is a 1 rather than a 2 on purpose: the command line was fine, this binary just cannot do it, and rebuilding fixes it where retyping would not.
 
@@ -375,6 +376,43 @@ viprs verify tiles/ --source blueprint.png
 ```
 
 The manifest and the archive metadata record whether a pyramid was written with `--centre` or `--drop-blanks`, and `verify` checks it against that plan, so neither needs repeating. A pyramid written before they recorded it reads as neither, so for one of those pass the same flag to `verify`: without it a centred pyramid gets checked against the uncentred grid, and every dropped blank shows up as a missing tile (the message says so). The flags only add; they can't make a pyramid that records centring or dropped blanks read as one that didn't. `--source` re-renders a centred tree and one that dropped its blanks as well as a plain one: an absent tile passes when its re-render is blank, and a missing tile with content still fails. A source that isn't the file the tree was made from fails before any tile is compared, because the run folds the input file's digest into its plan, unless the tree was written with `--manifest-source-hash`: verify then re-renders with the recorded digest and names the tiles that differ. `--source` only applies to a tile tree (an archive is checked by decoding every tile), and a PDF can't be a `--source`, because verify doesn't know the page, DPI or render mode the pyramid used. `--source` decodes through the same input path as every other command. A badly broken pyramid is reported up to 50 problems, then verify stops looking.
+
+### `viprs vector`
+
+Turn a DWG into a vector PMTiles archive (MVT tiles, black linework and text, one file per view), and look inside or check one. It is a thin driver over the library's `vector::convert` module, so the command line and a Rust caller run the same code and get the same answer.
+
+```bash
+viprs vector views    plan.dwg                     # the views: Model Space and each layout
+viprs vector build    plan.dwg plan.pmtiles        # Model Space to an archive (`convert` is an alias)
+viprs vector report   plan.dwg --json              # the same run, no file: fidelity and budgets
+viprs vector info     plan.pmtiles                 # zoom range, bounds, tile counts, layers
+viprs vector validate plan.pmtiles                 # structure, MVT tiles, vector_layers
+```
+
+| Flag | On | What it does |
+|---|---|---|
+| `--view VIEW` | `build`, `report` | `model` (the default), a view's index from `views`, or its name. A layout is refused with the reason, because only Model Space is enabled until paper space has its viewport fixtures. |
+| `--max-zoom ZOOM` | `build`, `report` | The deepest zoom, 0 to 24 (default 12). Zoom 0 is one tile holding the drawing. Deeper is sharper and larger. |
+| `--timeout DURATION` | `build`, `report` | Stop after this long and leave nothing behind. A bare number is seconds, and `ms`, `s`, `m` and `h` are understood (`90`, `500ms`, `2m`). Exit 1. |
+| `--name NAME` | `build` | The archive's name. The view's name when omitted. |
+| `--hardened` | `views`, `build`, `report` | Open the drawing under the hardened provider limits (a quarter of a gigabyte of input, ten million entities, bounded strings, polylines, nesting and output). Use it for a drawing somebody else made. |
+| `--json` | every command | One JSON object on stdout, with `"v": 1`, instead of text. |
+
+`build` takes an optional output path and otherwise names the archive after the input with a `.pmtiles` extension. It writes the archive beside the output, syncs it and renames it into place only when it is complete, so a run that fails, passes `--timeout` or is stopped with Ctrl-C leaves nothing at the output (an existing file there is untouched) and removes its staging files on the way out. Ctrl-C exits 130; a second one quits at once and cannot clean up. A process killed outright can leave `<output>.tmp.data` and `<output>.tmp.idx` beside the output, and still never a half-written archive. The native reader cannot be interrupted inside one record, so a timeout or a Ctrl-C takes effect at the next primitive, which is soon but not instant.
+
+`report` prints what a build would have done and writes nothing: the primitive counts, how many were drawable, the tile and budget counters, and every diagnostic the reader and the tiler filed (fonts that were substituted, characters the served glyphs cannot draw, entities the reader did not understand). Nothing is dropped quietly, and a decode the reader did not report as complete is a warning on stderr.
+
+`info` and `validate` read a `.pmtiles` file and work in every build. `validate` exits 0 for a sound archive and 1 with one line per finding otherwise. A missing or unreadable file is a 1 too.
+
+**The DWG reader is a feature.** `views`, `build` and `report` need a build with `--features dwg-acadsharp` (it is in `full`). That feature pulls in `acadsharp-rs`, which links a native ACadSharp library (a NativeAOT archive from [libviprs-dep](https://github.com/libviprs/libviprs-dep)); its build script finds one through `ACADSHARP_NATIVE_DIR`, or in `$CARGO_HOME/acadsharp-native/`, and downloads nothing. A build without the feature exits 1 and names it:
+
+```
+Error: this build has no DWG provider, so it cannot read a drawing. Rebuild with `--features dwg-acadsharp` (`vector info` and `vector validate` still work)
+```
+
+A build that has the feature but no native library to link reports the reader as not linked, also exit 1. Run `viprs features` to see which kind of binary you have. The provider, how to build without it and how to write another are in the core's `docs/vector-providers.md`.
+
+Exit codes follow the table above: a view that does not exist or is a layout, a `--timeout 0` and an out-of-range `--max-zoom` are usage errors (2) and write nothing; an unreadable drawing, a failed decode, an exceeded budget and a `--timeout` are 1; Ctrl-C is 130.
 
 ## PDF Handling
 
