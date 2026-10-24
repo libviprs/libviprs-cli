@@ -145,6 +145,7 @@ fn test_image_then_info_round_trip() {
 fn expected_features() -> Vec<&'static str> {
     [
         ("avif", cfg!(feature = "avif")),
+        ("dwg-acadsharp", cfg!(feature = "dwg-acadsharp")),
         ("jp2k", cfg!(feature = "jp2k")),
         ("jxl", cfg!(feature = "jxl")),
         ("object-store-sink", cfg!(feature = "object-store-sink")),
