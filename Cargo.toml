@@ -74,7 +74,7 @@ ctrlc = "3"
 # core yet, so this points at the core branch that carries it (stacked on the
 # hardening branch of libviprs#1245). It has to become a crates.io version once
 # the core releases, and this crate cannot merge before that.
-libviprs = { git = "https://github.com/libviprs/libviprs", rev = "8de8e9b884318b87ea51548a7f3b1311832a8a5d" }
+libviprs = { git = "https://github.com/libviprs/libviprs", rev = "b166e1e718fd767070dce0c9f45c3e4c17b03516" }
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }

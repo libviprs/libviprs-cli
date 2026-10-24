@@ -769,6 +769,17 @@ mod tests {
         assert!(m.contains("--features dwg-acadsharp"), "{m}");
     }
 
+    /// libviprs-cli#123: `views --json` forwards the core's `view_json`, and a
+    /// view nobody gave a box must be `null` there, as "no extents" is in the text.
+    #[test]
+    fn a_view_with_no_extent_is_null_in_views_json() {
+        let unset = CadView::new(0, 0, [0.0, 0.0, 0.0, 0.0], 0, "Model");
+        let set = CadView::new(1, 0, [0.0, 0.0, 10.0, 5.0], 3, "Model 2");
+        let j = json!({ "v": JSON_VERSION, "views": [view_json(&unset), view_json(&set)] });
+        assert!(j["views"][0]["extents"].is_null(), "{}", j["views"][0]);
+        assert_eq!(j["views"][1]["extents"], json!([0.0, 0.0, 10.0, 5.0]));
+    }
+
     #[derive(Debug)]
     struct Layer(&'static str, Option<Box<Layer>>);
 
