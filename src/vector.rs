@@ -259,8 +259,28 @@ pub(crate) fn classify(error: &ConvertError, timeout: Option<Duration>) -> Failu
         ConvertError::Tiler(TilerError::Decode(CadError::NoSuchView { .. })) => {
             Failure::Usage(error.to_string())
         }
-        _ => Failure::Operational(error.to_string()),
+        _ => Failure::Operational(with_causes(error)),
     }
+}
+
+/// An error and every cause under it, joined with `: `.
+///
+/// A provider failure is `the acadsharp decoder failed` and keeps the reason
+/// (`a limit was exceeded`, `corrupt input`) as its source. Printing only the top
+/// of the chain left someone who passed `--hardened` unable to tell a drawing
+/// the limits refused from one that is not a drawing.
+fn with_causes(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let next = cause.to_string();
+        if !text.ends_with(&next) {
+            text.push_str(": ");
+            text.push_str(&next);
+        }
+        source = cause.source();
+    }
+    text
 }
 
 fn fail(failure: Failure) -> ! {
@@ -299,7 +319,7 @@ fn with_drawing<T>(args: &DrawingArgs, then: impl FnOnce(&dyn CadDrawing) -> T) 
     };
     let drawing = match decoder.open(CadSource::Path(&args.input)) {
         Ok(d) => d,
-        Err(e) => operational_error(&format!("{}: {e}", args.input.display())),
+        Err(e) => operational_error(&format!("{}: {}", args.input.display(), with_causes(&e))),
     };
     then(drawing.as_ref())
 }
@@ -747,5 +767,36 @@ mod tests {
             panic!("a missing provider is operational");
         };
         assert!(m.contains("--features dwg-acadsharp"), "{m}");
+    }
+
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|e| e as _)
+        }
+    }
+
+    #[test]
+    fn an_error_prints_with_every_cause_under_it() {
+        let e = Layer(
+            "the decoder failed",
+            Some(Box::new(Layer("a limit was exceeded", None))),
+        );
+        assert_eq!(with_causes(&e), "the decoder failed: a limit was exceeded");
+        // A wrapper that already ends with its cause does not say it twice.
+        let e = Layer(
+            "read it: bad input",
+            Some(Box::new(Layer("bad input", None))),
+        );
+        assert_eq!(with_causes(&e), "read it: bad input");
+        assert_eq!(with_causes(&Layer("alone", None)), "alone");
     }
 }
