@@ -412,6 +412,17 @@ Error: this build has no DWG provider, so it cannot read a drawing. Rebuild with
 
 A build that has the feature but no native library to link reports the reader as not linked, also exit 1. Run `viprs features` to see which kind of binary you have. The provider, how to build without it and how to write another are in the core's `docs/vector-providers.md`.
 
+**The native library is linked shared, so the binary has to find it at run time.** `acadsharp-rs` links `libacadsharp_native` as a shared library (`NEEDED libacadsharp_native.so` in the ELF header of the binary I built on Linux x64) and its rpath does not reach a binary that depends on it, so the built `viprs` has no `RPATH` or `RUNPATH`. Without help the loader refuses to start it, and that is every command, not only `vector` (`error while loading shared libraries: libacadsharp_native.so: cannot open shared object file`). Put the archive's `lib/` directory on `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS) when you run it, or copy `libacadsharp_native` next to a path the loader already searches:
+
+```
+export LD_LIBRARY_PATH="$ACADSHARP_NATIVE_DIR/lib"
+viprs vector views drawing.dwg
+```
+
+A binary built without `dwg-acadsharp` links nothing of the sort and needs none of this. I measured the Linux x64 build only, so the macOS spelling is what the platform's loader does and not something I ran.
+
+A decode that reports errors still exits 0. `build` and `report` print every diagnostic the reader and the tiler filed, and a decode the reader did not call complete adds a warning on stderr, but no exit code carries either. A script that has to refuse such an archive reads `decode.complete` and `decode.has_errors` from `--json`.
+
 Exit codes follow the table above: a view that does not exist or is a layout, a `--timeout 0` and an out-of-range `--max-zoom` are usage errors (2) and write nothing; an unreadable drawing, a failed decode, an exceeded budget and a `--timeout` are 1; Ctrl-C is 130.
 
 ## PDF Handling
