@@ -1382,7 +1382,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "libviprs"
 version = "0.6.1"
-source = "git+https://github.com/libviprs/libviprs?branch=feat%2F1035-vector-api#d8a67fe9973de7ef0f359796d848bc0797e9ab3a"
+source = "git+https://github.com/libviprs/libviprs?rev=8de8e9b884318b87ea51548a7f3b1311832a8a5d#8de8e9b884318b87ea51548a7f3b1311832a8a5d"
 dependencies = [
  "ab_glyph",
  "acadsharp-rs",
