@@ -525,8 +525,7 @@ fn changelog_has_no_phantom_0_5_release() {
 }
 
 /// The cut has to leave `--locked` buildable and the notes findable: the
-/// manifest version, the lockfile entry and a sealed CHANGELOG heading agree,
-/// and `[Unreleased]` is bare.
+/// manifest version, the lockfile entry and a sealed CHANGELOG heading agree.
 #[test]
 fn cargo_version_lockfile_and_changelog_agree() {
     let version = cargo_value("version");
@@ -560,13 +559,11 @@ fn cargo_version_lockfile_and_changelog_agree() {
             .is_some_and(|h| h.starts_with(&format!("## [{version}] "))),
         "the section right below [Unreleased] must be {version}: {heads:?}"
     );
-    let after_unreleased = changelog
-        .lines()
-        .skip_while(|l| *l != "## [Unreleased]")
-        .skip(1)
-        .take_while(|l| !l.starts_with("## ["))
-        .any(|l| !l.trim().is_empty());
-    assert!(!after_unreleased, "[Unreleased] must be bare after a cut");
+    // `[Unreleased]` is not asserted bare here. It is bare in the cut commit
+    // (RELEASING.md step 2) and it holds the pending notes in every commit
+    // between cuts, and a test cannot tell those two apart: asserting bare
+    // failed every change that records itself in the CHANGELOG, which is what
+    // the file is for (libviprs#1035 hit it).
 }
 
 /// Issue #112: steps run under `bash -e`, and `gh api` exits 1 on the 404 that

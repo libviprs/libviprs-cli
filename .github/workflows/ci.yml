@@ -57,6 +57,11 @@ jobs:
       - run: cargo clippy --all-targets --features svg -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features jxl -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features jp2k -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      # `viprs vector views|build|report` read a drawing through the core's
+      # `dwg-acadsharp` provider (libviprs#1035). Clippy never links, so the cell
+      # needs no native archive; the native cells in tests/vector_cli.rs skip
+      # without one.
+      - run: cargo clippy --all-targets --features dwg-acadsharp -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features object-store-sink -- -D warnings -W clippy::incompatible_msrv -W deprecated
       # The core compiles out the only caller of its `resolve_pdfium_path` under
       # `pdfium-static`, so the job-wide `RUSTFLAGS: -Dwarnings` makes the core

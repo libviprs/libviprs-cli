@@ -97,7 +97,13 @@ fn info_json_is_versioned_and_complete() {
     assert_eq!(j["name"], "Ladder");
     assert_eq!(j["tile_type"], "mvt");
     assert_eq!(j["max_zoom"], 3);
-    assert!(j["layers"].as_array().unwrap().iter().any(|l| l["id"] == "lines"));
+    assert!(
+        j["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["id"] == "lines")
+    );
     assert_eq!(j["tiler"]["max_zoom"], 3);
 }
 
@@ -106,7 +112,12 @@ fn validate_accepts_a_sound_archive() {
     let out = run(&["vector", "validate", s(&fixture("ladder.pmtiles"))]);
     assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
     assert!(stdout(&out).starts_with("OK:"), "{}", stdout(&out));
-    let out = run(&["vector", "validate", s(&fixture("ladder.pmtiles")), "--json"]);
+    let out = run(&[
+        "vector",
+        "validate",
+        s(&fixture("ladder.pmtiles")),
+        "--json",
+    ]);
     assert_eq!(code(&out), 0);
     let j = json(&out);
     assert_eq!(j["v"], 1);
@@ -170,9 +181,30 @@ fn a_command_line_mistake_is_a_usage_error() {
         vec!["vector", "build"],
         vec!["vector", "info"],
         vec!["vector", "build", s(&input), s(&out_path), "--timeout", "0"],
-        vec!["vector", "build", s(&input), s(&out_path), "--timeout", "soon"],
-        vec!["vector", "build", s(&input), s(&out_path), "--timeout", "5x"],
-        vec!["vector", "build", s(&input), s(&out_path), "--max-zoom", "25"],
+        vec![
+            "vector",
+            "build",
+            s(&input),
+            s(&out_path),
+            "--timeout",
+            "soon",
+        ],
+        vec![
+            "vector",
+            "build",
+            s(&input),
+            s(&out_path),
+            "--timeout",
+            "5x",
+        ],
+        vec![
+            "vector",
+            "build",
+            s(&input),
+            s(&out_path),
+            "--max-zoom",
+            "25",
+        ],
         vec!["vector", "report", s(&input), "--max-zoom", "-1"],
         vec!["vector", "build", s(&input), s(&input)],
     ];
@@ -312,7 +344,11 @@ fn build_writes_one_valid_archive_and_nothing_else() {
     ]);
     assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
     assert!(stdout(&out).starts_with("Wrote "), "{}", stdout(&out));
-    assert_eq!(entries(&dir), vec!["sample.pmtiles"], "no staging files left");
+    assert_eq!(
+        entries(&dir),
+        vec!["sample.pmtiles"],
+        "no staging files left"
+    );
     assert_eq!(code(&run(&["vector", "validate", s(&out_path)])), 0);
     let info = run(&["vector", "info", s(&out_path), "--json"]);
     let j = json(&info);
@@ -328,7 +364,10 @@ fn build_writes_one_valid_archive_and_nothing_else() {
     assert_eq!(j["v"], 1);
     assert_eq!(j["decode"]["complete"], true);
     assert!(j["tiles"]["written"].as_u64().unwrap() > 0);
-    assert!(dir.join("again.pmtiles").is_file(), "the output name follows the input's");
+    assert!(
+        dir.join("again.pmtiles").is_file(),
+        "the output name follows the input's"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -344,10 +383,21 @@ fn report_writes_nothing_and_agrees_with_a_build() {
     assert_eq!(code(&rep), 0, "stderr:\n{}", stderr(&rep));
     assert!(entries(&dir).is_empty());
     let built = dir.join("b.pmtiles");
-    let b = run(&["vector", "build", s(&sample), s(&built), "--max-zoom", "5", "--json"]);
+    let b = run(&[
+        "vector",
+        "build",
+        s(&sample),
+        s(&built),
+        "--max-zoom",
+        "5",
+        "--json",
+    ]);
     assert_eq!(code(&b), 0);
     let (rj, bj) = (json(&rep), json(&b));
-    assert_eq!(rj["tiles"], bj["tiles"], "a report is a build that writes nothing");
+    assert_eq!(
+        rj["tiles"], bj["tiles"],
+        "a report is a build that writes nothing"
+    );
     assert_eq!(rj["decode"], bj["decode"]);
     assert!(rj["destination"].is_null());
     let _ = std::fs::remove_dir_all(dir);
@@ -394,7 +444,11 @@ fn a_layout_or_an_unknown_view_is_a_usage_error() {
         "No such view",
     ]);
     assert_eq!(code(&out), 2, "stderr:\n{}", stderr(&out));
-    assert!(stderr(&out).contains("no view is named"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("no view is named"),
+        "{}",
+        stderr(&out)
+    );
     assert!(entries(&dir).is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }

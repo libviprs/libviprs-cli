@@ -31,15 +31,13 @@
 //!   killed outright can leave `<output>.tmp*` staging files, and never a
 //!   half-written output.
 
-#![allow(unused_imports, unused_variables, dead_code)]
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use libviprs::CancelToken;
 use libviprs::cad::{CadDrawing, CadError, CadSource, ViewKind};
 use libviprs::vector::convert::{
-    ConvertError, ConvertOptions, Conversion, ViewSelector, check, convert, default_decoder,
+    Conversion, ConvertError, ConvertOptions, ViewSelector, check, convert, default_decoder,
     inspect, list_views, report, view_json,
 };
 use libviprs::vector::tiler::{TilerConfig, TilerError};
@@ -187,7 +185,30 @@ const JSON_VERSION: u32 = 1;
 
 /// `1`, `90`, `500ms`, `2m`: a positive span.
 fn parse_duration(text: &str) -> Result<Duration, String> {
-    unimplemented!("#1035: stubbed so the tests start red")
+    let text = text.trim();
+    let split = text
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(text.len());
+    let (number, unit) = text.split_at(split);
+    let value: f64 = number
+        .parse()
+        .map_err(|_| format!("{text:?} is not a duration; write 90, 500ms, 2m or 1h"))?;
+    let seconds = match unit.trim() {
+        "" | "s" => value,
+        "ms" => value / 1000.0,
+        "m" => value * 60.0,
+        "h" => value * 3600.0,
+        other => return Err(format!("{other:?} is not a unit; use ms, s, m or h")),
+    };
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err("a timeout has to be longer than zero".to_owned());
+    }
+    // A day is longer than any conversion is meant to run, and a value past it
+    // is a typo that would otherwise overflow `Duration`.
+    if seconds > 86_400.0 {
+        return Err("a timeout is at most 24h".to_owned());
+    }
+    Ok(Duration::from_secs_f64(seconds))
 }
 
 /// Why a run stopped, as the command line sees it.
@@ -204,32 +225,67 @@ pub(crate) enum Failure {
 impl Failure {
     /// The process exit status.
     pub(crate) fn exit_code(&self) -> i32 {
-        unimplemented!("#1035: stubbed so the tests start red")
+        match self {
+            Self::Usage(_) => 2,
+            Self::Operational(_) => 1,
+            Self::Interrupted => 130,
+        }
     }
 }
 
 /// Sorts a library error into the exit-code contract.
 pub(crate) fn classify(error: &ConvertError, timeout: Option<Duration>) -> Failure {
-    unimplemented!("#1035: stubbed so the tests start red")
+    if error.is_cancelled() {
+        return Failure::Interrupted;
+    }
+    if error.is_deadline() {
+        let limit = timeout.map_or_else(String::new, |t| format!(" {t:?}"));
+        return Failure::Operational(format!(
+            "the run passed its{limit} --timeout; nothing was written"
+        ));
+    }
+    match error {
+        ConvertError::ProviderNotBuilt => Failure::Operational(
+            "this build has no DWG provider, so it cannot read a drawing. Rebuild with \
+             `--features dwg-acadsharp` (`vector info` and `vector validate` still work)"
+                .to_owned(),
+        ),
+        // A selector the command line alone gets wrong.
+        ConvertError::NoSuchViewName { .. } | ConvertError::NoModelSpace => {
+            Failure::Usage(error.to_string())
+        }
+        ConvertError::Cad(CadError::NoSuchView { .. }) => Failure::Usage(error.to_string()),
+        ConvertError::Tiler(TilerError::ViewNotEnabled { .. }) => Failure::Usage(error.to_string()),
+        ConvertError::Tiler(TilerError::Decode(CadError::NoSuchView { .. })) => {
+            Failure::Usage(error.to_string())
+        }
+        _ => Failure::Operational(error.to_string()),
+    }
 }
 
 fn fail(failure: Failure) -> ! {
-    match failure {
+    match &failure {
         Failure::Usage(message) => usage_error(
-            &message,
+            message,
             "`viprs vector views <drawing>` lists the views, and `--help` the flags",
         ),
-        Failure::Operational(message) => operational_error(&message),
+        Failure::Operational(message) => operational_error(message),
         Failure::Interrupted => {
             eprintln!("Interrupted: nothing was written.");
-            std::process::exit(130);
+            std::process::exit(failure.exit_code());
         }
     }
 }
 
 /// `viprs vector ...`.
 pub(crate) fn run(args: VectorArgs) {
-    unimplemented!("#1035: stubbed so the tests start red")
+    match args.command {
+        VectorCommand::Views(a) => run_views(&a),
+        VectorCommand::Build(a) => run_build(a),
+        VectorCommand::Report(a) => run_report(&a),
+        VectorCommand::Info(a) => run_info(&a),
+        VectorCommand::Validate(a) => run_validate(&a),
+    }
 }
 
 /// Opens the drawing through the library's own provider choice.
@@ -265,16 +321,21 @@ fn run_views(args: &ViewsArgs) {
                 ViewKind::Layout => "layout",
                 _ => "unknown",
             };
-            let extents = view.extents().map_or_else(
-                || "no extents".to_owned(),
-                |e| {
-                    format!(
-                        "{} x {} drawing units",
-                        short(e.max_x() - e.min_x()),
-                        short(e.max_y() - e.min_y())
-                    )
-                },
-            );
+            // A zero-size box is a header nobody filled in, which is not an
+            // extent worth printing.
+            let extents = view
+                .extents()
+                .filter(|e| e.max_x() > e.min_x() || e.max_y() > e.min_y())
+                .map_or_else(
+                    || "no extents".to_owned(),
+                    |e| {
+                        format!(
+                            "{} x {} drawing units",
+                            short(e.max_x() - e.min_x()),
+                            short(e.max_y() - e.min_y())
+                        )
+                    },
+                );
             let note = if view.kind() == ViewKind::Model {
                 ""
             } else {
@@ -309,7 +370,7 @@ pub(crate) fn build_with(
     output: &Path,
     options: &ConvertOptions,
 ) -> Result<Conversion, ConvertError> {
-    unimplemented!("#1035: stubbed so the tests start red")
+    convert(drawing, view, output, options)
 }
 
 fn run_build(args: BuildArgs) {
@@ -370,7 +431,11 @@ fn print_conversion(done: &Conversion, as_json: bool) {
         ),
         None => println!("Report only, nothing written"),
     }
-    println!("View:        {:?} (index {})", done.view.name(), done.view.index());
+    println!(
+        "View:        {:?} (index {})",
+        done.view.name(),
+        done.view.index()
+    );
     println!(
         "Primitives:  {} decoded, {} drawable",
         t.primitives, t.drawable
@@ -385,8 +450,14 @@ fn print_conversion(done: &Conversion, as_json: bool) {
         ("undrawable primitives", t.undrawable),
         ("curves stopped by the point cap", t.curves_capped),
         ("tiles past the byte budget", t.oversized_count),
-        ("runs dropped for the point budget", t.dropped_for_point_budget),
-        ("text dropped for the text budget", t.dropped_for_text_budget),
+        (
+            "runs dropped for the point budget",
+            t.dropped_for_point_budget,
+        ),
+        (
+            "text dropped for the text budget",
+            t.dropped_for_text_budget,
+        ),
         ("labels cut to the length cap", t.text_truncated),
     ]
     .into_iter()
@@ -448,7 +519,10 @@ fn run_info(args: &ArchiveArgs) {
     }
     let [w, s, e, n] = info.bounds;
     println!("Name:        {}", info.name.as_deref().unwrap_or("(none)"));
-    println!("Tiles:       {} ({}, {})", info.tile_type, info.tile_compression, "vector");
+    println!(
+        "Tiles:       {}, {} compressed",
+        info.tile_type, info.tile_compression
+    );
     println!("Zoom:        {} to {}", info.min_zoom, info.max_zoom);
     println!("Bounds:      {w:.6},{s:.6},{e:.6},{n:.6} (lon/lat degrees)");
     println!(
@@ -460,7 +534,11 @@ fn run_info(args: &ArchiveArgs) {
     }
     for layer in &info.layers {
         let fields: Vec<&str> = layer.fields.keys().map(String::as_str).collect();
-        println!("Layer:       {} ({})", layer.id, fields.join(", "));
+        if fields.is_empty() {
+            println!("Layer:       {}", layer.id);
+        } else {
+            println!("Layer:       {} ({})", layer.id, fields.join(", "));
+        }
     }
     if let Some(t) = &info.tiler {
         println!("Tiler:       {t}");
@@ -520,7 +598,13 @@ mod tests {
 
     impl CadDrawing for Ladder {
         fn views(&self) -> Result<Vec<CadView>, CadError> {
-            Ok(vec![CadView::new(0, 0, [0.0, 0.0, 100.0, 100.0], 1, "Model")])
+            Ok(vec![CadView::new(
+                0,
+                0,
+                [0.0, 0.0, 100.0, 100.0],
+                1,
+                "Model",
+            )])
         }
 
         fn decode(
@@ -561,7 +645,12 @@ mod tests {
             #[command(flatten)]
             run: RunArgs,
         }
-        Wrap::parse_from(std::iter::once("t").chain(args.iter().copied()).chain(["in.dwg"])).run
+        Wrap::parse_from(
+            std::iter::once("t")
+                .chain(args.iter().copied())
+                .chain(["in.dwg"]),
+        )
+        .run
     }
 
     #[test]
@@ -628,7 +717,8 @@ mod tests {
     fn a_finished_build_is_one_valid_archive_and_nothing_else() {
         let dir = scratch("done");
         let out = dir.join("a.pmtiles");
-        let options = ConvertOptions::new().with_tiler(tiler_config(&config(&["--max-zoom", "4"]), None));
+        let options =
+            ConvertOptions::new().with_tiler(tiler_config(&config(&["--max-zoom", "4"]), None));
         let done = build_with(&Ladder(40), &ViewSelector::Model, &out, &options).unwrap();
         assert_eq!(done.destination.as_deref(), Some(out.as_path()));
         assert_eq!(left_in(&dir), vec!["a.pmtiles".to_owned()]);
