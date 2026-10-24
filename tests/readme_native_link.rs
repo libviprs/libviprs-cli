@@ -21,7 +21,7 @@ fn vector_section() -> String {
         .find("### `viprs vector`")
         .expect("README has no viprs vector section");
     let rest = &text[start + 4..];
-    let end = rest.find("\n## ").map_or(rest.len(), |i| i);
+    let end = rest.find("\n## ").unwrap_or(rest.len());
     rest[..end].to_owned()
 }
 
