@@ -537,7 +537,7 @@ fn hardened_reaches_the_decoder_and_refuses_a_drawing_past_the_input_cap() {
         let out = run(&["vector", command, s(&huge), "--hardened"]);
         assert_eq!(code(&out), 1, "{command}: stderr:\n{}", stderr(&out));
         assert!(
-            stderr(&out).contains("limit"),
+            stderr(&out).contains("bound set in Limits"),
             "{command} --hardened should be refused by the input cap: {}",
             stderr(&out)
         );
@@ -558,7 +558,7 @@ fn without_hardened_the_input_cap_is_not_applied() {
         // The zeros are not a drawing, so this is refused too, by the parser.
         assert_eq!(code(&out), 1, "{command}: stderr:\n{}", stderr(&out));
         assert!(
-            !stderr(&out).contains("limit"),
+            !stderr(&out).contains("bound set in Limits"),
             "{command} applied a limit it was not given: {}",
             stderr(&out)
         );
