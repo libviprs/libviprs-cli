@@ -21,9 +21,9 @@ the `version` in `Cargo.toml`.
 
 ### Changed
 
-- `libviprs` is a git dependency pinned to a core main revision (`8de8e9b8`,
-  which carries `vector::convert` and the hardening from libviprs#1245) until the
-  core releases, and `Cargo.lock` moved with it.
+- `libviprs` is a git dependency pinned to a core main revision (`b166e1e7`,
+  which carries `vector::convert`, the hardening from libviprs#1245 and the JSON
+  spelling from libviprs#1293) until the core releases, and `Cargo.lock` moved with it.
 
 ## [0.6.1] — 2026-10-09
 
