@@ -504,3 +504,64 @@ fn ctrl_c_mid_build_exits_130_and_leaves_nothing_behind() {
     assert!(entries(&dir).is_empty(), "left behind: {:?}", entries(&dir));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------------------
+// --hardened (libviprs-cli#122)
+// ---------------------------------------------------------------------------
+
+/// A DWG version stamp followed by zeros, one byte past the hardened input cap
+/// (256 MiB). A sparse file, so it costs no disk.
+#[cfg(feature = "dwg-acadsharp")]
+fn oversized_drawing(dir: &Path) -> PathBuf {
+    use std::io::Write;
+    let path = dir.join("huge.dwg");
+    let mut f = std::fs::File::create(&path).unwrap();
+    f.write_all(b"AC1032").unwrap();
+    f.set_len((256 << 20) + 1).unwrap();
+    path
+}
+
+/// The flag reaches `default_decoder`. The reviewer's mutation, passing `false`
+/// there, left every other cell green because the sample drawing is inside every
+/// hardened cap. A file past the input cap is refused by the cap only when the
+/// flag is on, and the provider's own limit error is what says so.
+#[cfg(feature = "dwg-acadsharp")]
+#[test]
+fn hardened_reaches_the_decoder_and_refuses_a_drawing_past_the_input_cap() {
+    if !native_lane() {
+        return;
+    }
+    let dir = unique_dir("hardened");
+    let huge = oversized_drawing(&dir);
+    for command in ["views", "report"] {
+        let out = run(&["vector", command, s(&huge), "--hardened"]);
+        assert_eq!(code(&out), 1, "{command}: stderr:\n{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("limit"),
+            "{command} --hardened should be refused by the input cap: {}",
+            stderr(&out)
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(feature = "dwg-acadsharp")]
+#[test]
+fn without_hardened_the_input_cap_is_not_applied() {
+    if !native_lane() {
+        return;
+    }
+    let dir = unique_dir("unhardened");
+    let huge = oversized_drawing(&dir);
+    for command in ["views", "report"] {
+        let out = run(&["vector", command, s(&huge)]);
+        // The zeros are not a drawing, so this is refused too, by the parser.
+        assert_eq!(code(&out), 1, "{command}: stderr:\n{}", stderr(&out));
+        assert!(
+            !stderr(&out).contains("limit"),
+            "{command} applied a limit it was not given: {}",
+            stderr(&out)
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
