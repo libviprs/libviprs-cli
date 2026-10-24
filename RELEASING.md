@@ -36,7 +36,7 @@ The very first release has no `release` branch yet, so the push creates it from 
 
 `.github/workflows/release.yml` runs on that push:
 
-1. Reads the version from `Cargo.toml`, requires a non-empty `## [X.Y.Z]` section in `CHANGELOG.md`, and stops if the tag `vX.Y.Z` already exists.
+1. Reads the version from `Cargo.toml`, requires a non-empty `## [X.Y.Z]` section in `CHANGELOG.md`, stops if anything is still under `## [Unreleased]` (the merge in step 4 would ship it with no release notes), and stops if the tag `vX.Y.Z` already exists.
 2. Builds `x86_64-unknown-linux-gnu` (Ubuntu 22.04) and `aarch64-apple-darwin` (macOS 14) with Rust 1.99.1, `cargo build --release --locked`, default features. Default means `pdfium`, which binds libpdfium at runtime, so nothing is bundled.
 3. Strips the binary, packs `libviprs-cli-vX.Y.Z-<target>.tar.gz` (the `viprs` binary, `README.md`, `LICENSE`), and smoke tests the unpacked copy: layout, `--help`, `features`, and a `test-image` then `info` round trip. None of that needs libpdfium. (`viprs` has no `--version` flag.)
 4. Writes `SHA256SUMS` over both tarballs and checks it.

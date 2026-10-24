@@ -7,7 +7,8 @@ name: release
 #
 # Four jobs:
 #   prepare    reads the version from Cargo.toml, refuses a CHANGELOG with no
-#              sealed `## [X.Y.Z]` section, and refuses a tag that exists.
+#              sealed `## [X.Y.Z]` section or with notes still under
+#              `## [Unreleased]`, and refuses a tag that exists.
 #   build      one cell per target, smoke-tests the packaged binary.
 #   checksums  writes SHA256SUMS over both tarballs.
 #   publish    the only job with `contents: write`. Creates the annotated tag
@@ -86,6 +87,26 @@ jobs:
           fi
           echo "Release notes for $VERSION:"
           cat release-notes.md
+
+      - name: Refuse notes left under [Unreleased]
+        run: |
+          set -euo pipefail
+          # Step 4 in RELEASING.md merges all of `main` into `release`, so a
+          # note still under `## [Unreleased]` here would ship with no release
+          # notes. This takes everything under that heading up to the next
+          # `## [`, and drops blank lines and `###` subsection headings, which
+          # are not notes. tests/release_workflow.rs runs this script against
+          # three CHANGELOGs, so it cannot quietly stop working.
+          awk '
+            index($0, "## [") == 1 { on = (index($0, "## [Unreleased]") == 1); next }
+            on && $0 !~ /^[[:space:]]*(#.*)?$/ { print }
+          ' CHANGELOG.md > unreleased-notes.md
+          if [ -s unreleased-notes.md ]; then
+            echo "::error::CHANGELOG.md still has notes under '## [Unreleased]', and this release would ship without them. Seal them under the version heading first (RELEASING.md)."
+            cat unreleased-notes.md
+            exit 1
+          fi
+          rm -f unreleased-notes.md
 
       - name: Refuse a tag that already exists
         env:

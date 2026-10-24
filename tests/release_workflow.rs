@@ -513,6 +513,116 @@ fn the_version_gates_run_before_anything_is_built() {
     );
 }
 
+/// The `run: |` script of the step in `job` whose `- name:` contains `name`,
+/// de-indented. `None` when there is no such step or it has no block script.
+fn step_script(job: &[String], name: &str) -> Option<String> {
+    let start = job
+        .iter()
+        .position(|l| code(l).starts_with("- name:") && code(l).contains(name))?;
+    let step_indent = indent(&job[start]);
+    let mut lines = job[start + 1..]
+        .iter()
+        .take_while(|l| is_blank_or_comment(l) || indent(l) > step_indent);
+    let run = lines.position(|l| code(l) == "run: |")?;
+    let body: Vec<&String> = job[start + 1..]
+        .iter()
+        .take_while(|l| is_blank_or_comment(l) || indent(l) > step_indent)
+        .skip(run + 1)
+        .take_while(|l| l.trim().is_empty() || indent(l) > indent(&job[start + 1 + run]))
+        .collect();
+    let base = body
+        .iter()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| indent(l))?;
+    Some(
+        body.iter()
+            .map(|l| l.get(base..).unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// Issue #120. RELEASING.md step 4 merges all of `main` into `release`, so
+/// anything still under `## [Unreleased]` at publish time ships without release
+/// notes. The check lives in the workflow, because it holds only in a cut
+/// commit and so cannot be a plain assertion on the CHANGELOG (libviprs#1035).
+#[test]
+fn the_prepare_job_refuses_unsealed_notes_under_unreleased() {
+    let text = workflow();
+    let all = jobs(&text);
+    let (_, prepare) = all
+        .iter()
+        .find(|(id, _)| id == "prepare")
+        .expect("no `prepare` job");
+    let script = step_script(prepare, "Unreleased")
+        .expect("the prepare job has no step about `[Unreleased]` with a run script");
+    for needle in [
+        "CHANGELOG.md",
+        "## [Unreleased]",
+        "::error::",
+        "exit 1",
+        "RELEASING.md",
+    ] {
+        assert!(
+            script.contains(needle),
+            "the unsealed-notes step is missing `{needle}`:\n{script}"
+        );
+    }
+    // It has to run before the job that publishes can be reached, which is to
+    // say inside `prepare`, which `build` needs. It also must not be the step
+    // that reads release notes out of a version section.
+    let pos = |name: &str| {
+        prepare
+            .iter()
+            .position(|l| code(l).starts_with("- name:") && code(l).contains(name))
+    };
+    assert!(pos("Unreleased").is_some());
+    assert!(pos("sealed CHANGELOG section").is_some());
+}
+
+/// Runs the step's own script against three CHANGELOGs, so the guard is held to
+/// what it does and not to how it is worded.
+#[test]
+fn the_unsealed_notes_step_passes_a_bare_unreleased_and_fails_a_non_empty_one() {
+    let text = workflow();
+    let all = jobs(&text);
+    let (_, prepare) = all.iter().find(|(id, _)| id == "prepare").unwrap();
+    let script = step_script(prepare, "Unreleased").expect("no unsealed-notes step");
+    let dir = std::env::temp_dir().join(format!("viprs-release-guard-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = |changelog: &str| {
+        std::fs::write(dir.join("CHANGELOG.md"), changelog).unwrap();
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&script)
+            .current_dir(&dir)
+            .output()
+            .expect("bash must be available")
+    };
+    let bare =
+        "# Changelog\n\n## [Unreleased]\n\n## [1.2.3] - 2026-01-01\n\n### Added\n\n- a thing\n";
+    let pending = "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- not sealed\n\n## [1.2.3] - 2026-01-01\n\n- a thing\n";
+    let heading_only =
+        "# Changelog\n\n## [Unreleased]\n\n### Added\n\n## [1.2.3] - 2026-01-01\n\n- a thing\n";
+    let ok = run(bare);
+    assert!(ok.status.success(), "a bare [Unreleased] must pass: {ok:?}");
+    let bad = run(pending);
+    assert!(!bad.status.success(), "notes under [Unreleased] must fail");
+    let msg =
+        String::from_utf8_lossy(&bad.stdout).to_string() + &String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        msg.contains("::error::") && msg.contains("Unreleased"),
+        "{msg}"
+    );
+    // An empty `### Added` stub is not a note.
+    let stub = run(heading_only);
+    assert!(
+        stub.status.success(),
+        "empty subsection headings must pass: {stub:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 0.5.0 was never released: the CLI went from 0.4.0 to 0.6.0 to line up with
 /// libviprs 0.6.0, so a `## [0.5.0]` heading would claim a version nobody got.
 #[test]
