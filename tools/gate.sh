@@ -98,7 +98,7 @@ run_remote() {
   top=$(git rev-parse --show-toplevel)
   local inner
   inner="set -eu; mkdir /work; tar -x -C /work; cd /work; \
-(command -v cargo-clippy >/dev/null && command -v rustfmt >/dev/null) || rustup component add clippy rustfmt; \
+(cargo fmt --version >/dev/null 2>&1 && cargo clippy --version >/dev/null 2>&1) || rustup component add clippy rustfmt; \
 $script"
   echo "gate: $lane on $HOST in $IMAGE (tree streamed in, container removed afterwards)" >&2
   # Files git lists but the working tree no longer has (a staged delete) are dropped from the list.
