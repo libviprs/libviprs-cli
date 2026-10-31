@@ -17,8 +17,8 @@ the `version` in `Cargo.toml`.
   (libviprs-cli#130, RL1.4 of libviprs#1329): a raster goes into a `.pvec` beside a drawing's
   linework with its tiles untouched and a placement composed from a georeference, an archive's
   tiles pass through byte for byte, and `pvec rasters` lists the placements (`--json`) and
-  writes one tile back out. They need the new `pvec-raster` feature (in `full`, off by default
-  while PVec is a private repository); without it they exit 1 and name it. `pyramid` gains
+  writes one tile back out. They sit behind the new `pvec-raster` feature, which is on by default
+  (libviprs-cli#134, PVec is public); a `--no-default-features` build exits 1 and names it. `pyramid` gains
   `--pvec-into`, `--source-to-geo`, `--pixel-to-source`, `--band`, `--opacity`, `--attribution`
   and `--layer`, and `--affine`, which also stores the full transform in a PMTiles archive.
   The core pin moves to the commit with `PvecSink` and the opacity and layer fields (#1347).
@@ -40,6 +40,12 @@ the `version` in `Cargo.toml`.
   it. `--json` on every command prints `{"v": 1, ...}`.
 
 ### Changed
+
+- `pvec-raster` is a default feature (libviprs-cli#134), so the `.pvec` raster commands are in a plain
+  `cargo install` and in the released tarballs. PVec is public, and its crates are plain git
+  dependencies that fetch with no token. The release smoke test now requires `pvec-raster` in
+  `viprs features`. The stripped x86_64 release binary is 14.0 MB, against 10.9 MB for
+  `--no-default-features` (which leaves out the pdfium binding as well).
 
 - `libviprs` is a git dependency pinned to a core main revision (`b166e1e7`,
   which carries `vector::convert`, the hardening from libviprs#1245 and the JSON

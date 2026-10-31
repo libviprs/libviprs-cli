@@ -18,9 +18,10 @@ name: release
 # including SHA256SUMS and publishes nothing. GitHub only offers dispatch for
 # a workflow file that is on the default branch.
 #
-# Features: the default set (`default = ["pdfium"]` in Cargo.toml), exactly what
-# `cargo install` gives. `pdfium` binds libpdfium at runtime, so the tarball
-# does not carry it (see README, Installation).
+# Features: the default set (`default = ["pdfium", "pvec-raster"]` in Cargo.toml),
+# exactly what `cargo install` gives. `pdfium` binds libpdfium at runtime, so the
+# tarball does not carry it (see README, Installation). `pvec-raster` is pure Rust
+# and its git dependencies fetch with no token, so the build needs no secret.
 
 on:
   push:
@@ -183,8 +184,8 @@ jobs:
 
       # Test what ships: unpack the tarball somewhere clean and run that copy.
       # `viprs` has no --version flag (clap's is not enabled), so the checks
-      # are the layout, --help, `features` (which must list pdfium, the
-      # default feature), and a round trip that needs no libpdfium: write a
+      # are the layout, --help, `features` (which must list pdfium and
+      # pvec-raster, the default features), and a round trip that needs no libpdfium: write a
       # synthetic image and read its size back.
       - name: Smoke test the tarball
         run: |
@@ -202,6 +203,7 @@ jobs:
           "$bin" --help > /dev/null
           "$bin" features | tee features.txt
           grep -qx pdfium features.txt
+          grep -qx pvec-raster features.txt
           (
             cd smoke
             "$bin" test-image probe.png --width 64 --height 48

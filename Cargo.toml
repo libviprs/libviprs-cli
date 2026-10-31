@@ -16,10 +16,10 @@ name = "viprs"
 path = "src/main.rs"
 
 [features]
-default = ["pdfium"]
+default = ["pdfium", "pvec-raster"]
 # Vector-PDF rasterisation via PDFium (`viprs pyramid <file>.pdf --render`).
 # On by default so the shipped binary keeps the `--render` path; build with
-# `--no-default-features` to produce a pdfium-free binary that links no
+# `--no-default-features` to produce a pdfium-free (and pvec-free) binary that links no
 # `pdfium-render`/native `libpdfium` (embedded-image extraction and `pdf`
 # info still work — those are pure-Rust `lopdf` paths). Enables the core
 # crate's `pdfium` feature, which is what pulls in `pdfium-render`.
@@ -49,9 +49,10 @@ jp2k = ["libviprs/jp2k"]
 # validate` read a PMTiles file and work either way.
 dwg-acadsharp = ["libviprs/dwg-acadsharp"]
 # The `.pvec` raster commands: `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and
-# `viprs pvec rasters`. Pure Rust, but the PVec crates are git dependencies on a private
-# repository, so the default build leaves them out. Without it those commands exit 1 and name
-# this feature; every usage error they have is still reported (exit 2).
+# `viprs pvec rasters`. On by default, since PVec is public and the crates are plain git
+# dependencies that fetch with no token. A `--no-default-features` build leaves them out; those
+# commands then exit 1 and name this feature, and every usage error they have is still reported
+# (exit 2).
 pvec-raster = ["libviprs/pvec-raster", "dep:pvec-facade", "dep:pvec-capabilities"]
 # Everything above except `pdfium-static`, which trades the runtime-binding
 # pdfium path for a link-time one and cannot be on for a build that has no
@@ -84,8 +85,8 @@ libviprs = { git = "https://github.com/libviprs/libviprs", rev = "ac69397070c52a
 # PVec's facade and capability registry, for `viprs pyramid --storage pvec`, `viprs pmtiles
 # to-pvec` and `viprs pvec rasters` (libviprs-cli#130). The revision is the one the core pins
 # (`pvec-facade` in libviprs's own Cargo.toml), so both name one `PvecWriter`; moving it means
-# moving the core's first. PVec is a private repository for now, which is why the commands are
-# behind the `pvec-raster` feature and the release workflow does not build them.
+# moving the core's first. PVec is public, so these are plain git dependencies, and the
+# `pvec-raster` feature that enables them is a default one (libviprs-cli#134).
 pvec-facade = { package = "pvec", git = "https://github.com/libviprs/pvec", rev = "b9f441618153d256777121a6a1518b15e7f42099", features = ["unstable-stream"], optional = true }
 pvec-capabilities = { git = "https://github.com/libviprs/pvec", rev = "b9f441618153d256777121a6a1518b15e7f42099", optional = true }
 serde_json = { version = "1", features = ["preserve_order"] }
