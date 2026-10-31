@@ -479,9 +479,9 @@ tools/install-hooks.sh
 
 `tools/gate.sh` does the work (`lint`, `test`, or `clean` to drop the cargo and target volumes on MARS). It streams the tree over ssh, keeps `CARGO_TARGET_DIR=/tmp/target` in a docker volume, and leaves no scratch directory behind. `tests/hooks_gate_135.rs` fails if the gate's cargo cells drift from CI's.
 
-If MARS cannot be reached the hook fails and says so; it never falls back to building locally. `VIPRS_GATE_HOST=user@host` points it at another docker host, and `VIPRS_GATE_IMAGE`, `VIPRS_GATE_CPUS` and `VIPRS_GATE_MEMORY` tune the container.
+If MARS cannot be reached the hook fails and says so; it never falls back to building locally. `VIPRS_GATE_HOST=user@host` points it at another docker host, `LIBVIPRS_HOOKS_SKIP_MARS=1` skips the gate loudly for one command (the same switch the other libviprs repos use), and `VIPRS_GATE_IMAGE`, `VIPRS_GATE_CPUS` and `VIPRS_GATE_MEMORY` tune the container. The container clones the core beside the tree, as CI does, because some tests read `../libviprs`.
 
-**Test-first commits.** A commit with deliberately red tests commits normally (the lint half still has to pass, so the tests must compile). When the tip of a push has a subject starting `Red tests`, pre-push says the test gate is skipped and lets it through; `VIPRS_RED=1 git push` does the same for any other commit. Once the fix is on top, the tip is no longer red and the tests run. `--no-verify` is for emergencies only.
+**Test-first commits.** A commit with deliberately red tests commits normally (the lint half still has to pass, so the tests must compile). Give the tip commit a `Red-tests: <issue>` trailer and pre-push builds every test and lints instead of running them, and says so. Only the tip counts: once the fix is on top, the full test gate is back. `--no-verify` is for emergencies only.
 
 ## Requirements
 

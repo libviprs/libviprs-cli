@@ -35,7 +35,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .args(args)
         .output()
         .expect("git runs");
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -61,12 +65,21 @@ fn sandbox(tag: &str, subject: &str, ssh_exit: i32) -> Sandbox {
     };
     script(
         "ssh",
-        format!("echo \"$*\" >> '{}'\ncat >/dev/null\nexit {ssh_exit}", ssh_log.display()),
+        format!(
+            "echo \"$*\" >> '{}'\ncat >/dev/null\nexit {ssh_exit}",
+            ssh_log.display()
+        ),
     );
     for tool in ["cargo", "docker", "rustup", "cargo-clippy"] {
         script(tool, format!("echo {tool} >> '{}'", local_log.display()));
     }
-    Sandbox { dir: repo, bin, ssh_log, local_log, sha }
+    Sandbox {
+        dir: repo,
+        bin,
+        ssh_log,
+        local_log,
+        sha,
+    }
 }
 
 impl Sandbox {
@@ -78,7 +91,7 @@ impl Sandbox {
             .args(args)
             .env("PATH", path)
             .env_remove("VIPRS_GATE_HOST")
-            .env_remove("VIPRS_RED")
+            .env_remove("LIBVIPRS_HOOKS_SKIP_MARS")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -86,7 +99,12 @@ impl Sandbox {
             cmd.env(k, v);
         }
         let mut child = cmd.spawn().expect("bash runs");
-        child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
         child.wait_with_output().unwrap()
     }
 
@@ -99,7 +117,11 @@ impl Sandbox {
     }
 
     fn push_line(&self) -> String {
-        format!("refs/heads/x {} refs/heads/x {}\n", self.sha, "0".repeat(40))
+        format!(
+            "refs/heads/x {} refs/heads/x {}\n",
+            self.sha,
+            "0".repeat(40)
+        )
     }
 }
 
@@ -110,9 +132,17 @@ fn text(b: &[u8]) -> String {
 #[test]
 fn the_hooks_are_tracked_and_executable() {
     use std::os::unix::fs::PermissionsExt;
-    for f in ["tools/gate.sh", "tools/hooks/pre-commit", "tools/hooks/pre-push", "tools/install-hooks.sh"] {
+    for f in [
+        "tools/gate.sh",
+        "tools/hooks/pre-commit",
+        "tools/hooks/pre-push",
+        "tools/install-hooks.sh",
+    ] {
         let meta = fs::metadata(repo_root().join(f)).unwrap_or_else(|e| panic!("{f}: {e}"));
-        assert!(meta.permissions().mode() & 0o111 != 0, "{f} must be executable");
+        assert!(
+            meta.permissions().mode() & 0o111 != 0,
+            "{f} must be executable"
+        );
     }
 }
 
@@ -122,23 +152,50 @@ fn pre_commit_runs_the_lint_lane_on_mars_and_builds_nothing_locally() {
     let out = sb.run("tools/hooks/pre-commit", &[], "", &[]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let calls = sb.ssh_calls();
-    assert!(calls.contains("devshell@192.168.0.100"), "MARS is the default host: {calls}");
-    assert!(calls.contains("docker run --rm"), "a throw-away container: {calls}");
-    assert!(calls.contains("CARGO_TARGET_DIR=/tmp/target"), "target dir outside the tree: {calls}");
-    assert!(calls.contains("cargo clippy --all-targets --features full"), "{calls}");
+    assert!(
+        calls.contains("devshell@192.168.0.100"),
+        "MARS is the default host: {calls}"
+    );
+    assert!(
+        calls.contains("docker run --rm"),
+        "a throw-away container: {calls}"
+    );
+    assert!(
+        calls.contains("CARGO_TARGET_DIR=/tmp/target"),
+        "target dir outside the tree: {calls}"
+    );
+    assert!(
+        calls.contains("cargo clippy --all-targets --features full"),
+        "{calls}"
+    );
     assert!(calls.contains("cargo fmt -- --check"), "{calls}");
-    assert!(!calls.contains("cargo test"), "tests belong to pre-push: {calls}");
-    assert_eq!(sb.local_tool_calls(), "", "cargo, docker and rustup must never run locally");
+    assert!(
+        !calls.contains("cargo test"),
+        "tests belong to pre-push: {calls}"
+    );
+    assert_eq!(
+        sb.local_tool_calls(),
+        "",
+        "cargo, docker and rustup must never run locally"
+    );
 }
 
 #[test]
 fn pre_push_runs_the_test_lane_on_mars_and_builds_nothing_locally() {
     let sb = sandbox("test", "a change", 0);
-    let out = sb.run("tools/hooks/pre-push", &["origin", "url"], &sb.push_line(), &[]);
+    let out = sb.run(
+        "tools/hooks/pre-push",
+        &["origin", "url"],
+        &sb.push_line(),
+        &[],
+    );
     assert!(out.status.success(), "{}", text(&out.stderr));
     let calls = sb.ssh_calls();
     assert!(calls.contains("cargo test --features full"), "{calls}");
-    assert!(calls.contains("cargo test --no-default-features"), "{calls}");
+    assert!(
+        calls.contains("cargo test --no-default-features"),
+        "{calls}"
+    );
     assert_eq!(sb.local_tool_calls(), "");
 }
 
@@ -146,17 +203,30 @@ fn pre_push_runs_the_test_lane_on_mars_and_builds_nothing_locally() {
 fn an_unreachable_mars_fails_clearly_and_names_the_override() {
     let sb = sandbox("down", "a change", 255);
     let out = sb.run("tools/hooks/pre-commit", &[], "", &[]);
-    assert!(!out.status.success(), "a gate that cannot run must not pass");
+    assert!(
+        !out.status.success(),
+        "a gate that cannot run must not pass"
+    );
     let err = text(&out.stderr);
     assert!(err.contains("could not reach MARS"), "{err}");
     assert!(err.contains("VIPRS_GATE_HOST"), "{err}");
-    assert_eq!(sb.local_tool_calls(), "", "no fallback to the local machine");
+    assert!(err.contains("LIBVIPRS_HOOKS_SKIP_MARS"), "{err}");
+    assert_eq!(
+        sb.local_tool_calls(),
+        "",
+        "no fallback to the local machine"
+    );
 }
 
 #[test]
 fn the_host_can_be_overridden() {
     let sb = sandbox("host", "a change", 0);
-    let out = sb.run("tools/hooks/pre-commit", &[], "", &[("VIPRS_GATE_HOST", "ci@other.example")]);
+    let out = sb.run(
+        "tools/hooks/pre-commit",
+        &[],
+        "",
+        &[("VIPRS_GATE_HOST", "ci@other.example")],
+    );
     assert!(out.status.success(), "{}", text(&out.stderr));
     let calls = sb.ssh_calls();
     assert!(calls.contains("ci@other.example"), "{calls}");
@@ -164,20 +234,73 @@ fn the_host_can_be_overridden() {
 }
 
 #[test]
-fn a_red_tests_tip_skips_the_test_lane_with_a_notice() {
-    let sb = sandbox("red", "Red tests: viprs does a thing", 0);
-    let out = sb.run("tools/hooks/pre-push", &["origin", "url"], &sb.push_line(), &[]);
+fn a_red_tests_trailer_on_the_tip_compiles_and_lints_instead_of_running_tests() {
+    let sb = sandbox("red", "Red tests: viprs does a thing\n\nRed-tests: 135", 0);
+    let out = sb.run(
+        "tools/hooks/pre-push",
+        &["origin", "url"],
+        &sb.push_line(),
+        &[],
+    );
     assert!(out.status.success(), "{}", text(&out.stderr));
-    assert!(text(&out.stderr).contains("skipped"), "{}", text(&out.stderr));
-    assert_eq!(sb.ssh_calls(), "", "no remote run for a red commit");
+    assert!(
+        text(&out.stderr).contains("Red-tests"),
+        "{}",
+        text(&out.stderr)
+    );
+    let calls = sb.ssh_calls();
+    assert!(
+        calls.contains("cargo test --no-run"),
+        "every test must still build: {calls}"
+    );
+    assert!(
+        calls.contains("cargo clippy --all-targets"),
+        "and lint: {calls}"
+    );
+    assert!(
+        !calls.contains("cargo test --features full"),
+        "but not run: {calls}"
+    );
 }
 
 #[test]
-fn viprs_red_skips_the_test_lane_too() {
-    let sb = sandbox("redenv", "a change", 0);
-    let out = sb.run("tools/hooks/pre-push", &["origin", "url"], &sb.push_line(), &[("VIPRS_RED", "1")]);
+fn a_subject_alone_is_not_a_red_marker() {
+    let sb = sandbox("subject", "Red tests: but no trailer", 0);
+    let out = sb.run(
+        "tools/hooks/pre-push",
+        &["origin", "url"],
+        &sb.push_line(),
+        &[],
+    );
     assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        sb.ssh_calls().contains("cargo test --features full"),
+        "{}",
+        sb.ssh_calls()
+    );
+}
+
+#[test]
+fn skip_mars_skips_loudly_and_never_builds_locally() {
+    let sb = sandbox("skip", "a change", 255);
+    for (script, args, stdin) in [
+        ("tools/hooks/pre-commit", vec![], String::new()),
+        (
+            "tools/hooks/pre-push",
+            vec!["origin", "url"],
+            sb.push_line(),
+        ),
+    ] {
+        let out = sb.run(script, &args, &stdin, &[("LIBVIPRS_HOOKS_SKIP_MARS", "1")]);
+        assert!(out.status.success(), "{script}: {}", text(&out.stderr));
+        assert!(
+            text(&out.stderr).contains("SKIPPED"),
+            "{script}: {}",
+            text(&out.stderr)
+        );
+    }
     assert_eq!(sb.ssh_calls(), "");
+    assert_eq!(sb.local_tool_calls(), "");
 }
 
 #[test]
@@ -194,7 +317,11 @@ fn cargo_cells(src: &str, ci: bool) -> std::collections::BTreeSet<String> {
     src.lines()
         .map(str::trim)
         .filter_map(|l| {
-            let l = if ci { l.strip_prefix("- run: ")? } else { l.strip_prefix("RUSTFLAGS= ").unwrap_or(l) };
+            let l = if ci {
+                l.strip_prefix("- run: ")?
+            } else {
+                l.strip_prefix("RUSTFLAGS= ").unwrap_or(l)
+            };
             l.starts_with("cargo ").then(|| l.to_string())
         })
         .collect()
@@ -207,14 +334,28 @@ fn the_gate_runs_every_cargo_cell_ci_runs() {
     assert!(!ci.is_empty());
     let missing: Vec<_> = ci.difference(&gate).collect();
     let extra: Vec<_> = gate.difference(&ci).collect();
-    assert!(missing.is_empty(), "CI runs these and the gate does not: {missing:#?}");
-    assert!(extra.is_empty(), "the gate runs these and CI does not: {extra:#?}");
+    assert!(
+        missing.is_empty(),
+        "CI runs these and the gate does not: {missing:#?}"
+    );
+    // The one cell CI has no counterpart for: building the tests of a red tip without running them.
+    assert_eq!(
+        extra,
+        ["cargo test --no-run"],
+        "the gate runs cells CI does not"
+    );
 }
 
 #[test]
 fn the_readme_documents_the_hooks() {
     let readme = read("README.md");
-    for needle in ["tools/install-hooks.sh", "VIPRS_GATE_HOST", "VIPRS_RED", "Red tests", "MARS"] {
+    for needle in [
+        "tools/install-hooks.sh",
+        "VIPRS_GATE_HOST",
+        "LIBVIPRS_HOOKS_SKIP_MARS",
+        "Red-tests:",
+        "MARS",
+    ] {
         assert!(readme.contains(needle), "README must mention `{needle}`");
     }
 }
