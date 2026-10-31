@@ -115,9 +115,11 @@ run_remote() {
   local inner
   # The tests read ../libviprs (tests/pdfium_render_lockstep.rs), and CI clones the core beside
   # this repo for every job, matching branch or main. Do the same, inside the container.
+  # Fixed tree path (CARGO_MANIFEST_DIR is baked into test binaries, and the target volume is
+  # reused) and tar -m (mtime = now), so cargo never trusts a stale artifact over a changed file.
   local branch
   branch=$(git -C "$top" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)
-  inner="set -eu; mkdir -p /w/libviprs-cli; tar -x -C /w/libviprs-cli; cd /w/libviprs-cli; \
+  inner="set -eu; mkdir /work; tar -xm -C /work; cd /work; \
 (git clone -q --depth 1 --branch '$branch' https://github.com/libviprs/libviprs.git ../libviprs 2>/dev/null \
   || git clone -q --depth 1 https://github.com/libviprs/libviprs.git ../libviprs); \
 (cargo fmt --version >/dev/null 2>&1 && cargo clippy --version >/dev/null 2>&1) || rustup component add clippy rustfmt; \
