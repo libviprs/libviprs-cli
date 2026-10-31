@@ -8,6 +8,11 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
+- `viprs pyramid --geo-origin/--geo-scale` now stores the transform in the PMTiles archive
+  (`vnd.libviprs.geo_transform`, six coefficients and the pixel origin `corner`) instead of
+  only printing the bounds (libviprs#1328, part of EPIC R). Other sinks do not carry it. The
+  core pin moves to the commit that adds `PmTilesSinkBuilder::geo_transform`.
+
 - `viprs vector` (libviprs#1035, part of libviprs#1028): `views`, `build`
   (`convert` is an alias), `report`, `info` and `validate`, a thin driver over
   the core's `vector::convert`, so the command line and a Rust caller share one

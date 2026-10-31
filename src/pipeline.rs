@@ -1030,12 +1030,18 @@ fn archive_sink(
     // @doc-snippet:begin slot=sink-pmtiles imports=PmTilesSink,TileFormat
     // @doc-test: cli_e2e.rs::pyramid_default_output_is_a_pmtiles_archive:1
     // @doc-flag: storage kind=param param_name=storage
-    let sink = PmTilesSink::builder(path)
+    let mut builder = PmTilesSink::builder(path)
         .plan(plan.clone())
         .tile_format(format)
         .writer_options(options)
-        .ordered_emission(args.pipeline.ordered_emission)
-        .build();
+        .ordered_emission(args.pipeline.ordered_emission);
+    // `--geo-origin` and `--geo-scale` are stored in the archive's `vnd.libviprs` metadata, not
+    // only printed as bounds (libviprs/libviprs#1328). The origin is the top-left corner of the
+    // first pixel, which is what `from_origin_and_scale` builds.
+    if let Some(geo) = crate::build_geo_transform(args, plan.image_width, plan.image_height) {
+        builder = builder.geo_transform(geo, libviprs::PixelOrigin::Corner);
+    }
+    let sink = builder.build();
     // @doc-snippet:end slot=sink-pmtiles
     sink.unwrap_or_else(|e| operational_error(&format!("creating the PMTiles archive failed: {e}")))
 }

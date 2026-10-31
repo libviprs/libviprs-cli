@@ -1581,3 +1581,50 @@ fn dedupe_memory_bytes_beyond_the_plan_is_lowered_and_said() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// --geo-origin / --geo-scale are stored in the archive (libviprs/libviprs#1328)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn geo_flags_are_stored_in_the_pmtiles_archive() {
+    let dir = unique_dir("geo-stored");
+    let input = dir.join("in.ppm");
+    write_ppm(&input, 200, 100, |x, y| [x as u8, y as u8, 7]);
+    let archive = dir.join("geo.pmtiles");
+    ok(
+        &run(&[
+            "pyramid",
+            s(&input),
+            s(&archive),
+            "--tile-size",
+            "64",
+            "--geo-origin",
+            "500000.5,5200000.25",
+            "--geo-scale",
+            "0.125,-0.125",
+        ]),
+        "a georeferenced run into an archive",
+    );
+    let reader = libviprs::pmtiles::Reader::try_open(&archive).expect("the archive opens");
+    let stored = reader
+        .geo_transform()
+        .expect("the metadata parses")
+        .expect("the flags built a transform, so the archive must carry it");
+    assert_eq!(stored.pixel_origin, libviprs::PixelOrigin::Corner);
+    assert_eq!(
+        stored.coefficients.map(f64::to_bits),
+        [0.125, 0.0, 500000.5, 0.0, -0.125, 5200000.25].map(f64::to_bits)
+    );
+}
+
+#[test]
+fn no_geo_flags_means_no_transform_in_the_archive() {
+    let dir = unique_dir("geo-absent");
+    let input = dir.join("in.ppm");
+    write_ppm(&input, 64, 64, |x, y| [x as u8, y as u8, 7]);
+    let archive = dir.join("plain.pmtiles");
+    ok(&run(&["pyramid", s(&input), s(&archive)]), "a plain run");
+    let reader = libviprs::pmtiles::Reader::try_open(&archive).expect("the archive opens");
+    assert_eq!(reader.geo_transform().expect("parses"), None);
+}
