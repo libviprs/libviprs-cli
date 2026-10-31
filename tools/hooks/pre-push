@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# The test half of CI, on MARS (see tools/gate.sh).
+#
+# Test-first work: if the tip of what is being pushed carries a `Red-tests: <issue>` trailer,
+# its tests are red on purpose, so this runs the compile and lint half (every test still has to
+# build) and says so. Only the tip counts, so the fix commit on top brings the full gate back.
+set -euo pipefail
+gate="$(cd "$(dirname "$0")" && pwd)/../gate.sh"
+
+red=
+pushing=
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  case $local_sha in *[!0]*) ;; *) continue ;; esac   # a delete pushes nothing
+  pushing=1
+  if [ -n "$(git log -1 --format='%(trailers:key=Red-tests,valueonly)' "$local_sha")" ]; then red=1; fi
+done
+
+[ -n "$pushing" ] || exit 0
+if [ -n "$red" ]; then
+  echo "pre-push: the tip has a Red-tests trailer, so the tests are not run; compiling them and linting instead." >&2
+  exec "$gate" compile
+fi
+exec "$gate" test
