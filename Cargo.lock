@@ -1382,7 +1382,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "libviprs"
 version = "0.6.1"
-source = "git+https://github.com/libviprs/libviprs?rev=b166e1e718fd767070dce0c9f45c3e4c17b03516#b166e1e718fd767070dce0c9f45c3e4c17b03516"
+source = "git+https://github.com/libviprs/libviprs?rev=24364d928a5eb75380ca803b187d5c8fbcf7c6b0#24364d928a5eb75380ca803b187d5c8fbcf7c6b0"
 dependencies = [
  "ab_glyph",
  "acadsharp-rs",
