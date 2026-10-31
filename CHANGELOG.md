@@ -8,6 +8,11 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
+- Tracked git hooks (`tools/hooks`, installed with `tools/install-hooks.sh`) that run CI's lint
+  and test jobs on MARS in a throw-away container instead of on the committing machine, fail
+  clearly when MARS is unreachable (`VIPRS_GATE_HOST` picks another host, `LIBVIPRS_HOOKS_SKIP_MARS=1` skips loudly), and
+  compile instead of run the tests for a tip with a `Red-tests:` trailer, so test-first work needs no `--no-verify` (libviprs-cli#135).
+
 - `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters`
   (libviprs-cli#130, RL1.4 of libviprs#1329): a raster goes into a `.pvec` beside a drawing's
   linework with its tiles untouched and a placement composed from a georeference, an archive's

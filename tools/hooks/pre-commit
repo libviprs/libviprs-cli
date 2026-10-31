@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# The lint half of CI, on MARS (see tools/gate.sh). Skip in an emergency with --no-verify.
+set -euo pipefail
+exec "$(cd "$(dirname "$0")" && pwd)/../gate.sh" lint
