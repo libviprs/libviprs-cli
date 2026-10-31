@@ -103,7 +103,11 @@ SCRIPT
 # The lint lane plus a build of every test, for a tip that is red on purpose.
 compile_script() {
   lint_script
-  printf '%s\n' '# --- container:compile' 'cargo test --no-run' '# --- container:end'
+  cat <<'SCRIPT'
+# --- container:compile
+cargo test --no-run
+# --- container:end
+SCRIPT
 }
 
 # Run a script in a container on MARS with the tree streamed in on stdin.
