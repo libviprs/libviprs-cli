@@ -131,8 +131,8 @@ enum Command {
 
     /// Look inside a `.pvec`: the rasters it places and their tiles.
     ///
-    /// Needs a build with the `pvec-raster` feature, like `pyramid --storage pvec`
-    /// and `pmtiles to-pvec`, which are the ways to put a raster into one.
+    /// Not in a `--no-default-features` build (it leaves out `pvec-raster`), like
+    /// `pyramid --storage pvec` and `pmtiles to-pvec`, which put a raster into one.
     Pvec(pvec_raster::PvecArgs),
 }
 
@@ -644,7 +644,7 @@ enum StorageArg {
     Pmtiles,
     /// A loose tree of tile files.
     Directory,
-    /// A raster placed into an existing `.pvec` (needs a build with `pvec-raster`).
+    /// A raster placed into an existing `.pvec` (not in a `--no-default-features` build).
     Pvec,
 }
 
@@ -732,7 +732,7 @@ enum PmtilesCommand {
     /// The placement is composed from the georeference the archive stores
     /// (`--geo-origin`/`--geo-scale` or `--affine` when it was made) and the
     /// drawing's `--source-to-geo`, or given outright with `--pixel-to-source`.
-    /// Needs a build with the `pvec-raster` feature.
+    /// Not in a `--no-default-features` build (no `pvec-raster`).
     ToPvec(pvec_raster::ToPvecArgs),
 }
 

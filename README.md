@@ -63,7 +63,7 @@ cargo install --path .
 
 ### Cargo features
 
-`viprs` forwards every capability-bearing feature of the core crate under the same name. Only `pdfium` is on by default.
+`viprs` forwards every capability-bearing feature of the core crate under the same name. `pdfium` and `pvec-raster` are on by default.
 
 | Feature | What it turns on |
 |---|---|
@@ -74,7 +74,7 @@ cargo install --path .
 | `jxl` | JPEG XL decoding |
 | `jp2k` | JPEG 2000 decoding |
 | `dwg-acadsharp` | the DWG reader behind `viprs vector views`, `build` and `report` (ACadSharp through `acadsharp-rs`, over a native library, see [`viprs vector`](#viprs-vector)) |
-| `pvec-raster` | the `.pvec` raster commands: `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters` (see [`viprs pvec`](#viprs-pvec)) |
+| `pvec-raster` (default) | the `.pvec` raster commands: `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters` (see [`viprs pvec`](#viprs-pvec)) |
 | `object-store-sink` | the core's injected-backend object-store sink |
 | `s3` | the `s3://` sink arm (the core treats `s3` as a deprecated alias for `object-store-sink`) |
 | `packfile` | the `packfile://` tar/zip sink |
@@ -82,7 +82,7 @@ cargo install --path .
 | `full` | all of the above except `pdfium-static` |
 
 ```bash
-# Everything a runtime-pdfium build can have
+# Everything a runtime-pdfium build can have (the default already has pdfium and pvec-raster)
 cargo install --path . --features full
 
 # One extra decoder
@@ -300,7 +300,7 @@ viprs pmtiles pack ./tiles plan.pmtiles --width 5000 --height 3000 --tile-size 2
 
 ### `viprs pvec`
 
-Put a raster (a scan, an aerial, a PDF's page image) into a `.pvec` beside the drawing's linework, and look inside the result. The pixels go in exactly as the encoder wrote them and PVec never decodes one; the placement is a 2x3 affine into the drawing's source space (ADR 0018 in libviprs/pvec). All three commands need a build with the `pvec-raster` feature (without it they exit 1 and name it, and a mistake on the command line is still exit 2).
+Put a raster (a scan, an aerial, a PDF's page image) into a `.pvec` beside the drawing's linework, and look inside the result. The pixels go in exactly as the encoder wrote them and PVec never decodes one; the placement is a 2x3 affine into the drawing's source space (ADR 0018 in libviprs/pvec). All three commands are in the default build and the released binaries. A `--no-default-features` build leaves them out: they exit 1 and name the `pvec-raster` feature, and a mistake on the command line is still exit 2.
 
 ```bash
 # A scan into a copy of the drawing, placed from its georeference and the drawing's calibration
