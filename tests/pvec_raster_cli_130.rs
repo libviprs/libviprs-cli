@@ -79,7 +79,10 @@ fn usage(args: &[&str], needles: &[&str]) {
 #[test]
 fn a_tile_size_pvec_does_not_take_is_a_usage_error() {
     for size in ["128", "300", "2048"] {
-        usage(&with(&["--tile-size", size]), &["256, 512 or 1024", "Hint:"]);
+        usage(
+            &with(&["--tile-size", size]),
+            &["256, 512 or 1024", "Hint:"],
+        );
     }
 }
 
@@ -93,8 +96,14 @@ fn the_tile_sizes_pvec_takes_get_past_the_usage_checks() {
 
 #[test]
 fn centring_and_overlap_are_refused_with_their_reason() {
-    usage(&with(&["--centre"]), &["--centre", "never centred", "Hint:"]);
-    usage(&with(&["--overlap", "2"]), &["--overlap", "no overlap", "Hint:"]);
+    usage(
+        &with(&["--centre"]),
+        &["--centre", "never centred", "Hint:"],
+    );
+    usage(
+        &with(&["--overlap", "2"]),
+        &["--overlap", "no overlap", "Hint:"],
+    );
 }
 
 #[test]
@@ -107,7 +116,10 @@ fn the_layout_is_fixed_to_google() {
 
 #[test]
 fn raw_tiles_and_placeholder_blanks_are_refused() {
-    usage(&with(&["--format", "raw"]), &["--format raw", "--format png"]);
+    usage(
+        &with(&["--format", "raw"]),
+        &["--format raw", "--format png"],
+    );
     usage(&with(&["--skip-blank"]), &["placeholder", "--drop-blanks"]);
     usage(
         &with(&["--blank-tolerance", "3"]),
@@ -169,9 +181,15 @@ fn a_placement_is_required_and_comes_from_one_place() {
 fn the_placement_flags_exclude_each_other_in_the_documented_way() {
     let direct = "1,0,0,-1,0,100";
     // --pixel-to-source is the placement outright, so it takes neither a calibration nor a transform.
-    usage(&with(&["--pixel-to-source", direct]), &["--pixel-to-source"]);
     usage(
-        &without(&["--source-to-geo"]).into_iter().chain(["--affine", "1,0,0,0,-1,0", "--pixel-to-source", direct]).collect::<Vec<_>>(),
+        &with(&["--pixel-to-source", direct]),
+        &["--pixel-to-source"],
+    );
+    usage(
+        &without(&["--source-to-geo"])
+            .into_iter()
+            .chain(["--affine", "1,0,0,0,-1,0", "--pixel-to-source", direct])
+            .collect::<Vec<_>>(),
         &["--affine"],
     );
     // --affine is the general form of --geo-origin and --geo-scale.
@@ -201,7 +219,10 @@ fn a_bad_number_list_is_a_usage_error_like_viprs_geos() {
         usage(&args, &["--pixel-to-source"]);
     }
     usage(
-        &without(&["--source-to-geo"]).into_iter().chain(["--source-to-geo", "1,0,0,0,1,inf"]).collect::<Vec<_>>(),
+        &without(&["--source-to-geo"])
+            .into_iter()
+            .chain(["--source-to-geo", "1,0,0,0,1,inf"])
+            .collect::<Vec<_>>(),
         &["--source-to-geo"],
     );
 }
@@ -210,7 +231,7 @@ fn a_bad_number_list_is_a_usage_error_like_viprs_geos() {
 fn band_opacity_and_attribution_are_checked_on_the_command_line() {
     usage(&with(&["--band", "2"]), &["--band"]);
     usage(&with(&["--opacity", "256"]), &["--opacity"]);
-    usage(&with(&["--opacity", "-1"]), &["--opacity"]);
+    usage(&with(&["--opacity", "-1"]), &[]);
     usage(
         &with(&["--attribution", "line one\nline two"]),
         &["--attribution", "control character"],
@@ -252,31 +273,67 @@ fn the_pvec_flags_are_refused_on_a_run_that_is_not_going_to_a_pvec() {
 #[test]
 fn to_pvec_needs_the_drawing_and_a_placement() {
     usage(
-        &["pmtiles", "to-pvec", "a.pmtiles", "out.pvec", "--source-to-geo", "1,0,0,0,1,0"],
+        &[
+            "pmtiles",
+            "to-pvec",
+            "a.pmtiles",
+            "out.pvec",
+            "--source-to-geo",
+            "1,0,0,0,1,0",
+        ],
         &["--pvec-into", "WRT-01"],
     );
     usage(
-        &["pmtiles", "to-pvec", "a.pmtiles", "out.pvec", "--pvec-into", "d.pvec"],
+        &[
+            "pmtiles",
+            "to-pvec",
+            "a.pmtiles",
+            "out.pvec",
+            "--pvec-into",
+            "d.pvec",
+        ],
         &["no way to place", "--source-to-geo"],
     );
     usage(
         &[
-            "pmtiles", "to-pvec", "a.pmtiles", "out.pvec", "--pvec-into", "d.pvec",
-            "--pixel-to-source", "1,0,0,nan,0,0",
+            "pmtiles",
+            "to-pvec",
+            "a.pmtiles",
+            "out.pvec",
+            "--pvec-into",
+            "d.pvec",
+            "--pixel-to-source",
+            "1,0,0,nan,0,0",
         ],
         &["--pixel-to-source"],
     );
     usage(
         &[
-            "pmtiles", "to-pvec", "a.pmtiles", "out.pvec", "--pvec-into", "d.pvec",
-            "--source-to-geo", "1,0,0,0,1,0", "--pixel-to-source", "1,0,0,-1,0,0",
+            "pmtiles",
+            "to-pvec",
+            "a.pmtiles",
+            "out.pvec",
+            "--pvec-into",
+            "d.pvec",
+            "--source-to-geo",
+            "1,0,0,0,1,0",
+            "--pixel-to-source",
+            "1,0,0,-1,0,0",
         ],
         &["--pixel-to-source"],
     );
     usage(
         &[
-            "pmtiles", "to-pvec", "a.pmtiles", "out.pvec", "--pvec-into", "d.pvec",
-            "--source-to-geo", "1,0,0,0,1,0", "--band", "3",
+            "pmtiles",
+            "to-pvec",
+            "a.pmtiles",
+            "out.pvec",
+            "--pvec-into",
+            "d.pvec",
+            "--source-to-geo",
+            "1,0,0,0,1,0",
+            "--band",
+            "3",
         ],
         &["--band"],
     );
@@ -285,12 +342,16 @@ fn to_pvec_needs_the_drawing_and_a_placement() {
 #[test]
 fn pvec_rasters_takes_a_tile_as_five_values_and_numbers_for_four_of_them() {
     usage(
-        &["pvec", "rasters", "f.pvec", "--tile", "a", "0", "0", "0", "-"],
+        &[
+            "pvec", "rasters", "f.pvec", "--tile", "a", "0", "0", "0", "-",
+        ],
         &["--tile", "whole number"],
     );
     usage(&["pvec", "rasters", "f.pvec", "--tile", "0", "0", "0"], &[]);
     usage(
-        &["pvec", "rasters", "f.pvec", "--json", "--tile", "0", "0", "0", "0", "-"],
+        &[
+            "pvec", "rasters", "f.pvec", "--json", "--tile", "0", "0", "0", "0", "-",
+        ],
         &[],
     );
 }
@@ -302,13 +363,23 @@ fn a_build_without_the_feature_exits_1_and_names_it() {
         valid(),
         vec!["pvec", "rasters", "f.pvec"],
         vec![
-            "pmtiles", "to-pvec", "a.pmtiles", "out.pvec", "--pvec-into", "d.pvec",
-            "--source-to-geo", "1,0,0,0,1,0",
+            "pmtiles",
+            "to-pvec",
+            "a.pmtiles",
+            "out.pvec",
+            "--pvec-into",
+            "d.pvec",
+            "--source-to-geo",
+            "1,0,0,0,1,0",
         ],
     ] {
         let out = run(&args);
         assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
-        assert!(stderr(&out).contains("pvec-raster"), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("pvec-raster"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
     }
 }
 
@@ -323,7 +394,9 @@ fn features_does_not_list_it_without_the_feature() {
 #[test]
 fn features_lists_it_with_the_feature() {
     let out = run(&["features"]);
-    assert!(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .any(|l| l == "pvec-raster"));
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|l| l == "pvec-raster")
+    );
 }

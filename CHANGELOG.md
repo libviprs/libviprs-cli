@@ -8,6 +8,16 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
+- `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters`
+  (libviprs-cli#130, RL1.4 of libviprs#1329): a raster goes into a `.pvec` beside a drawing's
+  linework with its tiles untouched and a placement composed from a georeference, an archive's
+  tiles pass through byte for byte, and `pvec rasters` lists the placements (`--json`) and
+  writes one tile back out. They need the new `pvec-raster` feature (in `full`, off by default
+  while PVec is a private repository); without it they exit 1 and name it. `pyramid` gains
+  `--pvec-into`, `--source-to-geo`, `--pixel-to-source`, `--band`, `--opacity`, `--attribution`
+  and `--layer`, and `--affine`, which also stores the full transform in a PMTiles archive.
+  The core pin moves to the commit with `PvecSink` and the opacity and layer fields (#1347).
+
 - `viprs pyramid --geo-origin/--geo-scale` now stores the transform in the PMTiles archive
   (`vnd.libviprs.geo_transform`, six coefficients and the pixel origin `corner`) instead of
   only printing the bounds (libviprs#1328, part of EPIC R). Other sinks do not carry it. The

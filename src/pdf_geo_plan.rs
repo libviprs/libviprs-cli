@@ -567,7 +567,13 @@ fn finite_f64(text: &str) -> Result<f64, String> {
 }
 
 /// The flags that take a number list and so allow values starting with `-`.
-const LIST_FLAGS: &[&str] = &["--geo-origin", "--geo-scale", "--affine"];
+const LIST_FLAGS: &[&str] = &[
+    "--geo-origin",
+    "--geo-scale",
+    "--affine",
+    "--source-to-geo",
+    "--pixel-to-source",
+];
 
 /// The first number-list flag in `args` whose value is another flag, as
 /// `(flag, value)`.

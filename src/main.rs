@@ -52,6 +52,7 @@ mod pdf_geo_plan;
 /// The pipeline controls on `viprs pyramid`, and `viprs verify`
 /// (libviprs-cli#66).
 mod pipeline;
+mod pvec_raster;
 mod vector;
 mod verify;
 
@@ -127,6 +128,12 @@ enum Command {
     /// `dwg-acadsharp` feature; `info` and `validate` read a PMTiles file and
     /// work in every build.
     Vector(vector::VectorArgs),
+
+    /// Look inside a `.pvec`: the rasters it places and their tiles.
+    ///
+    /// Needs a build with the `pvec-raster` feature, like `pyramid --storage pvec`
+    /// and `pmtiles to-pvec`, which are the ways to put a raster into one.
+    Pvec(pvec_raster::PvecArgs),
 }
 
 #[derive(Parser)]
@@ -186,7 +193,9 @@ struct PyramidArgs {
     ///
     /// `pmtiles` writes a single indexed `.pmtiles` file and is the default.
     /// `directory` restores the `{z}/{x}/{y}` (or Deep Zoom) tree earlier
-    /// versions wrote, and takes an explicit output directory.
+    /// versions wrote, and takes an explicit output directory. `pvec` writes
+    /// the pyramid as a raster into a copy of the drawing named by
+    /// `--pvec-into`; see the "PVec raster" flags below.
     ///
     /// Conflicts with `--sink` and `--packfile`, which name their target
     /// themselves. A `pmtiles://` URI through `--sink` is the long spelling of
@@ -446,6 +455,70 @@ struct PyramidArgs {
     #[arg(long, conflicts_with = "dedupe_blanks", help_heading = "Dedupe")]
     dedupe_all: bool,
 
+    /// The pixel to geographic transform as "a,b,c,d,e,f": `x = a*px + b*py + c`
+    /// and `y = d*px + e*py + f`, the same flag `viprs geo` takes. Use it for a
+    /// rotated or skewed raster; `--geo-origin` and `--geo-scale` are the
+    /// north-up shorthand. It is stored in a PMTiles archive like they are.
+    #[arg(
+        long,
+        value_name = "A,B,C,D,E,F",
+        conflicts_with_all = ["geo_origin", "geo_scale", "pixel_to_source"],
+        allow_hyphen_values = true
+    )]
+    affine: Option<String>,
+
+    /// The `.pvec` drawing the raster joins (`--storage pvec`). The output is a
+    /// copy of it with the raster added; the drawing itself is not touched.
+    ///
+    /// Required: an artifact needs at least one entity (WRT-01), so a scan
+    /// cannot stand alone in a `.pvec`.
+    #[arg(long, value_name = "DRAWING.PVEC", help_heading = "PVec raster")]
+    pvec_into: Option<PathBuf>,
+
+    /// The drawing's calibration as "a,b,c,d,e,f", source space to geographic
+    /// (`--storage pvec`). With `--geo-origin`/`--geo-scale` or `--affine` it
+    /// gives the placement: inverse(source-to-geo) after pixel-to-geo. The
+    /// raster and the calibration have to share one CRS; this flag cannot
+    /// check that and no CRS is stored.
+    #[arg(
+        long,
+        value_name = "A,B,C,D,E,F",
+        conflicts_with = "pixel_to_source",
+        allow_hyphen_values = true,
+        help_heading = "PVec raster"
+    )]
+    source_to_geo: Option<String>,
+
+    /// The placement given directly, pixels to source space, as "a,b,c,d,tx,ty"
+    /// in PVec's order: `x = a*px + b*py + tx` and `y = c*px + d*py + ty`
+    /// (`--storage pvec`). Source space is y-up, so an upright image has `d < 0`.
+    #[arg(
+        long,
+        value_name = "A,B,C,D,TX,TY",
+        allow_hyphen_values = true,
+        help_heading = "PVec raster"
+    )]
+    pixel_to_source: Option<String>,
+
+    /// Which side of the linework the raster draws on: 0 under it (the
+    /// default), 1 over it (`--storage pvec`).
+    #[arg(long, value_name = "0|1", value_parser = clap::value_parser!(u8).range(0..=1), help_heading = "PVec raster")]
+    band: Option<u8>,
+
+    /// How opaque the raster draws, 0 to 255 (`--storage pvec`, default 255).
+    #[arg(long, value_name = "0..255", help_heading = "PVec raster")]
+    opacity: Option<u8>,
+
+    /// Plain-text credit stored with the raster, at most 255 bytes and no
+    /// control characters (`--storage pvec`).
+    #[arg(long, value_name = "TEXT", help_heading = "PVec raster")]
+    attribution: Option<String>,
+
+    /// Name of a layer to put the raster on; the output gets a layer table
+    /// with this one entry (`--storage pvec`).
+    #[arg(long, value_name = "NAME", help_heading = "PVec raster")]
+    layer: Option<String>,
+
     #[command(flatten)]
     pipeline: pipeline::PipelineArgs,
 }
@@ -571,6 +644,8 @@ enum StorageArg {
     Pmtiles,
     /// A loose tree of tile files.
     Directory,
+    /// A raster placed into an existing `.pvec` (needs a build with `pvec-raster`).
+    Pvec,
 }
 
 /// Tile encodings this CLI can produce.
@@ -651,6 +726,14 @@ enum PmtilesCommand {
 
     /// Pack a loose `{z}/{x}/{y}` tile tree into an archive.
     Pack(PmtilesPackArgs),
+
+    /// Pass an archive's tiles into a `.pvec` as a raster, byte for byte.
+    ///
+    /// The placement is composed from the georeference the archive stores
+    /// (`--geo-origin`/`--geo-scale` or `--affine` when it was made) and the
+    /// drawing's `--source-to-geo`, or given outright with `--pixel-to-source`.
+    /// Needs a build with the `pvec-raster` feature.
+    ToPvec(pvec_raster::ToPvecArgs),
 }
 
 #[derive(Parser)]
@@ -877,7 +960,7 @@ fn main() {
     match matches.subcommand() {
         Some((
             "pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features" | "pdf" | "geo"
-            | "verify" | "vector",
+            | "verify" | "vector" | "pvec",
             _,
         )) => {
             let cli = Cli::from_arg_matches(&matches)
@@ -893,6 +976,7 @@ fn main() {
                 Command::Geo(args) => pdf_geo_plan::run_geo(args),
                 Command::Verify(args) => verify::run(args),
                 Command::Vector(args) => vector::run(args),
+                Command::Pvec(args) => pvec_raster::run(args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
@@ -1001,6 +1085,14 @@ fn resolve_sink_uri(args: &PyramidArgs) -> String {
             format!("fs://{}", output.display())
         }
         StorageArg::Pmtiles => format!("pmtiles://{}", resolve_archive_path(args).display()),
+        // `--storage pvec` never reaches a sink URI (`run_pyramid` hands it to
+        // `pvec_raster` first); this is the spelling it would have.
+        StorageArg::Pvec => format!(
+            "pvec://{}",
+            args.output
+                .as_ref()
+                .map_or_else(String::new, |o| o.display().to_string())
+        ),
     }
 }
 
@@ -1180,6 +1272,10 @@ fn run_pyramid(args: PyramidArgs) {
     // stops at a tile boundary on it and the run exits 130.
     let cancel = pipeline::install_sigint();
     check_overlap(args.tile_size, args.overlap);
+    if args.storage == StorageArg::Pvec {
+        return pvec_raster::run_pyramid(args, cancel);
+    }
+    pvec_raster::refuse_stray_flags(&args);
     if pipeline::takes_over(&args) {
         return pipeline::run(args, cancel);
     }
@@ -1578,6 +1674,7 @@ fn run_pmtiles(args: PmtilesArgs) {
         PmtilesCommand::Verify(a) => run_pmtiles_verify(a),
         PmtilesCommand::Extract(a) => run_pmtiles_extract(a),
         PmtilesCommand::Pack(a) => run_pmtiles_pack(a),
+        PmtilesCommand::ToPvec(a) => pvec_raster::run_to_pvec(a),
     }
 }
 
@@ -2756,6 +2853,11 @@ fn load_source(args: &PyramidArgs) -> Raster {
 }
 
 fn build_geo_transform(args: &PyramidArgs, _w: u32, _h: u32) -> Option<GeoTransform> {
+    // `--affine` is the general form of the two flags below (libviprs-cli#130).
+    if let Some(affine) = args.affine.as_ref() {
+        let v = pdf_geo_plan::parse_floats(affine, "affine", 6);
+        return Some(GeoTransform::new(v[0], v[1], v[2], v[3], v[4], v[5]));
+    }
     // @doc-snippet:begin slot=geo imports=GeoTransform,GeoCoord
     let origin_str = args.geo_origin.as_ref()?;
     let scale_str = args.geo_scale.as_ref()?;
