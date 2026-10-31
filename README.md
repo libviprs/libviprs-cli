@@ -468,11 +468,20 @@ The CLI supports two modes for PDF input:
 
 ### Git Hooks
 
-Install pre-commit (fmt + clippy) and pre-push (Docker test suite) hooks:
+The hooks live in `tools/hooks` and run this repo's CI jobs on MARS (`devshell@192.168.0.100`), in a throw-away `rust` container, never on the machine that commits: no cargo, clippy or docker runs locally. Install them once per clone (worktrees share it):
 
 ```bash
-../libviprs-tests/tools/install-hooks.sh
+tools/install-hooks.sh
 ```
+
+- **pre-commit** is the lint half: `cargo fmt -- --check` and clippy over every feature cell in `.github/workflows/ci.yml`.
+- **pre-push** is the test half: the MSRV claims, `cargo check`, `cargo test`, `cargo test --no-default-features` and `cargo test --features full`.
+
+`tools/gate.sh` does the work (`lint`, `test`, or `clean` to drop the cargo and target volumes on MARS). It streams the tree over ssh, keeps `CARGO_TARGET_DIR=/tmp/target` in a docker volume, and leaves no scratch directory behind. `tests/hooks_gate_135.rs` fails if the gate's cargo cells drift from CI's.
+
+If MARS cannot be reached the hook fails and says so; it never falls back to building locally. `VIPRS_GATE_HOST=user@host` points it at another docker host, and `VIPRS_GATE_IMAGE`, `VIPRS_GATE_CPUS` and `VIPRS_GATE_MEMORY` tune the container.
+
+**Test-first commits.** A commit with deliberately red tests commits normally (the lint half still has to pass, so the tests must compile). When the tip of a push has a subject starting `Red tests`, pre-push says the test gate is skipped and lets it through; `VIPRS_RED=1 git push` does the same for any other commit. Once the fix is on top, the tip is no longer red and the tests run. `--no-verify` is for emergencies only.
 
 ## Requirements
 
