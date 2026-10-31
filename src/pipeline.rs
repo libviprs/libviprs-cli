@@ -271,7 +271,7 @@ fn parse_region(s: &str) -> Result<Region, String> {
 impl PipelineArgs {
     /// Names of the pipeline flags that were given, for the refusal on the
     /// paths that do not come through here.
-    fn given(&self) -> Vec<&'static str> {
+    pub(crate) fn given(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
         let mut push = |on: bool, name| {
             if on {
@@ -295,7 +295,7 @@ impl PipelineArgs {
         out
     }
 
-    fn pmtiles_only(&self) -> Option<&'static str> {
+    pub(crate) fn pmtiles_only(&self) -> Option<&'static str> {
         if self.pmtiles_layout.is_some() {
             Some("--pmtiles-layout")
         } else if self.ordered_emission {
@@ -307,7 +307,7 @@ impl PipelineArgs {
         }
     }
 
-    fn tree_only(&self) -> Option<&'static str> {
+    pub(crate) fn tree_only(&self) -> Option<&'static str> {
         if self.checkpoint_every.is_some() {
             Some("--checkpoint-every")
         } else if self.checkpoint_root.is_some() {

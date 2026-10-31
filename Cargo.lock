@@ -1382,7 +1382,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "libviprs"
 version = "0.6.1"
-source = "git+https://github.com/libviprs/libviprs?rev=24364d928a5eb75380ca803b187d5c8fbcf7c6b0#24364d928a5eb75380ca803b187d5c8fbcf7c6b0"
+source = "git+https://github.com/libviprs/libviprs?rev=ac69397070c52a978575e26df611836345815831#ac69397070c52a978575e26df611836345815831"
 dependencies = [
  "ab_glyph",
  "acadsharp-rs",
@@ -1399,6 +1399,8 @@ dependencies = [
  "moxcms",
  "openjpeg2-pure-rs",
  "pdfium-render",
+ "pvec",
+ "pvec-geometry",
  "rav1d",
  "resvg",
  "rustfft",
@@ -1422,6 +1424,9 @@ dependencies = [
  "clap",
  "ctrlc",
  "libviprs",
+ "pvec",
+ "pvec-capabilities",
+ "pvec-geometry",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -1477,6 +1482,12 @@ dependencies = [
  "time",
  "weezl",
 ]
+
+[[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
 
 [[package]]
 name = "lzma-rust2"
@@ -1868,6 +1879,95 @@ name = "pulp-wasm-simd-flag"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d8f70e07b9c3962945a74e59ca1c511bba65b6419468acc217c457d93f3c740"
+
+[[package]]
+name = "pvec"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+dependencies = [
+ "pvec-capabilities",
+ "pvec-codec",
+ "pvec-components",
+ "pvec-container",
+ "pvec-entity",
+ "pvec-geometry",
+ "pvec-numeric",
+ "pvec-stream",
+]
+
+[[package]]
+name = "pvec-capabilities"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+
+[[package]]
+name = "pvec-codec"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+dependencies = [
+ "pvec-capabilities",
+ "pvec-entity",
+ "pvec-geometry",
+ "pvec-numeric",
+]
+
+[[package]]
+name = "pvec-components"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+dependencies = [
+ "pvec-capabilities",
+ "pvec-entity",
+ "pvec-numeric",
+]
+
+[[package]]
+name = "pvec-container"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+dependencies = [
+ "lz4_flex",
+ "miniz_oxide 0.9.1",
+ "pvec-capabilities",
+ "pvec-components",
+ "pvec-entity",
+ "pvec-geometry",
+ "pvec-numeric",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "pvec-entity"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+dependencies = [
+ "pvec-geometry",
+ "pvec-numeric",
+]
+
+[[package]]
+name = "pvec-geometry"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+dependencies = [
+ "pvec-numeric",
+]
+
+[[package]]
+name = "pvec-numeric"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+
+[[package]]
+name = "pvec-stream"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+dependencies = [
+ "pvec-container",
+ "pvec-entity",
+ "pvec-geometry",
+ "pvec-numeric",
+]
 
 [[package]]
 name = "pxfm"
@@ -2844,6 +2944,12 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "zerocopy"

@@ -203,3 +203,26 @@ fn the_pyramid_flag_ids_are_the_set_the_site_knows() {
         "the @doc-flag set changed; libviprs-org's pyramid.command.json has to change with it"
     );
 }
+
+/// The `.pvec` raster commands carry their own slots (libviprs-cli#130), in `src/pvec_raster/imp.rs`.
+/// The site's extractor reads `main.rs` and `pipeline.rs` today and has to be taught this file, so
+/// the slots stay out of `annotated_sources()` (and so out of the flag-set comparison above); this
+/// holds the half that is ours, that each one opens and closes and that none is a flag.
+#[test]
+fn the_pvec_raster_snippet_slots_are_opened_and_closed() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pvec_raster/imp.rs");
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{} must be readable: {e}", path.display()));
+    let opened = ids_after(&src, "@doc-snippet:begin slot=");
+    let closed = ids_after(&src, "@doc-snippet:end slot=");
+    let expected: BTreeSet<String> = ["pvec-join", "pvec-sink", "pvec-passthrough", "pvec-rasters"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    assert_eq!(opened, expected);
+    assert_eq!(closed, expected);
+    assert!(
+        ids_after(&src, "@doc-flag:").is_empty(),
+        "a @doc-flag here would change the flag set libviprs-org compares against its embed"
+    );
+}

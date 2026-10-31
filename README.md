@@ -74,6 +74,7 @@ cargo install --path .
 | `jxl` | JPEG XL decoding |
 | `jp2k` | JPEG 2000 decoding |
 | `dwg-acadsharp` | the DWG reader behind `viprs vector views`, `build` and `report` (ACadSharp through `acadsharp-rs`, over a native library, see [`viprs vector`](#viprs-vector)) |
+| `pvec-raster` | the `.pvec` raster commands: `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters` (see [`viprs pvec`](#viprs-pvec)) |
 | `object-store-sink` | the core's injected-backend object-store sink |
 | `s3` | the `s3://` sink arm (the core treats `s3` as a deprecated alias for `object-store-sink`) |
 | `packfile` | the `packfile://` tar/zip sink |
@@ -296,6 +297,36 @@ viprs pmtiles pack ./tiles plan.pmtiles --width 5000 --height 3000 --tile-size 2
 `pack` never guesses the plan. It comes from `--manifest` (or a `manifest.json` inside the tree, which it says it is using), or from `--width`, `--height` and the other plan flags, never a mix of the two. It prints the plan it packs with, exits 1 rather than writing an empty archive when it finds no tiles, and warns about planned tiles the tree lacks and tile-shaped files the plan never visits. A centred tree needs `--centre`, since the manifest doesn't record centring.
 
 `viprs pyramid --format webp` writes lossless WebP tiles, which PMTiles v3 has a tile type for, and `pmtiles info`, `extract` and `pack` handle them like PNG and JPEG.
+
+### `viprs pvec`
+
+Put a raster (a scan, an aerial, a PDF's page image) into a `.pvec` beside the drawing's linework, and look inside the result. The pixels go in exactly as the encoder wrote them and PVec never decodes one; the placement is a 2x3 affine into the drawing's source space (ADR 0018 in libviprs/pvec). All three commands need a build with the `pvec-raster` feature (without it they exit 1 and name it, and a mistake on the command line is still exit 2).
+
+```bash
+# A scan into a copy of the drawing, placed from its georeference and the drawing's calibration
+viprs pyramid scan.tif sheet.pvec --storage pvec --pvec-into drawing.pvec \
+  --geo-origin 2600000,1200000 --geo-scale 0.5,-0.5 --source-to-geo 1,0,2600000,0,1,1200000
+
+# Or give the placement outright, in PVec's order a,b,c,d,tx,ty
+viprs pyramid scan.tif sheet.pvec --storage pvec --pvec-into drawing.pvec \
+  --pixel-to-source 0.5,0,0,-0.5,0,300 --band 0 --opacity 255 --layer Scan --attribution "Survey office"
+
+# An archive viprs already wrote (--layout google) passes through byte for byte
+viprs pmtiles to-pvec scan.pmtiles sheet.pvec --pvec-into drawing.pvec --source-to-geo 1,0,2600000,0,1,1200000
+
+# What is in there, and one tile back out
+viprs pvec rasters sheet.pvec
+viprs pvec rasters sheet.pvec --json
+viprs pvec rasters sheet.pvec --tile 0 2 1 0 tile.png
+```
+
+`--pvec-into` is required: a `.pvec` needs at least one entity (WRT-01), and scan-only sheets stay out of v1 (ADR 0018). The output is a copy of the drawing with the raster added, so it may name the drawing itself to replace it. A drawing that declares capabilities or styles entities is refused, because adding a raster cannot carry those over yet.
+
+Under `--storage pvec` the grid is the un-centred Google grid and nothing else: `--tile-size` has to be 256, 512 or 1024, `--centre`, `--overlap`, `--layout` other than `google`, `--format raw` and the placeholder blank flags (`--skip-blank`, `--blank-tolerance`) are usage errors. `--drop-blanks` leaves a blank tile out as a not-stored tile. The placement is either `--pixel-to-source`, or the raster's own transform (`--geo-origin`/`--geo-scale`, or `--affine a,b,c,d,e,f`, the same flag `viprs geo` takes) composed with the drawing's calibration `--source-to-geo a,b,c,d,e,f`. No CRS is stored or checked: you assert that the raster and the calibration share one.
+
+`to-pvec` reads the georeference the archive stores since libviprs#1328, never re-encodes a tile, and refuses an archive that is not a Google, un-centred, overlap-free pyramid of 256, 512 or 1024 pixel PNG, JPEG or WebP tiles with a recorded source size. An archive that stores no georeference needs `--pixel-to-source`.
+
+`rasters --json` prints `{"v": 1, "rasters": [...], "skipped": [...]}`; a skipped raster carries the `RASTER-NN` rule that refused it. `--tile ID LEVEL COL ROW OUT` writes the stored bytes of one tile (`-` for stdout) and nothing else.
 
 ### `viprs features`
 
