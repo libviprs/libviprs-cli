@@ -44,7 +44,8 @@ the `version` in `Cargo.toml`.
 - `pvec-raster` is a default feature (libviprs-cli#134), so the `.pvec` raster commands are in a plain
   `cargo install` and in the released tarballs. PVec is public, and its crates are plain git
   dependencies that fetch with no token. The release smoke test now requires `pvec-raster` in
-  `viprs features`.
+  `viprs features`. The stripped x86_64 release binary is 14.0 MB, against 10.9 MB for
+  `--no-default-features` (which leaves out the pdfium binding as well).
 
 - `libviprs` is a git dependency pinned to a core main revision (`b166e1e7`,
   which carries `vector::convert`, the hardening from libviprs#1245 and the JSON
