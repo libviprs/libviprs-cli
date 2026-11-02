@@ -938,6 +938,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
+name = "hayro-ccitt"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2866f0d976e76497480b853d5e258dab6e4b89ecfe991124e08f15dfa8fd03ad"
+
+[[package]]
 name = "hayro-jpeg2000"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1005,7 +1011,7 @@ dependencies = [
  "moxcms",
  "num-traits",
  "png",
- "tiff 0.11.3",
+ "tiff",
  "zune-core",
  "zune-jpeg",
 ]
@@ -1382,7 +1388,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "libviprs"
 version = "0.6.1"
-source = "git+https://github.com/libviprs/libviprs?rev=ac69397070c52a978575e26df611836345815831#ac69397070c52a978575e26df611836345815831"
+source = "git+https://github.com/libviprs/libviprs?rev=09cca562d457e53d5f3483cd42ef3a8afd1f4c31#09cca562d457e53d5f3483cd42ef3a8afd1f4c31"
 dependencies = [
  "ab_glyph",
  "acadsharp-rs",
@@ -1390,6 +1396,7 @@ dependencies = [
  "exr",
  "flate2",
  "gif",
+ "hayro-ccitt",
  "hayro-jpeg2000",
  "image",
  "image-webp",
@@ -1409,7 +1416,7 @@ dependencies = [
  "sha2 0.11.1",
  "tar",
  "thiserror",
- "tiff 0.10.3",
+ "tiff",
  "tracing",
  "zip",
  "zune-core",
@@ -1883,7 +1890,7 @@ checksum = "1d8f70e07b9c3962945a74e59ca1c511bba65b6419468acc217c457d93f3c740"
 [[package]]
 name = "pvec"
 version = "0.0.0"
-source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+source = "git+https://github.com/libviprs/pvec?rev=ff67ecb85b5367c5db56f7d03f162c02437414a8#ff67ecb85b5367c5db56f7d03f162c02437414a8"
 dependencies = [
  "pvec-capabilities",
  "pvec-codec",
@@ -1898,12 +1905,12 @@ dependencies = [
 [[package]]
 name = "pvec-capabilities"
 version = "0.0.0"
-source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+source = "git+https://github.com/libviprs/pvec?rev=ff67ecb85b5367c5db56f7d03f162c02437414a8#ff67ecb85b5367c5db56f7d03f162c02437414a8"
 
 [[package]]
 name = "pvec-codec"
 version = "0.0.0"
-source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+source = "git+https://github.com/libviprs/pvec?rev=ff67ecb85b5367c5db56f7d03f162c02437414a8#ff67ecb85b5367c5db56f7d03f162c02437414a8"
 dependencies = [
  "pvec-capabilities",
  "pvec-entity",
@@ -1914,7 +1921,7 @@ dependencies = [
 [[package]]
 name = "pvec-components"
 version = "0.0.0"
-source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+source = "git+https://github.com/libviprs/pvec?rev=ff67ecb85b5367c5db56f7d03f162c02437414a8#ff67ecb85b5367c5db56f7d03f162c02437414a8"
 dependencies = [
  "pvec-capabilities",
  "pvec-entity",
@@ -1924,7 +1931,7 @@ dependencies = [
 [[package]]
 name = "pvec-container"
 version = "0.0.0"
-source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+source = "git+https://github.com/libviprs/pvec?rev=ff67ecb85b5367c5db56f7d03f162c02437414a8#ff67ecb85b5367c5db56f7d03f162c02437414a8"
 dependencies = [
  "lz4_flex",
  "miniz_oxide 0.9.1",
@@ -1939,7 +1946,7 @@ dependencies = [
 [[package]]
 name = "pvec-entity"
 version = "0.0.0"
-source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+source = "git+https://github.com/libviprs/pvec?rev=ff67ecb85b5367c5db56f7d03f162c02437414a8#ff67ecb85b5367c5db56f7d03f162c02437414a8"
 dependencies = [
  "pvec-geometry",
  "pvec-numeric",
@@ -1948,7 +1955,7 @@ dependencies = [
 [[package]]
 name = "pvec-geometry"
 version = "0.0.0"
-source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+source = "git+https://github.com/libviprs/pvec?rev=ff67ecb85b5367c5db56f7d03f162c02437414a8#ff67ecb85b5367c5db56f7d03f162c02437414a8"
 dependencies = [
  "pvec-numeric",
 ]
@@ -1956,13 +1963,14 @@ dependencies = [
 [[package]]
 name = "pvec-numeric"
 version = "0.0.0"
-source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+source = "git+https://github.com/libviprs/pvec?rev=ff67ecb85b5367c5db56f7d03f162c02437414a8#ff67ecb85b5367c5db56f7d03f162c02437414a8"
 
 [[package]]
 name = "pvec-stream"
 version = "0.0.0"
-source = "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099"
+source = "git+https://github.com/libviprs/pvec?rev=ff67ecb85b5367c5db56f7d03f162c02437414a8#ff67ecb85b5367c5db56f7d03f162c02437414a8"
 dependencies = [
+ "pvec-components",
  "pvec-container",
  "pvec-entity",
  "pvec-geometry",
@@ -2477,18 +2485,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "tiff"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af9605de7fee8d9551863fd692cce7637f548dbd9db9180fcc07ccc6d26c336f"
-dependencies = [
- "flate2",
- "half",
- "quick-error",
- "weezl",
 ]
 
 [[package]]
