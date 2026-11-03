@@ -8,6 +8,7 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
+- A native lane for `viprs vector` (`tools/gate.sh native`, also part of the pre-push test half, and a `native` job in `ci.yml`): it fetches the pinned ACadSharp archive, verifies it and runs the `vector_cli` cells with `LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1`, so the cells that read a real DWG cannot skip green (libviprs-cli#118).
 - Tracked git hooks (`tools/hooks`, installed with `tools/install-hooks.sh`) that run CI's lint
   and test jobs on MARS in a throw-away container instead of on the committing machine, fail
   clearly when MARS is unreachable (`VIPRS_GATE_HOST` picks another host, `LIBVIPRS_HOOKS_SKIP_MARS=1` skips loudly), and

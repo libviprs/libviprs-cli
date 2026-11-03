@@ -2,7 +2,8 @@
 # The gates for this repo, run on MARS and never on this machine.
 #
 #   tools/gate.sh lint    the lint half of CI (the `check` job): fmt, and clippy over every feature cell
-#   tools/gate.sh test    the test half of CI (the `msrv` and `test` jobs)
+#   tools/gate.sh test    the test half of CI (the `msrv`, `test` and `native` jobs)
+#   tools/gate.sh native  only the native `viprs vector` cells (the `native` job)
 #   tools/gate.sh compile lint, then build every test without running one (a "Red-tests:" tip)
 #   tools/gate.sh clean   drop the cargo and target volumes on MARS
 #
@@ -23,6 +24,10 @@
 #                      match `rust-version`; the msrv step below checks it)
 #   VIPRS_GATE_CPUS    cpus for the container, default 8
 #   VIPRS_GATE_MEMORY  memory for the container, default 12g
+#   VIPRS_NATIVE_RELEASE, VIPRS_NATIVE_ARCHIVE, VIPRS_NATIVE_SHA256
+#                      the libviprs-dep archive the native cells link. The defaults are the pin
+#                      acadsharp-rs's fetch-native-archive action carries; the sha256 is checked
+#                      after the download, so a changed pin has to change all three together.
 #
 # The cells below are the `run:` steps of the CI jobs. tests/hooks_gate_135.rs reads both files
 # and goes red if they stop agreeing, so a new CI cell cannot be missed here.
@@ -79,7 +84,32 @@ cargo clippy --all-targets --no-default-features -- -D warnings -W clippy::incom
 SCRIPT
 }
 
-# The test half. Mirrors the `msrv` and `test` jobs.
+# The native `viprs vector` cells. Mirrors the `native` job: fetch the pinned archive the way
+# acadsharp-rs's fetch-native-archive action does, then run the cells that read a real DWG with
+# LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1, so a missing archive fails here instead of skipping green.
+native_script() {
+  cat <<SCRIPT
+# --- container:native
+release=${VIPRS_NATIVE_RELEASE:-acadsharp-3.7.1-viprs.1}
+archive=${VIPRS_NATIVE_ARCHIVE:-acadsharp-linux-x64.tgz}
+sha256=${VIPRS_NATIVE_SHA256:-4cbdbbdd03c4431780ddca80a1d660e6940ff561734d666e162d6fb50438136e}
+SCRIPT
+  cat <<'SCRIPT'
+mkdir -p /tmp/native && cd /tmp/native
+curl -fsSL --retry 3 -o "$archive" "https://github.com/libviprs/libviprs-dep/releases/download/$release/$archive"
+echo "$sha256  $archive" | sha256sum -c -
+top=$(tar -tzf "$archive" | cut -d/ -f1 | sort -u)
+[ "$(printf '%s\n' "$top" | wc -l)" -eq 1 ] || { echo "the archive has more than one top-level entry: $top"; exit 1; }
+tar -xzf "$archive"
+cd /work
+export ACADSHARP_NATIVE_DIR=/tmp/native/$top LD_LIBRARY_PATH=/tmp/native/$top/lib LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1
+test -d "$ACADSHARP_NATIVE_DIR/lib" && test -f "$ACADSHARP_NATIVE_DIR/metadata/LINKINFO.json"
+cargo test --features dwg-acadsharp --test vector_cli
+# --- container:end
+SCRIPT
+}
+
+# The test half. Mirrors the `msrv`, `test` and `native` jobs.
 test_script() {
   cat <<'SCRIPT'
 # --- container:test
@@ -98,6 +128,7 @@ cargo test --no-default-features
 cargo test --features full
 # --- container:end
 SCRIPT
+  native_script
 }
 
 # The lint lane plus a build of every test, for a tip that is red on purpose.
@@ -142,6 +173,7 @@ $script"
 case $lane in
   lint) run_remote "$(lint_script)" ;;
   test) run_remote "$(test_script)" ;;
+  native) run_remote "$(native_script)" ;;
   compile) run_remote "$(compile_script)" ;;
   clean)
     "${SSH[@]}" true 2>/dev/null || unreachable

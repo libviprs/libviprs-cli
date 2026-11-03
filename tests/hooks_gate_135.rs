@@ -196,6 +196,30 @@ fn pre_push_runs_the_test_lane_on_mars_and_builds_nothing_locally() {
         calls.contains("cargo test --no-default-features"),
         "{calls}"
     );
+    // The native `viprs vector` cells run in the same push, and refuse to skip.
+    assert!(
+        calls.contains("cargo test --features dwg-acadsharp --test vector_cli"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1"),
+        "{calls}"
+    );
+    assert_eq!(sb.local_tool_calls(), "");
+}
+
+#[test]
+fn the_native_lane_runs_only_the_vector_cells_on_mars() {
+    let sb = sandbox("native", "a change", 0);
+    let out = sb.run("tools/gate.sh", &["native"], "", &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let calls = sb.ssh_calls();
+    assert!(
+        calls.contains("cargo test --features dwg-acadsharp --test vector_cli"),
+        "{calls}"
+    );
+    assert!(calls.contains("sha256sum -c"), "{calls}");
+    assert!(!calls.contains("cargo test --features full"), "{calls}");
     assert_eq!(sb.local_tool_calls(), "");
 }
 

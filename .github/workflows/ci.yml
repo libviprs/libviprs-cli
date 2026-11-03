@@ -147,3 +147,39 @@ jobs:
       # reaches. `pdfium-static` stays out because it needs a static
       # libpdfium.a to link.
       - run: cargo test --features full
+
+  # The `viprs vector` cells that read a real DWG need the NativeAOT archive
+  # acadsharp-rs links, so in the `test` job they skip, and a skip is the same
+  # colour as a pass. This job fetches the pinned archive, verifies it, and sets
+  # LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1 so a missing archive fails instead.
+  # Hosted CI is off for now, so the same steps run as `tools/gate.sh native`
+  # (and inside `tools/gate.sh test`, which the pre-push hook runs on MARS).
+  native:
+    name: Native vector
+    runs-on: ubuntu-latest
+    env:
+      LIBVIPRS_REQUIRE_ACADSHARP_NATIVE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone libviprs (matching branch or main)
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone --depth 1 --branch "$BRANCH" https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs 2>/dev/null \
+            || git clone --depth 1 https://github.com/${{ github.repository_owner }}/libviprs.git ../libviprs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch the pinned native archive
+        run: |
+          set -euo pipefail
+          release=acadsharp-3.7.1-viprs.1
+          archive=acadsharp-linux-x64.tgz
+          sha256=4cbdbbdd03c4431780ddca80a1d660e6940ff561734d666e162d6fb50438136e
+          mkdir -p "$RUNNER_TEMP/native"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/native/$archive" "https://github.com/libviprs/libviprs-dep/releases/download/$release/$archive"
+          echo "$sha256  $RUNNER_TEMP/native/$archive" | sha256sum -c -
+          top=$(tar -tzf "$RUNNER_TEMP/native/$archive" | cut -d/ -f1 | sort -u)
+          [ "$(printf '%s\n' "$top" | wc -l)" -eq 1 ]
+          tar -xzf "$RUNNER_TEMP/native/$archive" -C "$RUNNER_TEMP/native"
+          echo "ACADSHARP_NATIVE_DIR=$RUNNER_TEMP/native/$top" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/native/$top/lib" >> "$GITHUB_ENV"
+      - run: cargo test --features dwg-acadsharp --test vector_cli

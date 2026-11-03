@@ -443,6 +443,8 @@ Error: this build has no DWG provider, so it cannot read a drawing. Rebuild with
 
 A build that has the feature but no native library to link reports the reader as not linked, also exit 1. Run `viprs features` to see which kind of binary you have. The provider, how to build without it and how to write another are in the core's `docs/vector-providers.md`.
 
+`vector` reads a drawing through ACadSharp only. The pure-Rust acadrust reader in the core (`dwg-acadrust`) is the provider behind the PVec conversion, not a `CadDecoder`, so `viprs vector` cannot be pointed at it yet and there is nothing to select.
+
 **The native library is linked shared, so the binary has to find it at run time.** `acadsharp-rs` links `libacadsharp_native` as a shared library (`NEEDED libacadsharp_native.so` in the ELF header of the binary I built on Linux x64) and its rpath does not reach a binary that depends on it, so the built `viprs` has no `RPATH` or `RUNPATH`. Without help the loader refuses to start it, and that is every command, not only `vector` (`error while loading shared libraries: libacadsharp_native.so: cannot open shared object file`). Put the archive's `lib/` directory on `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS) when you run it, or copy `libacadsharp_native` next to a path the loader already searches:
 
 ```
@@ -475,7 +477,7 @@ tools/install-hooks.sh
 ```
 
 - **pre-commit** is the lint half: `cargo fmt -- --check` and clippy over every feature cell in `.github/workflows/ci.yml`.
-- **pre-push** is the test half: the MSRV claims, `cargo check`, `cargo test`, `cargo test --no-default-features` and `cargo test --features full`.
+- **pre-push** is the test half: the MSRV claims, `cargo check`, `cargo test`, `cargo test --no-default-features` and `cargo test --features full`, then the native `viprs vector` cells. Those fetch the pinned ACadSharp archive from libviprs-dep, check its sha256, and run `cargo test --features dwg-acadsharp --test vector_cli` with `LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1`, so a missing archive fails the push instead of skipping. `tools/gate.sh native` runs just those.
 
 `tools/gate.sh` does the work (`lint`, `test`, or `clean` to drop the cargo and target volumes on MARS). It streams the tree over ssh, keeps `CARGO_TARGET_DIR=/tmp/target` in a docker volume, and leaves no scratch directory behind. `tests/hooks_gate_135.rs` fails if the gate's cargo cells drift from CI's.
 
