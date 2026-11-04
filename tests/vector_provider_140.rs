@@ -76,6 +76,7 @@ fn an_unknown_provider_is_a_usage_error_that_writes_nothing() {
     );
 }
 
+#[cfg(feature = "dwg-acadrust")]
 #[test]
 fn acadrust_is_the_default_provider() {
     let out = run(&["vector", "views", s(&sample()), "--json"]);
@@ -84,6 +85,7 @@ fn acadrust_is_the_default_provider() {
     assert_eq!(j["views"][0]["kind"], "model");
 }
 
+#[cfg(feature = "dwg-acadrust")]
 #[test]
 fn asking_for_acadrust_by_name_reads_the_same_drawing() {
     let plain = run(&["vector", "views", s(&sample()), "--json"]);
@@ -99,6 +101,7 @@ fn asking_for_acadrust_by_name_reads_the_same_drawing() {
     assert_eq!(stdout(&plain), stdout(&named));
 }
 
+#[cfg(feature = "dwg-acadrust")]
 #[test]
 fn a_default_build_writes_an_archive_that_validates() {
     let dir = std::env::temp_dir().join(format!("viprs-provider-140-{}", std::process::id()));
@@ -119,6 +122,7 @@ fn a_default_build_writes_an_archive_that_validates() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(feature = "dwg-acadrust")]
 #[test]
 fn features_lists_the_acadrust_reader() {
     let out = run(&["features"]);
@@ -158,6 +162,19 @@ fn asking_for_acadsharp_without_it_names_the_feature_and_writes_nothing() {
     }
     assert!(!archive.exists());
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The mirror of the ACadSharp refusal: a `--no-default-features` build has no acadrust.
+#[cfg(not(feature = "dwg-acadrust"))]
+#[test]
+fn asking_for_acadrust_without_it_names_the_feature() {
+    let out = run(&["vector", "views", s(&sample()), "--provider", "acadrust"]);
+    assert_eq!(code(&out), 1, "stderr:\n{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--features dwg-acadrust"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]

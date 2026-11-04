@@ -124,9 +124,11 @@ enum Command {
 
     /// Turn a DWG into a vector PMTiles archive, and inspect or check one.
     ///
-    /// `views`, `build` and `report` read a drawing and need a build with the
-    /// `dwg-acadsharp` feature; `info` and `validate` read a PMTiles file and
-    /// work in every build.
+    /// `views`, `build` and `report` read a drawing and need a build with a DWG
+    /// reader: acadrust (the `dwg-acadrust` feature, on by default) or the
+    /// experimental ACadSharp (`dwg-acadsharp`, chosen with `--provider
+    /// acadsharp`). `info` and `validate` read a PMTiles file and work in every
+    /// build.
     Vector(vector::VectorArgs),
 
     /// Look inside a `.pvec`: the rasters it places and their tiles.

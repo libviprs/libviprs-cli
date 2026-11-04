@@ -63,7 +63,7 @@ cargo install --path .
 
 ### Cargo features
 
-`viprs` forwards every capability-bearing feature of the core crate under the same name. `pdfium` and `pvec-raster` are on by default.
+`viprs` forwards every capability-bearing feature of the core crate under the same name. `pdfium`, `pvec-raster` and `dwg-acadrust` are on by default.
 
 | Feature | What it turns on |
 |---|---|
@@ -73,7 +73,8 @@ cargo install --path .
 | `svg` | SVG rasterising: a `.svg` file, or any input whose root element is `svg` (the core sniffs it by content); a gzipped `.svgz` is refused |
 | `jxl` | JPEG XL decoding |
 | `jp2k` | JPEG 2000 decoding |
-| `dwg-acadsharp` | the DWG reader behind `viprs vector views`, `build` and `report` (ACadSharp through `acadsharp-rs`, over a native library, see [`viprs vector`](#viprs-vector)) |
+| `dwg-acadrust` (default) | the default DWG reader behind `viprs vector views`, `build` and `report`: the pure Rust acadrust reader, no native library (see [`viprs vector`](#viprs-vector)) |
+| `dwg-acadsharp` | the experimental DWG reader, chosen with `viprs vector ... --provider acadsharp` (ACadSharp through `acadsharp-rs`, over a native library). In `full`, not in the default set |
 | `pvec-raster` (default) | the `.pvec` raster commands: `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters` (see [`viprs pvec`](#viprs-pvec)) |
 | `object-store-sink` | the core's injected-backend object-store sink |
 | `s3` | the `s3://` sink arm (the core treats `s3` as a deprecated alias for `object-store-sink`) |
@@ -426,7 +427,8 @@ viprs vector validate plan.pmtiles                 # structure, MVT tiles, vecto
 | `--max-zoom ZOOM` | `build`, `report` | The deepest zoom, 0 to 24 (default 12). Zoom 0 is one tile holding the drawing. Deeper is sharper and larger. |
 | `--timeout DURATION` | `build`, `report` | Stop after this long and leave nothing behind. A bare number is seconds, and `ms`, `s`, `m` and `h` are understood (`90`, `500ms`, `2m`). Exit 1. |
 | `--name NAME` | `build` | The archive's name. The view's name when omitted. |
-| `--hardened` | `views`, `build`, `report` | Open the drawing under the hardened provider limits (a quarter of a gigabyte of input, ten million entities, bounded strings, polylines, nesting and output). Use it for a drawing somebody else made. |
+| `--hardened` | `views`, `build`, `report` | Open the drawing under the hardened provider limits. ACadSharp bounds a quarter of a gigabyte of input, ten million entities, strings, polylines, nesting and output; acadrust refuses an input over a quarter of a gigabyte before it reads it. Use it for a drawing somebody else made. |
+| `--provider PROVIDER` | `views`, `build`, `report` | The DWG reader: `acadrust` (the default, pure Rust) or `acadsharp` (experimental, needs the native library). A reader this build left out exits 1 and names the feature to rebuild with. |
 | `--json` | every command | One JSON object on stdout, with `"v": 1`, instead of text. |
 
 `build` takes an optional output path and otherwise names the archive after the input with a `.pmtiles` extension. It writes the archive beside the output, syncs it and renames it into place only when it is complete, so a run that fails, passes `--timeout` or is stopped with Ctrl-C leaves nothing at the output (an existing file there is untouched) and removes its staging files on the way out. Ctrl-C exits 130; a second one quits at once and cannot clean up. A process killed outright can leave `<output>.tmp.data` and `<output>.tmp.idx` beside the output, and still never a half-written archive. The native reader cannot be interrupted inside one record, so a timeout or a Ctrl-C takes effect at the next primitive, which is soon but not instant.
@@ -435,24 +437,22 @@ viprs vector validate plan.pmtiles                 # structure, MVT tiles, vecto
 
 `info` and `validate` read a `.pmtiles` file and work in every build. `validate` exits 0 for a sound archive and 1 with one line per finding otherwise. A missing or unreadable file is a 1 too.
 
-**The DWG reader is a feature.** `views`, `build` and `report` need a build with `--features dwg-acadsharp` (it is in `full`). That feature pulls in `acadsharp-rs`, which links a native ACadSharp library (a NativeAOT archive from [libviprs-dep](https://github.com/libviprs/libviprs-dep)); its build script finds one through `ACADSHARP_NATIVE_DIR`, or in `$CARGO_HOME/acadsharp-native/`, and downloads nothing. A build without the feature exits 1 and names it:
+**The DWG reader is a feature.** `views`, `build` and `report` need a build with a DWG reader. The default is acadrust (`dwg-acadrust`, on by default): a pure Rust reader that needs no native library, taken from libviprs's own fork by revision through the core. `--provider acadrust` asks for it by name, and a plain `viprs vector build plan.dwg` uses it. The other reader is ACadSharp (`dwg-acadsharp`, in `full`), and it is experimental: `--provider acadsharp` selects it, and it needs a native ACadSharp library (a NativeAOT archive from [libviprs-dep](https://github.com/libviprs/libviprs-dep)) that `acadsharp-rs`'s build script finds through `ACADSHARP_NATIVE_DIR`, or in `$CARGO_HOME/acadsharp-native/`, and downloads nothing. A build with no reader (`--no-default-features`) exits 1 and names the feature:
 
 ```
-Error: this build has no DWG provider, so it cannot read a drawing. Rebuild with `--features dwg-acadsharp` (`vector info` and `vector validate` still work)
+Error: this build has no DWG provider, so it cannot read a drawing. Rebuild with `--features dwg-acadrust` (or the experimental `dwg-acadsharp`); `vector info` and `vector validate` still work
 ```
 
-A build that has the feature but no native library to link reports the reader as not linked, also exit 1. Run `viprs features` to see which kind of binary you have. The provider, how to build without it and how to write another are in the core's `docs/vector-providers.md`.
+Asking for a reader the build left out (`--provider acadsharp` without `dwg-acadsharp`) also exits 1 and names that feature. A build that has `dwg-acadsharp` but no native library to link reports the reader as not linked, also exit 1. Run `viprs features` to see which kind of binary you have. The providers, how to build without one and how to write another are in the core's `docs/vector-providers.md`.
 
-`vector` reads a drawing through ACadSharp only. The pure-Rust acadrust reader in the core (`dwg-acadrust`) is the provider behind the PVec conversion, not a `CadDecoder`, so `viprs vector` cannot be pointed at it yet and there is nothing to select.
-
-**The native library is linked shared, so the binary has to find it at run time.** `acadsharp-rs` links `libacadsharp_native` as a shared library (`NEEDED libacadsharp_native.so` in the ELF header of the binary I built on Linux x64) and its rpath does not reach a binary that depends on it, so the built `viprs` has no `RPATH` or `RUNPATH`. Without help the loader refuses to start it, and that is every command, not only `vector` (`error while loading shared libraries: libacadsharp_native.so: cannot open shared object file`). Put the archive's `lib/` directory on `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS) when you run it, or copy `libacadsharp_native` next to a path the loader already searches:
+**The experimental ACadSharp reader links its native library shared, so a binary built with `dwg-acadsharp` has to find it at run time.** `acadsharp-rs` links `libacadsharp_native` as a shared library (`NEEDED libacadsharp_native.so` in the ELF header of the binary I built on Linux x64) and its rpath does not reach a binary that depends on it, so the built `viprs` has no `RPATH` or `RUNPATH`. Without help the loader refuses to start it, and that is every command, not only `vector` (`error while loading shared libraries: libacadsharp_native.so: cannot open shared object file`). Put the archive's `lib/` directory on `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS) when you run it, or copy `libacadsharp_native` next to a path the loader already searches:
 
 ```
 export LD_LIBRARY_PATH="$ACADSHARP_NATIVE_DIR/lib"
-viprs vector views drawing.dwg
+viprs vector views drawing.dwg --provider acadsharp
 ```
 
-A binary built without `dwg-acadsharp` links nothing of the sort and needs none of this. I measured the Linux x64 build only, so the macOS spelling is what the platform's loader does and not something I ran.
+A binary built without `dwg-acadsharp` (the default) links nothing of the sort and needs none of this. I measured the Linux x64 build only, so the macOS spelling is what the platform's loader does and not something I ran.
 
 A decode that reports errors still exits 0. `build` and `report` print every diagnostic the reader and the tiler filed, and a decode the reader did not call complete adds a warning on stderr, but no exit code carries either. A script that has to refuse such an archive reads `decode.complete` and `decode.has_errors` from `--json`.
 

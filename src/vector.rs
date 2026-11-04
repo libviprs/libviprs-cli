@@ -20,8 +20,10 @@
 //! The contract in the README applies unchanged: 0 success, 1 operational
 //! failure, 2 usage mistake, 130 interrupted. Specifically for this family:
 //!
-//! * a build without the `dwg-acadsharp` feature cannot read a DWG, and says so
-//!   with exit 1 and the feature to rebuild with, as a missing codec does.
+//! * a build with no DWG reader (`dwg-acadrust`, or the experimental
+//!   `dwg-acadsharp`) cannot read a DWG, and says so with exit 1 and the
+//!   feature to rebuild with, as a missing codec does. Asking for a reader this
+//!   build left out with `--provider` says which feature brings it back.
 //!   `info` and `validate` read a PMTiles file and work in every build.
 //! * `validate` exits 1 when it finds something wrong with the archive.
 //! * `build` and `report` stopped by Ctrl-C exit 130, and one stopped by
@@ -37,8 +39,8 @@ use std::time::Duration;
 use libviprs::CancelToken;
 use libviprs::cad::{CadDrawing, CadError, CadSource, ViewKind};
 use libviprs::vector::convert::{
-    Conversion, ConvertError, ConvertOptions, ViewSelector, check, convert, default_decoder,
-    inspect, list_views, report, view_json,
+    Conversion, ConvertError, ConvertOptions, ProviderKind, ViewSelector, check, convert,
+    decoder_for, default_decoder, inspect, list_views, report, view_json,
 };
 use libviprs::vector::tiler::{TilerConfig, TilerError};
 use serde_json::json;
@@ -57,8 +59,8 @@ enum VectorCommand {
     /// List the views of a DWG: Model Space and each paper-space layout.
     ///
     /// Only Model Space can be built until paper space has its viewport
-    /// fixtures, and a layout is listed with that said. Needs a build with the
-    /// `dwg-acadsharp` feature.
+    /// fixtures, and a layout is listed with that said. Needs a build with a
+    /// DWG reader (`dwg-acadrust`, on by default).
     Views(ViewsArgs),
 
     /// Convert one view of a DWG to a vector PMTiles archive.
@@ -67,7 +69,7 @@ enum VectorCommand {
     /// when it is complete, so a failed, interrupted or timed out run leaves
     /// nothing at the output (an existing file there is untouched). With no
     /// output the archive takes the input's name with a `.pmtiles` extension.
-    /// Needs a build with the `dwg-acadsharp` feature.
+    /// Needs a build with a DWG reader (`dwg-acadrust`, on by default).
     #[command(alias = "convert")]
     Build(BuildArgs),
 
@@ -75,8 +77,8 @@ enum VectorCommand {
     /// counts, every diagnostic and the budget counters.
     ///
     /// Takes the same view and tiler flags as `build` and runs the same code,
-    /// so what it reports is what a build would have done. Needs a build with
-    /// the `dwg-acadsharp` feature.
+    /// so what it reports is what a build would have done. Needs a build with a
+    /// DWG reader (`dwg-acadrust`, on by default).
     Report(ReportArgs),
 
     /// Show what a vector PMTiles archive says about itself: zoom range,
@@ -93,21 +95,40 @@ enum VectorCommand {
     Validate(ArchiveArgs),
 }
 
+/// The DWG readers `--provider` names.
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum Provider {
+    /// The pure Rust reader, the default (the `dwg-acadrust` feature).
+    Acadrust,
+    /// The ACadSharp native library, experimental (the `dwg-acadsharp` feature).
+    Acadsharp,
+}
+
 /// The flags every command that opens a drawing takes.
 #[derive(clap::Args)]
 struct DrawingArgs {
     /// The drawing (a DWG).
     input: PathBuf,
 
-    /// Open the drawing under the hardened provider limits: a quarter of a
-    /// gigabyte of input, ten million entities, bounded strings, polylines,
-    /// nesting depth and output.
+    /// Open the drawing under the hardened provider limits. ACadSharp bounds a
+    /// quarter of a gigabyte of input, ten million entities, strings,
+    /// polylines, nesting depth and output; acadrust refuses an input over a
+    /// quarter of a gigabyte before it reads it.
     ///
     /// Use it for a drawing somebody else made. The default sets no bound,
     /// which is right for your own files. The reader is still not a sandbox,
     /// so an upload also wants a process with its own memory and time ceiling.
     #[arg(long)]
     hardened: bool,
+
+    /// Which DWG reader: `acadrust` (pure Rust, needs no native library) or
+    /// `acadsharp` (EXPERIMENTAL, needs the native ACadSharp library).
+    ///
+    /// When omitted this is acadrust, or ACadSharp in a build that has only
+    /// that one. A reader this build left out exits 1 and names the feature to
+    /// rebuild with.
+    #[arg(long, value_enum, value_name = "PROVIDER")]
+    provider: Option<Provider>,
 
     /// Print one JSON object on stdout instead of text.
     #[arg(long)]
@@ -247,7 +268,8 @@ pub(crate) fn classify(error: &ConvertError, timeout: Option<Duration>) -> Failu
     match error {
         ConvertError::ProviderNotBuilt => Failure::Operational(
             "this build has no DWG provider, so it cannot read a drawing. Rebuild with \
-             `--features dwg-acadsharp` (`vector info` and `vector validate` still work)"
+             `--features dwg-acadrust` (or the experimental `dwg-acadsharp`); `vector info` \
+             and `vector validate` still work"
                 .to_owned(),
         ),
         // A selector the command line alone gets wrong.
@@ -308,14 +330,32 @@ pub(crate) fn run(args: VectorArgs) {
     }
 }
 
-/// Opens the drawing through the library's own provider choice.
+/// Opens the drawing through the reader `--provider` names, or the library's own choice.
 fn with_drawing<T>(args: &DrawingArgs, then: impl FnOnce(&dyn CadDrawing) -> T) -> T {
     if !args.input.exists() {
         operational_error(&format!("{} does not exist", args.input.display()));
     }
-    let decoder = match default_decoder(args.hardened) {
-        Ok(d) => d,
-        Err(e) => fail(classify(&e, None)),
+    let decoder = match args.provider {
+        Some(p) => {
+            let kind = match p {
+                Provider::Acadrust => ProviderKind::Acadrust,
+                Provider::Acadsharp => ProviderKind::AcadSharp,
+            };
+            decoder_for(kind, args.hardened)
+        }
+        None => default_decoder(args.hardened),
+    };
+    let decoder = match (decoder, args.provider) {
+        (Ok(d), _) => d,
+        (Err(ConvertError::ProviderNotBuilt), Some(Provider::Acadrust)) => operational_error(
+            "this build has no acadrust provider. Rebuild with `--features dwg-acadrust` (a \
+             `--no-default-features` build leaves it out)",
+        ),
+        (Err(ConvertError::ProviderNotBuilt), Some(Provider::Acadsharp)) => operational_error(
+            "this build has no ACadSharp provider (experimental). Rebuild with `--features \
+             dwg-acadsharp`",
+        ),
+        (Err(e), _) => fail(classify(&e, None)),
     };
     let drawing = match decoder.open(CadSource::Path(&args.input)) {
         Ok(d) => d,
@@ -766,7 +806,8 @@ mod tests {
         let Failure::Operational(m) = classify(&ConvertError::ProviderNotBuilt, None) else {
             panic!("a missing provider is operational");
         };
-        assert!(m.contains("--features dwg-acadsharp"), "{m}");
+        assert!(m.contains("--features dwg-acadrust"), "{m}");
+        assert!(m.contains("experimental `dwg-acadsharp`"), "{m}");
     }
 
     /// libviprs-cli#123: `views --json` forwards the core's `view_json`, and a
