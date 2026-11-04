@@ -85,8 +85,7 @@ clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 # The vector path (`viprs vector`, libviprs#1035) is not in a release of the
 # core yet, so this pins a core commit that carries it, and the acadrust decoder
-# and `decoder_for` (libviprs#1485). It has to become a crates.io version once
-# the core releases, and this crate cannot merge before that. The core's own
+# and `decoder_for` (libviprs#1485). Pinned by rev; never from a registry. The core's own
 # default features are off here, so `dwg-acadrust` above is what turns the
 # default reader on, the way `pdfium` does for PDFium.
 libviprs = { git = "https://github.com/libviprs/libviprs", rev = "56fa40b0c0d3e688f247ee48a930b3e1030c39a3", default-features = false }

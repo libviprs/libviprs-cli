@@ -8,7 +8,7 @@ the `version` in `Cargo.toml`.
 
 ### Added
 
-- `viprs vector views|build|report --provider acadrust|acadsharp` (libviprs-cli#140): acadrust, the pure Rust reader behind the new default `dwg-acadrust` feature, is now the default DWG reader and needs no native library. ACadSharp (`dwg-acadsharp`, still in `full`) is experimental and has to be asked for. The core pin moves to a commit with the acadrust decoder and `decoder_for` (libviprs#1485, refs libviprs#1488).
+- `viprs vector views|build|report --provider acadrust|acadsharp` (libviprs-cli#140): acadrust, the pure Rust reader behind the new default `dwg-acadrust` feature, is now the default DWG reader and needs no native library. ACadSharp (`dwg-acadsharp`, still in `full`) is experimental and has to be asked for. The core pin moves to a commit with the acadrust decoder and `decoder_for` (libviprs#1485, refs libviprs#1488), and the pvec revs move to `afd2fe62`, the one that core pins.
 - A native lane for `viprs vector` (`tools/gate.sh native`, also part of the pre-push test half, and a `native` job in `ci.yml`): it fetches the pinned ACadSharp archive, verifies it and runs the `vector_cli` cells with `LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1`, so the cells that read a real DWG cannot skip green (libviprs-cli#118).
 - Tracked git hooks (`tools/hooks`, installed with `tools/install-hooks.sh`) that run CI's lint
   and test jobs on MARS in a throw-away container instead of on the committing machine, fail

@@ -163,9 +163,9 @@ struct RunArgs {
     /// Stop after this long and leave nothing behind. A bare number is
     /// seconds, and `ms`, `s`, `m` and `h` are understood: `90`, `500ms`, `2m`.
     ///
-    /// The clock covers the decode and the tiling. The native reader cannot be
-    /// interrupted inside one record, so the run stops at the first primitive
-    /// after the deadline, which is soon but not instant. Exit 1.
+    /// The clock covers the decode and the tiling. ACadSharp's native reader
+    /// cannot be interrupted inside one record, so with it the run stops at the
+    /// first primitive after the deadline, which is soon but not instant. Exit 1.
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     timeout: Option<Duration>,
 }
