@@ -4,9 +4,9 @@
 //!
 //! * the ones that read a PMTiles archive (`info`, `validate`) and the usage
 //!   refusals, which run in every build off the committed `ladder.pmtiles`;
-//! * the ones for a build **without** `dwg-acadsharp`, which prove the commands
-//!   that need a DWG reader say so and write nothing;
-//! * the ones for a build **with** it, which need the native archive
+//! * the ones for a build with **no** DWG reader (`--no-default-features`), which prove the
+//!   commands that need one say so and write nothing;
+//! * the ones for a build **with** `dwg-acadsharp`, which need the native archive
 //!   `acadsharp-rs` links. They skip, saying so, when the reader is not linked,
 //!   unless `LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1` turns the skip into a failure.
 //!
@@ -244,7 +244,7 @@ fn the_help_lists_the_five_commands_and_the_convert_alias_parses() {
 // A build with no DWG reader
 // ---------------------------------------------------------------------------
 
-#[cfg(not(feature = "dwg-acadsharp"))]
+#[cfg(not(any(feature = "dwg-acadrust", feature = "dwg-acadsharp")))]
 #[test]
 fn without_the_feature_the_drawing_commands_say_how_to_rebuild_and_write_nothing() {
     let dir = unique_dir("nofeature");
@@ -260,7 +260,7 @@ fn without_the_feature_the_drawing_commands_say_how_to_rebuild_and_write_nothing
         let out = run(&args);
         assert_eq!(code(&out), 1, "{args:?}\nstderr:\n{}", stderr(&out));
         assert!(
-            stderr(&out).contains("--features dwg-acadsharp"),
+            stderr(&out).contains("--features dwg-acadrust"),
             "{args:?}\n{}",
             stderr(&out)
         );
@@ -289,11 +289,20 @@ fn features_lists_the_reader() {
 // A build with the reader, and a native library to drive it
 // ---------------------------------------------------------------------------
 
+/// `viprs` with the ACadSharp reader asked for by name: acadrust is the default, and these
+/// cells are about the native one (libviprs-cli#140). Only for the commands that open a drawing.
+#[cfg(feature = "dwg-acadsharp")]
+fn run_native(args: &[&str]) -> Output {
+    let mut all = args.to_vec();
+    all.extend(["--provider", "acadsharp"]);
+    run(&all)
+}
+
 /// Whether the native reader is linked into this binary. Skips (or fails, when
 /// the lane is required) when it is not.
 #[cfg(feature = "dwg-acadsharp")]
 fn native_lane() -> bool {
-    let out = run(&["vector", "views", s(&fixture("sample_AC1018.dwg"))]);
+    let out = run_native(&["vector", "views", s(&fixture("sample_AC1018.dwg"))]);
     if code(&out) == 0 {
         return true;
     }
@@ -313,10 +322,10 @@ fn views_lists_model_space() {
         return;
     }
     let sample = fixture("sample_AC1018.dwg");
-    let out = run(&["vector", "views", s(&sample)]);
+    let out = run_native(&["vector", "views", s(&sample)]);
     assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
     assert!(stdout(&out).contains("model"), "{}", stdout(&out));
-    let out = run(&["vector", "views", s(&sample), "--json"]);
+    let out = run_native(&["vector", "views", s(&sample), "--json"]);
     let j = json(&out);
     assert_eq!(j["v"], 1);
     assert_eq!(j["views"][0]["kind"], "model");
@@ -331,7 +340,7 @@ fn build_writes_one_valid_archive_and_nothing_else() {
     }
     let dir = unique_dir("build");
     let out_path = dir.join("sample.pmtiles");
-    let out = run(&[
+    let out = run_native(&[
         "vector",
         "build",
         s(&fixture("sample_AC1018.dwg")),
@@ -358,7 +367,7 @@ fn build_writes_one_valid_archive_and_nothing_else() {
     // And as JSON, over the same input, to a name derived from the input.
     let copy = dir.join("again.dwg");
     std::fs::copy(fixture("sample_AC1018.dwg"), &copy).unwrap();
-    let out = run(&["vector", "build", s(&copy), "--max-zoom", "4", "--json"]);
+    let out = run_native(&["vector", "build", s(&copy), "--max-zoom", "4", "--json"]);
     assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
     let j = json(&out);
     assert_eq!(j["v"], 1);
@@ -379,11 +388,11 @@ fn report_writes_nothing_and_agrees_with_a_build() {
     }
     let dir = unique_dir("report");
     let sample = fixture("sample_AC1018.dwg");
-    let rep = run(&["vector", "report", s(&sample), "--max-zoom", "5", "--json"]);
+    let rep = run_native(&["vector", "report", s(&sample), "--max-zoom", "5", "--json"]);
     assert_eq!(code(&rep), 0, "stderr:\n{}", stderr(&rep));
     assert!(entries(&dir).is_empty());
     let built = dir.join("b.pmtiles");
-    let b = run(&[
+    let b = run_native(&[
         "vector",
         "build",
         s(&sample),
@@ -411,7 +420,7 @@ fn a_timeout_exits_1_and_leaves_nothing_behind() {
     }
     let dir = unique_dir("timeout");
     let out_path = dir.join("never.pmtiles");
-    let out = run(&[
+    let out = run_native(&[
         "vector",
         "build",
         s(&fixture("sample_AC1018.dwg")),
@@ -435,7 +444,7 @@ fn a_layout_or_an_unknown_view_is_a_usage_error() {
     }
     let dir = unique_dir("view");
     let out_path = dir.join("never.pmtiles");
-    let out = run(&[
+    let out = run_native(&[
         "vector",
         "build",
         s(&fixture("sample_AC1018.dwg")),
@@ -471,6 +480,8 @@ fn ctrl_c_mid_build_exits_130_and_leaves_nothing_behind() {
             s(&out_path),
             "--max-zoom",
             "24",
+            "--provider",
+            "acadsharp",
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -534,7 +545,7 @@ fn hardened_reaches_the_decoder_and_refuses_a_drawing_past_the_input_cap() {
     let dir = unique_dir("hardened");
     let huge = oversized_drawing(&dir);
     for command in ["views", "report"] {
-        let out = run(&["vector", command, s(&huge), "--hardened"]);
+        let out = run_native(&["vector", command, s(&huge), "--hardened"]);
         assert_eq!(code(&out), 1, "{command}: stderr:\n{}", stderr(&out));
         assert!(
             stderr(&out).contains("bound set in Limits"),
@@ -554,7 +565,7 @@ fn without_hardened_the_input_cap_is_not_applied() {
     let dir = unique_dir("unhardened");
     let huge = oversized_drawing(&dir);
     for command in ["views", "report"] {
-        let out = run(&["vector", command, s(&huge)]);
+        let out = run_native(&["vector", command, s(&huge)]);
         // The zeros are not a drawing, so this is refused too, by the parser.
         assert_eq!(code(&out), 1, "{command}: stderr:\n{}", stderr(&out));
         assert!(
