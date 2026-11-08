@@ -102,6 +102,8 @@ fn every_paper_layout_is_listed_in_tab_order_and_the_exit_code_follows_the_index
     // 0 only when at least one sheet was written and none failed.
     let any_written = rows.iter().any(|r| r["status"] == "written");
     let any_failed = rows.iter().any(|r| r["status"] == "failed");
+    // Nothing in this drawing is a reason to fail a sheet.
+    assert!(!any_failed, "{json}\n{err}");
     assert_eq!(
         code(&out) == 0,
         any_written && !any_failed,
@@ -142,13 +144,18 @@ fn one_layout_keeps_its_number_in_the_set() {
         "plan",
     ]);
     let err = stderr(&out);
-    assert_ne!(code(&out), 2, "{err}");
     let json = index(&dir.join("plan.sheets.json"));
     let rows = json["sheets"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{json}");
     assert_eq!(rows[0]["layout"], "Layout2");
     assert_eq!(rows[0]["nn"], "02");
     assert_eq!(rows[0]["file"], "plan.02-Layout2.pvec");
+    assert_eq!(
+        code(&out) == 0,
+        rows[0]["status"] == "written",
+        "exit {}:\n{err}",
+        code(&out)
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -170,6 +177,29 @@ fn an_unknown_layout_exits_1_names_the_ones_there_are_and_writes_nothing() {
         assert!(err.contains(needle), "{needle:?} not in:\n{err}");
     }
     assert!(listing(&dir).is_empty(), "{:?}", listing(&dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(feature = "pvec-convert")]
+#[test]
+fn a_drawing_that_is_not_there_exits_1_and_writes_nothing() {
+    let dir = scratch("missing");
+    let out_dir = dir.join("out");
+    let out = run(&["pvec", "convert", s(&dir.join("nope.dwg")), s(&out_dir)]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("nope.dwg"), "{}", stderr(&out));
+    assert!(!out_dir.exists());
+    // A layout the drawing does not have leaves no directory behind either.
+    let out = run(&[
+        "pvec",
+        "convert",
+        s(&fixture("sample_AC1018.dwg")),
+        s(&out_dir),
+        "--layout",
+        "Nope",
+    ]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(!out_dir.exists());
     let _ = std::fs::remove_dir_all(dir);
 }
 

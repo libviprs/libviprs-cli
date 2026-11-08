@@ -102,7 +102,7 @@ One contract for every command, built-ins and ops alike:
 | `0` | Success. |
 | `1` | Operational failure: an input that cannot be read or decoded, an I/O error, an op that refuses its input (or a value only the input can rule out), a check that found a problem (`verify`, `pmtiles verify`), a pyramid that skipped tiles under `--skip-failed`, or a feature this build left out (the message names the `--features` flag to rebuild with). |
 | `2` | Usage mistake: an unknown flag, a missing or conflicting argument (including a required mode flag such as `webpsave`'s `--lossless`), a value clap, a built-in or an op refuses on the command line alone, or a combination of flags that has no meaning. Nothing is written. |
-| `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself, and `vector build` and `vector report` do the same (nothing is left at the output); any other command dies by the signal, which a shell reports as 130 too. |
+| `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself, `vector build` and `vector report` do the same (nothing is left at the output), and so does `pvec convert` (the sheets already published stay, and no `sheets.json` is written); any other command dies by the signal, which a shell reports as 130 too. |
 
 A missing feature is a 1 rather than a 2 on purpose: the command line was fine, this binary just cannot do it, and rebuilding fixes it where retyping would not.
 

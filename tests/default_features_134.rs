@@ -37,6 +37,7 @@ fn default_features() -> Vec<String> {
 fn the_manifest_lists_pvec_raster_as_default() {
     let d = default_features();
     assert!(d.iter().any(|f| f == "pvec-raster"), "default = {d:?}");
+    assert!(d.iter().any(|f| f == "pvec-convert"), "default = {d:?}");
     assert!(
         d.iter().any(|f| f == "pdfium"),
         "pdfium stays default: {d:?}"

@@ -204,6 +204,7 @@ jobs:
           "$bin" features | tee features.txt
           grep -qx pdfium features.txt
           grep -qx pvec-raster features.txt
+          grep -qx pvec-convert features.txt
           (
             cd smoke
             "$bin" test-image probe.png --width 64 --height 48

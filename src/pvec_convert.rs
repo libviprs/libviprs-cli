@@ -62,10 +62,11 @@ pub(crate) fn run(args: ConvertArgs) {
         );
     }
     if !args.drawing.is_file() {
-        usage_error(
-            &format!("{} is not a file", args.drawing.display()),
-            "give the path of a DWG",
-        );
+        // An input that cannot be read is an operational failure, as for `vector`.
+        crate::operational_error(&format!(
+            "{} does not exist or is not a file",
+            args.drawing.display()
+        ));
     }
     if let Some(stem) = &args.stem
         && (stem.is_empty() || stem.contains(['/', '\\']) || stem == "." || stem == "..")
@@ -100,6 +101,7 @@ mod imp {
 
     use crate::operational_error;
     use crate::pipeline::{EXIT_INTERRUPTED, install_sigint};
+    use crate::vector::with_causes;
 
     pub(super) fn run(args: &ConvertArgs) {
         let unit = args.unit.as_deref().map(|u| match u {
@@ -109,9 +111,17 @@ mod imp {
             "in" => SourceUnit::Inches,
             _ => SourceUnit::Feet,
         });
+        // A directory this run made goes again when the run writes nothing into it.
+        let created = !args.out_dir.exists();
         if let Err(e) = std::fs::create_dir_all(&args.out_dir) {
             operational_error(&format!("cannot create {}: {e}", args.out_dir.display()));
         }
+        let fail = |message: &str| -> ! {
+            if created {
+                let _ = std::fs::remove_dir(&args.out_dir);
+            }
+            operational_error(message)
+        };
         let cancel = install_sigint();
         let stem = args.stem.clone().unwrap_or_else(|| {
             args.drawing
@@ -131,7 +141,7 @@ mod imp {
                     eprintln!("model  written  {} ({} entities)", name(&dest), out.written);
                 }
                 Err(PvecConvertError::Cancelled) => std::process::exit(EXIT_INTERRUPTED),
-                Err(e) => operational_error(&chain(&e)),
+                Err(e) => fail(&with_causes(&e)),
             }
             return;
         }
@@ -151,7 +161,7 @@ mod imp {
         let out = match set.convert() {
             Ok(out) => out,
             Err(LayoutSetError::Cancelled) => std::process::exit(EXIT_INTERRUPTED),
-            Err(e) => operational_error(&chain(&e)),
+            Err(e) => fail(&with_causes(&e)),
         };
         for s in &out.sheets {
             let (status, detail) = match &s.outcome {
@@ -161,7 +171,7 @@ mod imp {
                     "empty",
                     "nothing drawn under the print profile, no file".to_owned(),
                 ),
-                Err(SheetSkip::Failed(e)) => ("failed", chain(e)),
+                Err(SheetSkip::Failed(e)) => ("failed", with_causes(e)),
                 Err(_) => ("skipped", String::new()),
             };
             eprintln!(
@@ -183,7 +193,7 @@ mod imp {
             operational_error(if out.sheets.is_empty() {
                 "the drawing has no paper layout, so no sheet was written; `--model` converts model space"
             } else {
-                "every layout was empty, so no sheet was written"
+                "every layout converted was empty, so no sheet was written"
             });
         }
     }
@@ -193,16 +203,5 @@ mod imp {
             || p.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         )
-    }
-
-    fn chain(e: &dyn std::error::Error) -> String {
-        let mut out = e.to_string();
-        let mut at = e.source();
-        while let Some(s) = at {
-            out.push_str(": ");
-            out.push_str(&s.to_string());
-            at = s.source();
-        }
-        out
     }
 }
