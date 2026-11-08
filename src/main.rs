@@ -52,6 +52,7 @@ mod pdf_geo_plan;
 /// The pipeline controls on `viprs pyramid`, and `viprs verify`
 /// (libviprs-cli#66).
 mod pipeline;
+mod pvec_convert;
 mod pvec_raster;
 mod vector;
 mod verify;
@@ -131,10 +132,12 @@ enum Command {
     /// build.
     Vector(vector::VectorArgs),
 
-    /// Look inside a `.pvec`: the rasters it places and their tiles.
+    /// Turn a DWG into `.pvec` files, one per paper layout, and look inside a
+    /// `.pvec`: the rasters it places and their tiles.
     ///
-    /// Not in a `--no-default-features` build (it leaves out `pvec-raster`), like
-    /// `pyramid --storage pvec` and `pmtiles to-pvec`, which put a raster into one.
+    /// `convert` needs the `pvec-convert` feature and `rasters` the `pvec-raster`
+    /// one, both on by default; a `--no-default-features` build leaves them out,
+    /// like `pyramid --storage pvec` and `pmtiles to-pvec`, which put a raster into one.
     Pvec(pvec_raster::PvecArgs),
 }
 

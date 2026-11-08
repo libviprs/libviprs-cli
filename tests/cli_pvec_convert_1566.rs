@@ -3,8 +3,6 @@
 //! Exit codes are not evidence on their own, so every cell also looks at what is on disk: the
 //! sheet files, their reports and the `<stem>.sheets.json` index the library writes last.
 
-#![cfg(feature = "dwg-acadrust")]
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -54,10 +52,12 @@ fn listing(dir: &Path) -> Vec<String> {
     names
 }
 
+#[cfg(feature = "pvec-convert")]
 fn index(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+#[cfg(feature = "pvec-convert")]
 #[test]
 fn every_paper_layout_is_listed_in_tab_order_and_the_exit_code_follows_the_index() {
     let dir = scratch("all");
@@ -112,6 +112,7 @@ fn every_paper_layout_is_listed_in_tab_order_and_the_exit_code_follows_the_index
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(feature = "pvec-convert")]
 #[test]
 fn a_drawing_with_no_sheet_to_print_exits_1_and_writes_only_the_index() {
     let dir = scratch("empty");
@@ -126,6 +127,7 @@ fn a_drawing_with_no_sheet_to_print_exits_1_and_writes_only_the_index() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(feature = "pvec-convert")]
 #[test]
 fn one_layout_keeps_its_number_in_the_set() {
     let dir = scratch("one");
@@ -150,6 +152,7 @@ fn one_layout_keeps_its_number_in_the_set() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(feature = "pvec-convert")]
 #[test]
 fn an_unknown_layout_exits_1_names_the_ones_there_are_and_writes_nothing() {
     let dir = scratch("unknown");
@@ -170,6 +173,7 @@ fn an_unknown_layout_exits_1_names_the_ones_there_are_and_writes_nothing() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(feature = "pvec-convert")]
 #[test]
 fn model_space_is_one_pvec_named_after_the_stem() {
     let dir = scratch("model");
@@ -192,6 +196,7 @@ fn model_space_is_one_pvec_named_after_the_stem() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(feature = "pvec-convert")]
 #[test]
 fn usage_mistakes_exit_2_and_write_nothing() {
     let dir = scratch("usage");
@@ -223,5 +228,26 @@ fn usage_mistakes_exit_2_and_write_nothing() {
         assert!(!err.contains("unrecognized subcommand"), "{args:?}:\n{err}");
     }
     assert_eq!(listing(&dir), ["taken"]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A build without `pvec-convert` exits 1 and names the feature, and still reports a usage mistake.
+#[cfg(not(feature = "pvec-convert"))]
+#[test]
+fn a_build_without_the_feature_exits_1_and_names_it() {
+    let dir = scratch("nofeature");
+    let out = run(&["pvec", "convert", s(&fixture("sample_AC1018.dwg")), s(&dir)]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("pvec-convert"), "{}", stderr(&out));
+    assert!(listing(&dir).is_empty());
+    let file = dir.join("taken");
+    std::fs::write(&file, b"x").unwrap();
+    let out = run(&[
+        "pvec",
+        "convert",
+        s(&fixture("sample_AC1018.dwg")),
+        s(&file),
+    ]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
     let _ = std::fs::remove_dir_all(dir);
 }
