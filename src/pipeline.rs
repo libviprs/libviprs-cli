@@ -61,7 +61,7 @@ use crate::{PyramidArgs, operational_error, usage_error};
 pub(crate) const DEDUPE_MEMORY_FLOOR: usize = WriterOptions::MIN_DEDUPE_MEMORY_BYTES;
 
 /// Exit status for a run stopped by SIGINT, the shell's own convention.
-const EXIT_INTERRUPTED: i32 = 130;
+pub(crate) const EXIT_INTERRUPTED: i32 = 130;
 
 /// The version of the `--events json` line format. Every line carries it as
 /// `"v"`, so a consumer can tell a format it knows from one it does not. The

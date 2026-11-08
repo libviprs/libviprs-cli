@@ -291,7 +291,7 @@ pub(crate) fn classify(error: &ConvertError, timeout: Option<Duration>) -> Failu
 /// (`a limit was exceeded`, `corrupt input`) as its source. Printing only the top
 /// of the chain left someone who passed `--hardened` unable to tell a drawing
 /// the limits refused from one that is not a drawing.
-fn with_causes(error: &(dyn std::error::Error + 'static)) -> String {
+pub(crate) fn with_causes(error: &(dyn std::error::Error + 'static)) -> String {
     let mut text = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {

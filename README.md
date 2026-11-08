@@ -63,7 +63,7 @@ cargo install --path .
 
 ### Cargo features
 
-`viprs` forwards every capability-bearing feature of the core crate under the same name. `pdfium`, `pvec-raster` and `dwg-acadrust` are on by default.
+`viprs` forwards every capability-bearing feature of the core crate under the same name. `pdfium`, `pvec-raster`, `pvec-convert` and `dwg-acadrust` are on by default.
 
 | Feature | What it turns on |
 |---|---|
@@ -76,6 +76,7 @@ cargo install --path .
 | `dwg-acadrust` (default) | the default DWG reader behind `viprs vector views`, `build` and `report`: the pure Rust acadrust reader, no native library (see [`viprs vector`](#viprs-vector)) |
 | `dwg-acadsharp` | the experimental DWG reader, chosen with `viprs vector ... --provider acadsharp` (ACadSharp through `acadsharp-rs`, over a native library). In `full`, not in the default set |
 | `pvec-raster` (default) | the `.pvec` raster commands: `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters` (see [`viprs pvec`](#viprs-pvec)) |
+| `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout (see [`viprs pvec`](#viprs-pvec)); turns `dwg-acadrust` on |
 | `object-store-sink` | the core's injected-backend object-store sink |
 | `s3` | the `s3://` sink arm (the core treats `s3` as a deprecated alias for `object-store-sink`) |
 | `packfile` | the `packfile://` tar/zip sink |
@@ -101,7 +102,7 @@ One contract for every command, built-ins and ops alike:
 | `0` | Success. |
 | `1` | Operational failure: an input that cannot be read or decoded, an I/O error, an op that refuses its input (or a value only the input can rule out), a check that found a problem (`verify`, `pmtiles verify`), a pyramid that skipped tiles under `--skip-failed`, or a feature this build left out (the message names the `--features` flag to rebuild with). |
 | `2` | Usage mistake: an unknown flag, a missing or conflicting argument (including a required mode flag such as `webpsave`'s `--lossless`), a value clap, a built-in or an op refuses on the command line alone, or a combination of flags that has no meaning. Nothing is written. |
-| `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself, and `vector build` and `vector report` do the same (nothing is left at the output); any other command dies by the signal, which a shell reports as 130 too. |
+| `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself, `vector build` and `vector report` do the same (nothing is left at the output), and so does `pvec convert` (the sheets already published stay, and no `sheets.json` is written); any other command dies by the signal, which a shell reports as 130 too. |
 
 A missing feature is a 1 rather than a 2 on purpose: the command line was fine, this binary just cannot do it, and rebuilding fixes it where retyping would not.
 
@@ -300,6 +301,16 @@ viprs pmtiles pack ./tiles plan.pmtiles --width 5000 --height 3000 --tile-size 2
 `viprs pyramid --format webp` writes lossless WebP tiles, which PMTiles v3 has a tile type for, and `pmtiles info`, `extract` and `pack` handle them like PNG and JPEG.
 
 ### `viprs pvec`
+
+`viprs pvec convert` turns a DWG into `.pvec` files, each paper layout printed in monochrome as its own sheet (libviprs#1566):
+
+```bash
+viprs pvec convert plan.dwg sheets/                    # every paper layout
+viprs pvec convert plan.dwg sheets/ --layout A-101     # only that one (repeatable)
+viprs pvec convert plan.dwg out/ --model --unit m      # model space, one plan.pvec
+```
+
+A sheet is `<stem>.<NN>-<slug>.pvec` with its `.report.json` beside it, `NN` its position among all the paper layouts and the slug its name made file-safe, and `<stem>.sheets.json` is written last and lists every layout with its file and status. The stem is the drawing's, or `--stem`. A layout with nothing to print is listed and gets no file. The command exits 1 when a sheet failed, when no sheet was written (no paper layout, or only empty ones; model space is `--model`, never a fallback) or when `--layout` names a layout the drawing does not have, 2 for a usage mistake and 130 on Ctrl-C. It needs the `pvec-convert` feature, on by default.
 
 Put a raster (a scan, an aerial, a PDF's page image) into a `.pvec` beside the drawing's linework, and look inside the result. The pixels go in exactly as the encoder wrote them and PVec never decodes one; the placement is a 2x3 affine into the drawing's source space (ADR 0018 in libviprs/pvec). All three commands are in the default build and the released binaries. A `--no-default-features` build leaves them out: they exit 1 and name the `pvec-raster` feature, and a mistake on the command line is still exit 2.
 

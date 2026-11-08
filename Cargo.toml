@@ -16,7 +16,7 @@ name = "viprs"
 path = "src/main.rs"
 
 [features]
-default = ["pdfium", "pvec-raster", "dwg-acadrust"]
+default = ["pdfium", "pvec-raster", "dwg-acadrust", "pvec-convert"]
 # Vector-PDF rasterisation via PDFium (`viprs pyramid <file>.pdf --render`).
 # On by default so the shipped binary keeps the `--render` path; build with
 # `--no-default-features` to produce a pdfium-free (and pvec-free) binary that links no
@@ -59,6 +59,10 @@ dwg-acadsharp = ["libviprs/dwg-acadsharp"]
 # commands then exit 1 and name this feature, and every usage error they have is still reported
 # (exit 2).
 pvec-raster = ["libviprs/pvec-raster", "dep:pvec-facade", "dep:pvec-capabilities"]
+# `viprs pvec convert`: a DWG to one `.pvec` per paper layout, one layout, or model space
+# (libviprs#1566). The core's `pvec-convert` brings its writer and the acadrust reader with it, so
+# this turns `dwg-acadrust` on too. On by default; without it the command exits 1 and names it.
+pvec-convert = ["libviprs/pvec-convert", "dwg-acadrust"]
 # Everything above except `pdfium-static`, which trades the runtime-binding
 # pdfium path for a link-time one and cannot be on for a build that has no
 # static libpdfium to link.
@@ -75,6 +79,7 @@ full = [
     "dwg-acadrust",
     "dwg-acadsharp",
     "pvec-raster",
+    "pvec-convert",
 ]
 
 [dependencies]
@@ -85,17 +90,18 @@ clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 # The vector path (`viprs vector`, libviprs#1035) is not in a release of the
 # core yet, so this pins a core commit that carries it, and the acadrust decoder
-# and `decoder_for` (libviprs#1485). Pinned by rev; never from a registry. The core's own
+# and `decoder_for` (libviprs#1485), and `PvecLayoutSet` for `viprs pvec convert` (libviprs#1564).
+# Pinned by rev; never from a registry. The core's own
 # default features are off here, so `dwg-acadrust` above is what turns the
 # default reader on, the way `pdfium` does for PDFium.
-libviprs = { git = "https://github.com/libviprs/libviprs", rev = "56fa40b0c0d3e688f247ee48a930b3e1030c39a3", default-features = false }
+libviprs = { git = "https://github.com/libviprs/libviprs", rev = "def8d429b3c007261231213ce52f7af836fada9e", default-features = false }
 # PVec's facade and capability registry, for `viprs pyramid --storage pvec`, `viprs pmtiles
 # to-pvec` and `viprs pvec rasters` (libviprs-cli#130). The revision is the one the core pins
 # (`pvec-facade` in libviprs's own Cargo.toml), so both name one `PvecWriter`; moving it means
 # moving the core's first. PVec is public, so these are plain git dependencies, and the
 # `pvec-raster` feature that enables them is a default one (libviprs-cli#134).
-pvec-facade = { package = "pvec", git = "https://github.com/libviprs/pvec", rev = "afd2fe62f17f7ee4857fb5d355bff30a78bfaf7e", features = ["unstable-stream"], optional = true }
-pvec-capabilities = { git = "https://github.com/libviprs/pvec", rev = "afd2fe62f17f7ee4857fb5d355bff30a78bfaf7e", optional = true }
+pvec-facade = { package = "pvec", git = "https://github.com/libviprs/pvec", rev = "07b7a82fdd9b0973226830763f5f48a4ba263694", features = ["unstable-stream"], optional = true }
+pvec-capabilities = { git = "https://github.com/libviprs/pvec", rev = "07b7a82fdd9b0973226830763f5f48a4ba263694", optional = true }
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
@@ -103,4 +109,4 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 [dev-dependencies]
 # The tests build the drawings the raster joins; the facade does not re-export the curve
 # constructors. Same revision as the facade above.
-pvec-geometry = { git = "https://github.com/libviprs/pvec", rev = "afd2fe62f17f7ee4857fb5d355bff30a78bfaf7e" }
+pvec-geometry = { git = "https://github.com/libviprs/pvec", rev = "07b7a82fdd9b0973226830763f5f48a4ba263694" }

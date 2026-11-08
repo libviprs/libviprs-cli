@@ -41,6 +41,11 @@ pub struct PvecArgs {
 
 #[derive(Subcommand)]
 enum PvecCommand {
+    /// Convert a DWG to `.pvec` files: every paper layout as its own sheet
+    /// (`<stem>.<NN>-<slug>.pvec` and `<stem>.sheets.json`), one layout with
+    /// `--layout`, or model space with `--model`. Exits 1 when a sheet failed or
+    /// no sheet was written.
+    Convert(crate::pvec_convert::ConvertArgs),
     /// List the rasters a `.pvec` places, or write one tile out.
     Rasters(RastersArgs),
 }
@@ -461,6 +466,7 @@ pub(crate) fn run_to_pvec(args: ToPvecArgs) {
 /// `viprs pvec ...`.
 pub fn run(args: PvecArgs) {
     match args.command {
+        PvecCommand::Convert(a) => crate::pvec_convert::run(a),
         PvecCommand::Rasters(a) => {
             let tile = a.tile.as_ref().map(|t| {
                 let n = |i: usize, name: &str| -> u32 {
