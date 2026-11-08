@@ -189,12 +189,14 @@ mod imp {
         if failed > 0 {
             operational_error(&format!("{failed} of {} sheets failed", out.sheets.len()));
         }
+        if out.sheets.is_empty() {
+            // Nothing was written, so a directory this run made goes again.
+            fail(
+                "the drawing has no paper layout, so no sheet was written; `--model` converts model space",
+            );
+        }
         if written == 0 {
-            operational_error(if out.sheets.is_empty() {
-                "the drawing has no paper layout, so no sheet was written; `--model` converts model space"
-            } else {
-                "every layout converted was empty, so no sheet was written"
-            });
+            operational_error("every layout converted was empty, so no sheet was written");
         }
     }
 
