@@ -352,3 +352,26 @@ fn issue_1608_the_unitless_refusal_names_unit() {
     assert!(err.contains("--unit"), "{err}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A millimetre drawing takes `--regions` too: the length knobs are scaled to the unit, not left in metres.
+#[cfg(feature = "pvec-convert")]
+#[test]
+fn issue_1608_regions_run_on_a_millimetre_drawing() {
+    let dir = scratch("1608-regions-mm");
+    let drawing = fixture("vc_layers.dwg");
+    let out = run(&[
+        "pvec",
+        "convert",
+        s(&drawing),
+        s(&dir),
+        "--model",
+        "--unit",
+        "mm",
+        "--regions",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let report =
+        std::fs::read_to_string(dir.join("vc_layers.pvec.report.json")).unwrap_or_default();
+    assert!(report.contains("\"regions\""), "{report}");
+    let _ = std::fs::remove_dir_all(dir);
+}

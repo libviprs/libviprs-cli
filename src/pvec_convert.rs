@@ -108,8 +108,10 @@ mod imp {
     use std::path::Path;
 
     use libviprs::cad::CadSource;
+    use libviprs::pvec::DwgProvider;
     use libviprs::pvec::SourceUnit;
     use libviprs::pvec::components::StreamSelection;
+    use libviprs::pvec::dwg_acadrust::AcadrustProvider;
     use libviprs::pvec::regions::RegionConfig;
     use libviprs::pvec::writer::WriteError;
     use libviprs::pvec_convert::{
@@ -120,12 +122,27 @@ mod imp {
     use crate::pipeline::{EXIT_INTERRUPTED, install_sigint};
     use crate::vector::with_causes;
 
+    /// How many of `unit` make a metre, for the length knobs of the regions step, which are in
+    /// drawing units. A unit that is not a plain length (or none) counts as metres.
+    pub(super) fn units_per_metre(unit: SourceUnit) -> f64 {
+        match unit {
+            SourceUnit::Millimeters => 1000.0,
+            SourceUnit::Centimeters => 100.0,
+            SourceUnit::Inches => 1.0 / 0.0254,
+            SourceUnit::Feet => 1.0 / 0.3048,
+            SourceUnit::Yards => 1.0 / 0.9144,
+            SourceUnit::Kilometers => 0.001,
+            _ => 1.0,
+        }
+    }
+
     /// The unit, the component streams and the regions step, the same for model space and a sheet.
     fn configure<'a>(
         c: PvecConversion<'a>,
         unit: Option<SourceUnit>,
         geometry_only: bool,
         regions: bool,
+        per_metre: f64,
     ) -> PvecConversion<'a> {
         let c = c.components(if geometry_only {
             StreamSelection::NONE
@@ -133,8 +150,9 @@ mod imp {
             StreamSelection::ALL
         });
         let c = c.regions(regions.then_some(RegionConfig {
-            gap_tolerance: 0.5,
-            corridor_max_width: 2.5,
+            // 0.5 m and 2.5 m, in the drawing's own unit.
+            gap_tolerance: 0.5 * per_metre,
+            corridor_max_width: 2.5 * per_metre,
             corridor_min_aspect: 3.0,
             max_faces: 1000,
             keep_unlabelled: false,
@@ -173,6 +191,17 @@ mod imp {
             "in" => SourceUnit::Inches,
             _ => SourceUnit::Feet,
         });
+        // The regions step wants lengths in the drawing's unit: the one given, else the header's.
+        let per_metre = if args.regions {
+            let effective = unit.or_else(|| {
+                AcadrustProvider::open(CadSource::Path(&args.drawing))
+                    .ok()
+                    .map(|p| p.source_unit())
+            });
+            effective.map_or(1.0, units_per_metre)
+        } else {
+            1.0
+        };
         // A directory this run made goes again when the run writes nothing into it.
         let created = !args.out_dir.exists();
         if let Err(e) = std::fs::create_dir_all(&args.out_dir) {
@@ -195,7 +224,7 @@ mod imp {
         if args.model {
             let dest: PathBuf = args.out_dir.join(format!("{stem}.pvec"));
             let c = PvecConversion::new(CadSource::Path(&args.drawing), &dest).cancel(cancel);
-            match configure(c, unit, args.geometry_only, args.regions).convert() {
+            match configure(c, unit, args.geometry_only, args.regions, per_metre).convert() {
                 Ok(out) => {
                     eprintln!("model  written  {} ({} entities)", name(&dest), out.written);
                 }
@@ -208,7 +237,15 @@ mod imp {
         let (geometry_only, regions) = (args.geometry_only, args.regions);
         let mut set = PvecLayoutSet::new(CadSource::Path(&args.drawing), &args.out_dir)
             .stem(stem)
-            .sheets(move |c| configure(c.cancel(cancel.clone()), unit, geometry_only, regions));
+            .sheets(move |c| {
+                configure(
+                    c.cancel(cancel.clone()),
+                    unit,
+                    geometry_only,
+                    regions,
+                    per_metre,
+                )
+            });
         if !args.layout.is_empty() {
             set = set.layouts(args.layout.iter().cloned());
         }
@@ -259,5 +296,23 @@ mod imp {
             || p.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         )
+    }
+}
+
+#[cfg(all(test, feature = "pvec-convert"))]
+mod tests {
+    use super::imp::units_per_metre;
+    use libviprs::pvec::SourceUnit;
+
+    /// libviprs#1608: the 0.5 m gap and 2.5 m corridor become 500 and 2500 in a millimetre drawing.
+    #[test]
+    fn issue_1608_region_lengths_follow_the_drawing_unit() {
+        assert_eq!(0.5 * units_per_metre(SourceUnit::Millimeters), 500.0);
+        assert_eq!(2.5 * units_per_metre(SourceUnit::Millimeters), 2500.0);
+        assert_eq!(0.5 * units_per_metre(SourceUnit::Centimeters), 50.0);
+        assert_eq!(units_per_metre(SourceUnit::Meters), 1.0);
+        assert!((units_per_metre(SourceUnit::Feet) - 3.280_839_9).abs() < 1e-6);
+        assert!((units_per_metre(SourceUnit::Inches) - 39.370_078_7).abs() < 1e-6);
+        assert_eq!(units_per_metre(SourceUnit::Unitless), 1.0);
     }
 }
