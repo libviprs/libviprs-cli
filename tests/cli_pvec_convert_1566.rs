@@ -281,3 +281,97 @@ fn a_build_without_the_feature_exits_1_and_names_it() {
     assert_eq!(code(&out), 2, "{}", stderr(&out));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The report a model-space conversion wrote beside `<stem>.pvec`, as JSON.
+#[cfg(feature = "pvec-convert")]
+fn model_report(dir: &Path, extra: &[&str]) -> (Output, String) {
+    let drawing = fixture("vc_layers.dwg");
+    let mut args = vec![
+        "pvec",
+        "convert",
+        s(&drawing),
+        s(dir),
+        "--model",
+        "--unit",
+        "m",
+    ];
+    args.extend_from_slice(extra);
+    let out = run(&args);
+    let report =
+        std::fs::read_to_string(dir.join("vc_layers.pvec.report.json")).unwrap_or_default();
+    (out, report)
+}
+
+/// libviprs#1608: the layer, line style and provenance streams are written unless asked not to.
+#[cfg(feature = "pvec-convert")]
+#[test]
+fn issue_1608_the_component_streams_are_written_by_default() {
+    let dir = scratch("1608-default");
+    let (out, report) = model_report(&dir, &[]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(report.contains("\"components\""), "{report}");
+    assert!(!report.contains("\"regions\""), "{report}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(feature = "pvec-convert")]
+#[test]
+fn issue_1608_geometry_only_writes_no_component_stream() {
+    let dir = scratch("1608-geometry");
+    let (out, report) = model_report(&dir, &["--geometry-only"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(!report.contains("\"components\""), "{report}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(feature = "pvec-convert")]
+#[test]
+fn issue_1608_regions_are_derived_when_asked_for() {
+    let dir = scratch("1608-regions");
+    let (out, report) = model_report(&dir, &["--regions"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(report.contains("\"regions\""), "{report}");
+    assert!(report.contains("\"components\""), "{report}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A drawing whose header declares no unit is refused, and the message names the flag.
+#[cfg(feature = "pvec-convert")]
+#[test]
+fn issue_1608_the_unitless_refusal_names_unit() {
+    let dir = scratch("1608-unit");
+    let out = run(&[
+        "pvec",
+        "convert",
+        s(&fixture("vc_layers.dwg")),
+        s(&dir),
+        "--model",
+    ]);
+    let err = stderr(&out);
+    assert_eq!(code(&out), 1, "{err}");
+    assert!(err.contains("--unit"), "{err}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A millimetre drawing takes `--regions` too: the length knobs are scaled to the unit, not left in metres.
+#[cfg(feature = "pvec-convert")]
+#[test]
+fn issue_1608_regions_run_on_a_millimetre_drawing() {
+    let dir = scratch("1608-regions-mm");
+    let drawing = fixture("vc_layers.dwg");
+    let out = run(&[
+        "pvec",
+        "convert",
+        s(&drawing),
+        s(&dir),
+        "--model",
+        "--unit",
+        "mm",
+        "--regions",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let report =
+        std::fs::read_to_string(dir.join("vc_layers.pvec.report.json")).unwrap_or_default();
+    assert!(report.contains("\"regions\""), "{report}");
+    let _ = std::fs::remove_dir_all(dir);
+}
