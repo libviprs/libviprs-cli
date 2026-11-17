@@ -94,14 +94,14 @@ ctrlc = "3"
 # Pinned by rev; never from a registry. The core's own
 # default features are off here, so `dwg-acadrust` above is what turns the
 # default reader on, the way `pdfium` does for PDFium.
-libviprs = { git = "https://github.com/libviprs/libviprs", rev = "def8d429b3c007261231213ce52f7af836fada9e", default-features = false }
+libviprs = { git = "https://github.com/libviprs/libviprs", rev = "71cbbe0f50519037766bf1116b910b33e0df7c15", default-features = false }
 # PVec's facade and capability registry, for `viprs pyramid --storage pvec`, `viprs pmtiles
 # to-pvec` and `viprs pvec rasters` (libviprs-cli#130). The revision is the one the core pins
 # (`pvec-facade` in libviprs's own Cargo.toml), so both name one `PvecWriter`; moving it means
 # moving the core's first. PVec is public, so these are plain git dependencies, and the
 # `pvec-raster` feature that enables them is a default one (libviprs-cli#134).
-pvec-facade = { package = "pvec", git = "https://github.com/libviprs/pvec", rev = "07b7a82fdd9b0973226830763f5f48a4ba263694", features = ["unstable-stream"], optional = true }
-pvec-capabilities = { git = "https://github.com/libviprs/pvec", rev = "07b7a82fdd9b0973226830763f5f48a4ba263694", optional = true }
+pvec-facade = { package = "pvec", git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10", features = ["unstable-stream"], optional = true }
+pvec-capabilities = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10", optional = true }
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
@@ -109,4 +109,4 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 [dev-dependencies]
 # The tests build the drawings the raster joins; the facade does not re-export the curve
 # constructors. Same revision as the facade above.
-pvec-geometry = { git = "https://github.com/libviprs/pvec", rev = "07b7a82fdd9b0973226830763f5f48a4ba263694" }
+pvec-geometry = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }
