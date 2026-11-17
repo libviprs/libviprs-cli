@@ -4,6 +4,8 @@
 //! viprs pvec convert <drawing.dwg> <out-dir>                 every paper layout, one .pvec each
 //! viprs pvec convert <drawing.dwg> <out-dir> --layout A-101  only that layout (repeatable)
 //! viprs pvec convert <drawing.dwg> <out-dir> --model         model space, one .pvec
+//! viprs pvec convert <drawing.dwg> <out-dir> --regions       also rooms and corridors
+//! viprs pvec convert <drawing.dwg> <out-dir> --geometry-only no layer, line style or provenance
 //! ```
 //!
 //! A thin call onto `libviprs::pvec_convert`: `PvecLayoutSet` for the sheets, `PvecConversion` for
@@ -52,6 +54,18 @@ pub(crate) struct ConvertArgs {
     /// in that unit whatever this says.
     #[arg(long, value_parser = ["mm", "cm", "m", "in", "ft"])]
     unit: Option<String>,
+
+    /// Write the geometry only. Without this the layer, line style and
+    /// provenance streams are written beside it, as the library does when it
+    /// is asked for every component.
+    #[arg(long)]
+    geometry_only: bool,
+
+    /// Also derive rooms and corridors from the wall linework and write them
+    /// as the class stream. They are a guess from the walls and the TEXT, so
+    /// they are off unless asked for.
+    #[arg(long)]
+    regions: bool,
 }
 
 pub(crate) fn run(args: ConvertArgs) {
@@ -95,6 +109,9 @@ mod imp {
 
     use libviprs::cad::CadSource;
     use libviprs::pvec::SourceUnit;
+    use libviprs::pvec::components::StreamSelection;
+    use libviprs::pvec::regions::RegionConfig;
+    use libviprs::pvec::writer::WriteError;
     use libviprs::pvec_convert::{
         LayoutSetError, PvecConversion, PvecConvertError, PvecLayoutSet, SheetSkip,
     };
@@ -102,6 +119,51 @@ mod imp {
     use crate::operational_error;
     use crate::pipeline::{EXIT_INTERRUPTED, install_sigint};
     use crate::vector::with_causes;
+
+    /// The unit, the component streams and the regions step, the same for model space and a sheet.
+    fn configure<'a>(
+        c: PvecConversion<'a>,
+        unit: Option<SourceUnit>,
+        geometry_only: bool,
+        regions: bool,
+    ) -> PvecConversion<'a> {
+        let c = c.components(if geometry_only {
+            StreamSelection::NONE
+        } else {
+            StreamSelection::ALL
+        });
+        let c = c.regions(regions.then_some(RegionConfig {
+            gap_tolerance: 0.5,
+            corridor_max_width: 2.5,
+            corridor_min_aspect: 3.0,
+            max_faces: 1000,
+            keep_unlabelled: false,
+        }));
+        match unit {
+            Some(u) => c.unit(u),
+            None => c,
+        }
+    }
+
+    /// The error with its causes, and the flag to pass when the drawing declares no unit and none
+    /// was given.
+    fn explain(e: &(dyn std::error::Error + 'static), unit_given: bool) -> String {
+        let mut text = with_causes(e);
+        let mut cause = Some(e);
+        while let Some(c) = cause {
+            if !unit_given
+                && matches!(
+                    c.downcast_ref::<WriteError>(),
+                    Some(WriteError::UnsupportedUnit(SourceUnit::Unitless))
+                )
+            {
+                text.push_str("; the drawing declares no unit, pass --unit mm, cm, m, in or ft");
+                break;
+            }
+            cause = c.source();
+        }
+        text
+    }
 
     pub(super) fn run(args: &ConvertArgs) {
         let unit = args.unit.as_deref().map(|u| match u {
@@ -132,29 +194,21 @@ mod imp {
 
         if args.model {
             let dest: PathBuf = args.out_dir.join(format!("{stem}.pvec"));
-            let mut c = PvecConversion::new(CadSource::Path(&args.drawing), &dest).cancel(cancel);
-            if let Some(u) = unit {
-                c = c.unit(u);
-            }
-            match c.convert() {
+            let c = PvecConversion::new(CadSource::Path(&args.drawing), &dest).cancel(cancel);
+            match configure(c, unit, args.geometry_only, args.regions).convert() {
                 Ok(out) => {
                     eprintln!("model  written  {} ({} entities)", name(&dest), out.written);
                 }
                 Err(PvecConvertError::Cancelled) => std::process::exit(EXIT_INTERRUPTED),
-                Err(e) => fail(&with_causes(&e)),
+                Err(e) => fail(&explain(&e, unit.is_some())),
             }
             return;
         }
 
+        let (geometry_only, regions) = (args.geometry_only, args.regions);
         let mut set = PvecLayoutSet::new(CadSource::Path(&args.drawing), &args.out_dir)
             .stem(stem)
-            .sheets(move |c| {
-                let c = c.cancel(cancel.clone());
-                match unit {
-                    Some(u) => c.unit(u),
-                    None => c,
-                }
-            });
+            .sheets(move |c| configure(c.cancel(cancel.clone()), unit, geometry_only, regions));
         if !args.layout.is_empty() {
             set = set.layouts(args.layout.iter().cloned());
         }
@@ -171,7 +225,7 @@ mod imp {
                     "empty",
                     "nothing drawn under the print profile, no file".to_owned(),
                 ),
-                Err(SheetSkip::Failed(e)) => ("failed", with_causes(e)),
+                Err(SheetSkip::Failed(e)) => ("failed", explain(e, unit.is_some())),
                 Err(_) => ("skipped", String::new()),
             };
             eprintln!(
