@@ -110,3 +110,7 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 # The tests build the drawings the raster joins; the facade does not re-export the curve
 # constructors. Same revision as the facade above.
 pvec-geometry = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }
+# The text records `viprs pvec text` reads back (libviprs-cli#147): the facade re-exports
+# `TextStream` but not `TextRecord`, so a test that writes one names the components crate.
+# Same revision as the facade, and already in the lock through it.
+pvec-components = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }

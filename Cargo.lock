@@ -1462,6 +1462,7 @@ dependencies = [
  "libviprs",
  "pvec",
  "pvec-capabilities",
+ "pvec-components",
  "pvec-geometry",
  "serde_json",
  "tracing",

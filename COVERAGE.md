@@ -1,0 +1,174 @@
+# viprs coverage of libviprs and pvec
+
+I keep this file as the map of what `viprs` exposes against what the two libraries it sits on can do. It is the follow-up to EPIC Q (#63), which brought the CLI level with libviprs 0.5.0. Since then libviprs grew DWG and PDF to PVec conversion and the CLI started reading `.pvec` files through PVec's own facade, so I re-audited both libraries against `viprs` at `b32a5b3` (2026-11-23). The epic that closes the gaps is #147.
+
+Status words:
+
+- **covered**: a command or flag reaches it and a test drives it.
+- **partial**: reachable, but some public options of it are not.
+- **missing**: public in the library, no way to reach it from `viprs`. The task id says which epic task closes it.
+- **not-CLI**: deliberately left out, with the reason.
+
+## Pins
+
+| Dependency | Pinned rev | Upstream main | What the difference holds |
+|---|---|---|---|
+| libviprs | `71cbbe0` | `98e57251` (44 commits ahead) | Only `src/cad`, `src/pvec`, `src/pvec_convert` changed: `paper_sheets`, `PvecConversion::{annotations, element_rules}`, PDF image limits, `frozen_text`/`no_plot_text` visibility. Ops, codecs, engine, sinks and PMTiles are identical. |
+| pvec (facade, capabilities, geometry) | `e1a768ba` | `419535c` (12 commits ahead) | `PreviewStyle` (viewer only) and four new paint-driver capabilities. Nothing a CLI needs. libviprs main pins the same `e1a768ba`. |
+
+Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin stays with the core's.
+
+## Cargo features
+
+| libviprs feature | viprs feature | Status |
+|---|---|---|
+| `dwg-acadrust` (core default) | `dwg-acadrust` (default) | covered |
+| `dwg-acadsharp` | `dwg-acadsharp` | covered |
+| `pdfium`, `pdfium-static` | same names | covered |
+| `svg`, `jxl`, `jp2k`, `avif` | same names | covered |
+| `packfile`, `tracing` | same names | covered |
+| `object-store-sink`, `s3` | same names | covered (see the object store row) |
+| `pvec-raster`, `pvec-convert` | same names (default) | covered |
+| `pvec-write`, `pvec-normalized`, `pvec-spline` | through `pvec-convert` and `dwg-acadrust` | covered |
+| `jbig2` | none | missing, CV2.2 (JBIG2 image streams in a PDF page) |
+| `serde` | none | not-CLI: it only widens the Rust API; every viprs `--json` output is its own schema |
+| `test-util` | none | not-CLI: a sink that sleeps on purpose, for stress tests |
+
+## Image ops (vips families)
+
+| Area | Status |
+|---|---|
+| 171 op commands across arithmetic, composite, resample, colour, draw, bands, conversion, convolution, morphology, histogram, mosaicing, freqfilt, create, extract, matrix and core | covered: every non-excluded `OP_MAP.md` row is registered, including the `8afc3ae5` re-audit residue (`remainder`, `sobel`, `scharr`, `prewitt`, `canny`, `matrixmultiply`, `join`) |
+| 26 `EXCLUDED` rows | not-CLI, each with its reason in `OP_MAP.md` (builders, accessors, `downscale_*` helpers) |
+
+## Codecs
+
+| Capability | viprs | Status |
+|---|---|---|
+| JPEG save (`Q`, subsample) and load (`shrink`) | `jpegsave`, `jpegload` | covered |
+| JPEG restart interval | none | not-CLI: `jpegsave_buffer_restart` is a refusal stub in the core |
+| PNG save: deflate level, interlace, palette | `pngsave` | covered |
+| PNG bilevel save (`encode_png_bilevel`) | none | missing, CV1.5 (`pngsave --bitdepth 1` on a one-band image, as vips does) |
+| TIFF save: none, LZW, deflate; load: page, max-pages | `tiffsave`, `tiffload` | covered |
+| TIFF JPEG, CCITT and JPEG 2000 compression, tiled, pyramid, sub-IFD, BigTIFF | none | not-CLI: refusal stubs in the core (`save_tiff_tiled`, `save_bigtiff`, `unsupported_compression`) |
+| WebP save (lossless) and load (page, n) | `webpsave`, `webpload` | covered |
+| WebP save `keep` (metadata chunks) | always `Keep::None` | partial, CV2.3 (`webpsave --keep`) |
+| GIF save (dither, bitdepth, interlace) and load (page, n, max-pages) | `gifsave`, `gifload` | covered |
+| JPEG XL save (lossless) | `jxlsave` | covered |
+| JPEG XL load `page`, `n` (`decode_jxl_with`) | `jxlload` ignores them | missing, CV1.5 |
+| JPEG 2000 save lossless with tile size; load | `jp2ksave`, `jp2kload` | covered |
+| JPEG 2000 lossy (`Compression::Lossy { ratio }`) | none | missing, CV1.5 (`jp2ksave --ratio N`, a viprs extension because vips takes a `Q`) |
+| Radiance save `exposure`, `aspect` | `radsave` writes defaults | missing, CV1.5 |
+| Radiance, FITS, CSV, matrix, PPM load and save; Ultra HDR load and save (`Q`, gain map shrink) | the vips-named loaders and savers | covered |
+| OpenEXR, NIfTI, Analyze, Matlab, AVIF, SVG (dpi, scale, unlimited) load | the vips-named loaders | covered |
+| `.v` read and write | every op OUT, `copy` | covered |
+| Metadata fields (`get_fields`, `get_field`, `get_typeof`) | none | missing, CV1.5 (`viprs info --fields`, the `vipsheader -a` view) |
+| Setting arbitrary metadata fields | none | not-CLI: vips has no CLI for it either; `copy` covers the typed ones |
+| HEIF/HEIC save, OpenSlide, ImageMagick, `dzsave_buffer` | none | not-CLI: `foreign_stubs`, refusal stubs |
+| `decode_file_sequential` | none | not-CLI: a documented alias of `decode_file` |
+| Load cache knobs | none | not-CLI: one process per command, there is nothing to reuse |
+| Header probe (`probe_file`, `probe_bytes`) | `info`, the pyramid pre-flight | covered |
+
+## PDF
+
+| Capability | viprs | Status |
+|---|---|---|
+| `pdf_info` (with password), `page_rotate` | `info`, `pdf info`, `pdf rotation` | covered |
+| Embedded image extract (dpi, sizing, background, password) | `pdf extract`, `pyramid` | covered |
+| PDFium render (budgeted) | `pyramid --render`, `pdf extract --dpi --render-budget` | covered |
+| `PdfiumStripSource` streaming render and `BudgetPolicy::AutoAdjustDpi` | none | missing, CV2.3 |
+
+## Pyramid engine
+
+| Capability | viprs `pyramid` | Status |
+|---|---|---|
+| Planner: tile size, overlap, centre, deep-zoom/xyz/google | flags | covered |
+| Zoomify and IIIF layouts, `with_iiif_id` | `plan` only | partial, CV2.3 (`pyramid --layout zoomify|iiif --iiif-id`) |
+| Plan queries (peak memory, DZI manifest, sidecars, tile path, tile rect) | `plan` | covered |
+| Concurrency, buffer size, memory budget, parallel, region | flags | covered |
+| Explicit `EngineKind` (monolithic, streaming, MapReduce, MapReduce hot cache) | picked from the budget flags | partial, CV2.3 (`--engine`) |
+| Background colour (`with_background_rgb`) | white always | partial, CV2.3 |
+| Blank tiles (emit, placeholder, tolerance, drop) | flags | covered |
+| Failure policy and retry (count, initial backoff) | `--on-failure`, `--retries` | covered |
+| Retry multiplier and jitter | none | partial, CV2.3 |
+| Resume, overwrite, verify, checkpoint every/root | flags | covered |
+| Dedupe (blanks, all), checksums (emit, verify, blake3, sha256), manifest source hash | flags | covered |
+| Observers and events | `--events text|json` | covered |
+| Cancel token | SIGINT | covered |
+| `raster_verify`, `pyramid_verify`, `verify_from_strip_source`, `verify_output` | `verify` | covered |
+| Custom `WorkExecutor`, `Extensions`, `RetryingSink`, `MemorySink` | none | not-CLI: in-process composition API |
+
+## Sinks and storage
+
+| Capability | viprs | Status |
+|---|---|---|
+| Filesystem tree (manifest, checksums, dedupe, resume) | `--storage directory` | covered |
+| PMTiles sink (layout, ordered emission, dedupe window, geo transform) | `--storage pmtiles` | covered |
+| PMTiles writer metadata (name, description, attribution), tile and internal compression, bounds, centre | none | partial, CV2.3 |
+| Packfile (tar, tar.gz, zip) | `--packfile`, `packfile://` | covered |
+| Object store sink (key prefix, image name) | `s3://bucket/prefix` over a `DirectoryObjectStore` | partial: the core ships no network object store, so there is no real S3 upload to expose (owner question) |
+| PVec raster sink | `--storage pvec` | covered |
+
+## PMTiles
+
+| Capability | viprs `pmtiles` | Status |
+|---|---|---|
+| Reader (header, metadata, tiles, bounds, geo transform) | `info`, `tile` | covered |
+| Validation | `verify` (its own walk, stricter than go-pmtiles) | covered |
+| Directory to archive (`migrate_to_pmtiles`) | `pack` | covered |
+| Archive to tree | `extract` | covered |
+| Archive into a `.pvec` | `to-pvec` | covered |
+| `ObjectStoreRangeReader` | none | not-CLI until a network object store exists |
+
+## Geo
+
+`GeoTransform` pixel-to-geo, geo-to-pixel and tile centre: covered by `viprs geo`.
+
+## CAD and vector tiles
+
+| Capability | viprs `vector` | Status |
+|---|---|---|
+| `list_views`, `convert`, `report`, `inspect`, `check` | `views`, `build`, `report`, `info`, `validate` | covered |
+| Provider choice and hardened limits | `--provider`, `--hardened` | covered |
+| `TilerConfig` knobs past max zoom and deadline (extent, buffer, simplify, cull, per-tile caps, oversize policy) | none | partial, CV2.4 |
+| `AcadrustDecoder::with_limits`, `AcadSharpDecoder::with_limits` | `--hardened` only | partial, CV2.4 |
+| `display_text` (MTEXT escapes) | none | not-CLI: a helper the tiler already applies |
+
+## PVec inside libviprs
+
+| Capability | viprs `pvec` | Status |
+|---|---|---|
+| DWG to `.pvec` per paper layout, one layout, or model space; stem; unit; geometry only; regions | `convert` | covered |
+| `recalibrate` (set, replace or remove the scale record) | none | missing, CV1.4 (`pvec calibrate`) |
+| `PdfConversion` (a PDF page to `.pvec`, image limits) | none | missing, CV2.2 |
+| `ConversionProfile`, `CapabilityPolicy`, `allowed_capabilities` | none | missing, CV2.2 |
+| Calibration at convert time (`Calibration`, `ScaleClaim`, georeference sidecar import) | none | missing, CV2.2 |
+| `ViewProfile` knobs, `SourceLimits`, `LeafConfig`, `SpillConfig`, `RegionConfig` tuning | none | missing, CV2.2 |
+| `paper_sheets` (list paper layouts without converting) | none | missing, CV2.1, needs the pin bump |
+| `PvecConversion::{annotations, element_rules}` | none | missing, CV2.1, needs the pin bump |
+| Raster pyramids into `.pvec` | `pyramid --storage pvec`, `pmtiles to-pvec`, `pvec rasters` | covered |
+| `drift`, `dump` | none | not-CLI: fixture regression tooling (the `pvec_drift` example) |
+
+## PVec facade and crates
+
+| Capability | viprs | Status |
+|---|---|---|
+| `PvecReader::manifest`, `entity_count`, `streams` (layers, line styles, text, hatch, provenance, paint), skipped streams | none | missing, CV1.1 (`pvec info`) |
+| `PvecReader::{calibration, georeference, effective_scale}` | none | missing, CV1.1 |
+| Open-time checksum and digest checks, `entities`, `styles`, stream decode | none | missing, CV1.2 (`pvec validate`) |
+| `TextStream` records | none | missing, CV1.3 (`pvec text`) |
+| `recalibrate_file` | none | missing, CV1.4 |
+| Raster placements and tiles | `pvec rasters` | covered |
+| `PickIndex` (point, rect, nearest) | none | missing, CV2.5 |
+| `Tessellate` against an error budget | none | missing, CV2.5 |
+| `pvec-interchange` exports (GML, GeoPackage, MVT, STEP, fidelity report) | none | missing, CV2.5 (a new direct dependency at the core's pvec rev) |
+| Streaming API (spatial directory, Tier 0, viewport queries) | none | not-CLI: incremental loading for a viewer; a one-shot command has no viewport. `pvec info` reports whether the directory exists |
+| `pvec-scene` paint plan | none | not-CLI: PVec ships no rasteriser, so there is no `.pvec` to image path to expose (owner question) |
+| `pvec-wasm` | none | not-CLI: the browser ABI |
+| PVec's own `pvec` binary: `inspect`, `validate`, `calibrate`, `dump-manifest`, `capabilities`, `tessellate` | none | missing: CV1.1, CV1.2, CV1.4, CV1.1 (`--json`), CV1.1, CV2.5 |
+| `pvec compare-step` | none | not in this epic: it needs an external OpenCASCADE evaluator report |
+| `pvec bench-open` | none | not-CLI: a benchmark, which only runs through the Mercury queue |
+
+## Examples and binaries
+
+libviprs has no binaries. Its five examples (`dwg_gate0`, `pvec_components_cost`, `pvec_drift`, `pvec_writer_memory`, `text_policy_measure`) are measurement and fixture tools, so they are not-CLI. PVec's only user-facing binary is the `pvec` CLI in `pvec-conformance`, mapped above.
