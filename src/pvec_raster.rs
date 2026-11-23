@@ -24,7 +24,7 @@ use libviprs::GeoTransform;
 use crate::{PyramidArgs, StorageArg, usage_error};
 
 #[cfg(feature = "pvec-raster")]
-mod imp;
+pub(crate) mod imp;
 
 /// The tile edges PVec accepts (RASTER-01).
 const TILE_EDGES: [u32; 3] = [256, 512, 1024];
@@ -48,6 +48,16 @@ enum PvecCommand {
     Convert(crate::pvec_convert::ConvertArgs),
     /// List the rasters a `.pvec` places, or write one tile out.
     Rasters(RastersArgs),
+    /// What a `.pvec` holds: manifest, component streams, layers, text and
+    /// raster counts, and the scale a reader should use.
+    Info(crate::pvec_read::ReadArgs),
+    /// Open a `.pvec` with its checksums and digest checked and decode
+    /// everything in it; exits 1 naming what failed.
+    Validate(crate::pvec_read::ReadArgs),
+    /// Every text record: entity, x, y, height, rotation and the text.
+    Text(crate::pvec_read::ReadArgs),
+    /// Set, replace or drop the scale record of a `.pvec`, in place.
+    Calibrate(crate::pvec_read::CalibrateArgs),
 }
 
 /// `viprs pvec rasters`.
@@ -493,6 +503,22 @@ pub fn run(args: PvecArgs) {
                 missing_feature("`viprs pvec rasters`");
             }
         }
+        #[cfg(feature = "pvec-raster")]
+        PvecCommand::Info(a) => crate::pvec_read::imp::info(&a.file, a.json),
+        #[cfg(feature = "pvec-raster")]
+        PvecCommand::Validate(a) => crate::pvec_read::imp::validate(&a.file, a.json),
+        #[cfg(feature = "pvec-raster")]
+        PvecCommand::Text(a) => crate::pvec_read::imp::text(&a.file, a.json),
+        #[cfg(feature = "pvec-raster")]
+        PvecCommand::Calibrate(a) => crate::pvec_read::imp::calibrate(&a),
+        #[cfg(not(feature = "pvec-raster"))]
+        PvecCommand::Info(_) => missing_feature("`viprs pvec info`"),
+        #[cfg(not(feature = "pvec-raster"))]
+        PvecCommand::Validate(_) => missing_feature("`viprs pvec validate`"),
+        #[cfg(not(feature = "pvec-raster"))]
+        PvecCommand::Text(_) => missing_feature("`viprs pvec text`"),
+        #[cfg(not(feature = "pvec-raster"))]
+        PvecCommand::Calibrate(_) => missing_feature("`viprs pvec calibrate`"),
     }
 }
 

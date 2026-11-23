@@ -597,14 +597,14 @@ differential is `libviprs-tests/tests/cli_foreign_diff.rs`.
 | libviprs_fn | vips_nickname | oracle_class | options | notes |
 |---|---|---|---|---|
 | `encode_jpeg_options` | `jpegsave` | BOUNDED-TOL (6) | `--Q`, `--subsample-mode auto\|on\|off` | Not libjpeg-turbo: tol is the measured max over Q 75 / Q 95 / Q 50 4:4:4. The SOF sampling factors are asserted exactly. |
-| `encode_png` / `encode_png_interlaced` / `encode_png_palette` | `pngsave` | EXACT (palette BOUNDED-TOL 51) | `--compression`, `--interlace`, `--palette`, `--bitdepth` (with `--palette`) | `--compression` conflicts with the other two, whose core encoders fix their own deflate level. `--bitdepth` caps the palette at 2^N entries; the core writes 8-bit indices whatever N is, vips packs them. |
+| `encode_png` / `encode_png_interlaced` / `encode_png_palette` / `encode_png_bilevel` | `pngsave` | EXACT (palette BOUNDED-TOL 51) | `--compression`, `--interlace`, `--palette`, `--bitdepth` | `--compression` conflicts with the other two, whose core encoders fix their own deflate level. With `--palette`, `--bitdepth` caps the palette at 2^N entries; the core writes 8-bit indices whatever N is, vips packs them. Without it, `--bitdepth 1` on a one-band uchar image is the bilevel encoder at threshold 128, the top bit vips keeps (libviprs-cli#147); 2 and 4 still need `--palette`. |
 | `save_tiff` | `tiffsave` | EXACT | `--compression none\|lzw\|deflate` | Default `none`, which is `tiffsave`'s default. |
 | `encode_webp` | `webpsave` | EXACT | `--lossless` (required) | Lossless is the only mode the core has; vips defaults to lossy, so the flag is required rather than implied. |
 | `encode_gif` | `gifsave` | BOUNDED-TOL (106; 37 at `--dither 0`) | `--dither`, `--bitdepth`, `--interlace` | Different quantiser. The colour table size and the interlace bit are asserted structurally. |
 | `encode_jxl` | `jxlsave` | EXACT | `--lossless` (required) | Feature `jxl`. |
-| `encode_jp2k` | `jp2ksave` | EXACT (byte compare) | `--lossless` (required), `--tile-width`, `--tile-height` | Feature `jp2k`. The core writes OpenJPEG's codestream byte for byte. |
+| `encode_jp2k` | `jp2ksave` | EXACT (byte compare) | `--lossless` or `--ratio N`, `--tile-width`, `--tile-height` | Feature `jp2k`. The core writes OpenJPEG's codestream byte for byte. `--ratio` is a viprs extension for `Compression::Lossy` (libviprs-cli#147), off the parity surface. |
 | `encode_fits` | `fitssave` | EXACT (byte compare) | | |
-| `encode_radiance` | `radsave` | EXACT | | Three-band float in. vips converts scRGB to sRGB before it writes, the core writes what it is given. |
+| `encode_radiance` | `radsave` | EXACT | `--exposure`, `--aspect` | Three-band float in. vips converts scRGB to sRGB before it writes, the core writes what it is given. The two flags set `EXPOSURE=` and `PIXASPECT=`; they are viprs extensions (vips reads them from `rad-expos` and `rad-aspect` only), libviprs-cli#147. |
 | `uhdr::encode_uhdr` | `uhdrsave` | BOUNDED-TOL (82, base image) | `--Q`, `--gainmap-scale-factor` | The core chooses its own gain map (libuhdr's tone mapping has no spec to port), so only the SDR base is compared. Non-scRGB input is converted first. |
 | `csv_save` | `csvsave` | EXACT (byte compare) | | One band. |
 | `matrix_save` | `matrixsave` | EXACT (byte compare) | | One band. |
@@ -619,7 +619,7 @@ differential is `libviprs-tests/tests/cli_foreign_diff.rs`.
 | `decode_tiff_page_with_limits` | `tiffload` | EXACT | `--page`, `--max-pages` | The loaded image carries `n-pages` (`tiff_page_count`). |
 | `decode_gif_with` | `gifload` | EXACT | `--page`, `--n`, `--max-pages` | |
 | `decode_webp_with` | `webpload` | EXACT | `--page`, `--n` | No `--max-pages`: the core WebP decoder does not consult it. |
-| `decode_jxl` | `jxlload` | EXACT | | Feature `jxl`. |
+| `decode_jxl` / `decode_jxl_with` | `jxlload` | EXACT | `--page`, `--n` | Feature `jxl`. A page a still does not have is the core's refusal (exit 1), libviprs-cli#147. |
 | `decode_jp2k` | `jp2kload` | EXACT | | Feature `jp2k`. |
 | `decode_avif` | `heifload` | EXACT | | Feature `avif`. AVIF only: HEIC/HEVC is a `foreign_stubs` refusal. |
 | `decode_svg_with_limits` | `svgload` | EXACT | `--dpi`, `--scale`, `--unlimited` | Feature `svg`. `--unlimited` lifts the core's 10 MB input ceiling, never the decode limits. |
@@ -652,7 +652,7 @@ differential is `libviprs-tests/tests/cli_foreign_diff.rs`.
 | `Raster::encode_uhdr`, `encode_uhdr_gainmap_scale` | `uhdrsave` (stub form) | EXCLUDED | `foreign_stubs`; `uhdrsave` goes through the real `uhdr::encode_uhdr` instead. |
 | `decode_file_fail_on`, `decode_bytes_fail_on` | `--fail-on` | EXCLUDED | `foreign_stubs`. |
 | (none) | `webpsave`/`jxlsave` lossy (`--Q`, `--distance`) | EXCLUDED | No lossy encoder in the core. |
-| `jp2k::Compression::Lossy` | `jp2ksave --Q` | EXCLUDED | The core's lossy mode takes a rate, not vips's `Q`; a `--Q` that meant something else would be worse than none. |
+| `jp2k::Compression::Lossy` | `jp2ksave --Q` | EXCLUDED | The core's lossy mode takes a rate, not vips's `Q`; a `--Q` that meant something else would be worse than none. It is reachable as `jp2ksave --ratio` instead (libviprs-cli#147), named for what it is. |
 
 ---
 

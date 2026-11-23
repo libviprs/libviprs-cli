@@ -75,7 +75,7 @@ cargo install --path .
 | `jp2k` | JPEG 2000 decoding |
 | `dwg-acadrust` (default) | the default DWG reader behind `viprs vector views`, `build` and `report`: the pure Rust acadrust reader, no native library (see [`viprs vector`](#viprs-vector)) |
 | `dwg-acadsharp` | the experimental DWG reader, chosen with `viprs vector ... --provider acadsharp` (ACadSharp through `acadsharp-rs`, over a native library). In `full`, not in the default set |
-| `pvec-raster` (default) | the `.pvec` raster commands: `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters` (see [`viprs pvec`](#viprs-pvec)) |
+| `pvec-raster` (default) | the `.pvec` raster commands, `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters`, and the read side, `viprs pvec info`, `validate`, `text` and `calibrate` (see [`viprs pvec`](#viprs-pvec)) |
 | `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout (see [`viprs pvec`](#viprs-pvec)); turns `dwg-acadrust` on |
 | `object-store-sink` | the core's injected-backend object-store sink |
 | `s3` | the `s3://` sink arm (the core treats `s3` as a deprecated alias for `object-store-sink`) |
@@ -221,6 +221,17 @@ Format: Rgb8
 Size: 36.0 MB
 ```
 
+`--fields` lists every header field with its value instead, the way `vipsheader -a` does: the built-in fields first in libvips order, then whatever the loader attached. With `--json` they come back as a `fields` object in the same order. A PDF has none, so `--fields` on one is a usage error.
+
+```bash
+$ viprs info --fields photo.png
+width: 4096
+height: 3072
+bands: 3
+format: uchar
+...
+```
+
 `--json` prints the same as one JSON object, with the exact decoded size in `bytes`:
 
 ```bash
@@ -332,6 +343,29 @@ viprs pvec rasters sheet.pvec --json
 viprs pvec rasters sheet.pvec --tile 0 2 1 0 tile.png
 ```
 
+Look inside a `.pvec`, check it, read its text, and give it a scale. These read through PVec's own reader at the revision the core pins, so what they say is what PVec makes of the file. They need `pvec-raster` too, and a build without it exits 1 naming it.
+
+```bash
+# Manifest, component streams, layers, text and raster counts, and the scale a reader should use
+viprs pvec info plan.pvec
+viprs pvec info plan.pvec --json
+
+# Checksums and digest on open, then every entity, style, known stream and the calibration decoded;
+# exit 1 naming what failed
+viprs pvec validate plan.pvec
+
+# Every text record: entity, x, y, height, rotation, text (tab-separated, or --json)
+viprs pvec text plan.pvec
+
+# Set the scale record, rewritten in place (a temporary beside it, renamed over it)
+viprs pvec calibrate plan.pvec --scale 0.001 --note "title block"
+viprs pvec calibrate plan.pvec --plan-scale 1:100 --paper-unit 0.001
+viprs pvec calibrate plan.pvec --measured 0,0,3000,0 --distance 3.0 --uncertainty 0.01
+viprs pvec calibrate plan.pvec --remove
+```
+
+`calibrate` takes exactly one of `--scale`, `--plan-scale`, `--measured` or `--remove`. A plan scale of `1:100` on a sheet drawn in millimetres (`--paper-unit 0.001`) is 0.1 m per drawing unit, and a measured pair is the distance over the points' length. A georeference the file already carries stays, and `--remove` drops only the scale record. A value that is not a positive finite number, or two `--measured` points that are one point, is a usage error and nothing is touched.
+
 `--pvec-into` is required: a `.pvec` needs at least one entity (WRT-01), and scan-only sheets stay out of v1 (ADR 0018). The output is a copy of the drawing with the raster added, so it may name the drawing itself to replace it. A drawing that declares capabilities or styles entities is refused, because adding a raster cannot carry those over yet.
 
 Under `--storage pvec` the grid is the un-centred Google grid and nothing else: `--tile-size` has to be 256, 512 or 1024, `--centre`, `--overlap`, `--layout` other than `google`, `--format raw` and the placeholder blank flags (`--skip-blank`, `--blank-tolerance`) are usage errors. `--drop-blanks` leaves a blank tile out as a not-stored tile. The placement is either `--pixel-to-source`, or the raster's own transform (`--geo-origin`/`--geo-scale`, or `--affine a,b,c,d,e,f`, the same flag `viprs geo` takes) composed with the drawing's calibration `--source-to-geo a,b,c,d,e,f`. No CRS is stored or checked: you assert that the raster and the calibration share one.
@@ -359,14 +393,14 @@ Every codec libviprs ships has a `*save` and a `*load` command, spelled the way 
 | save | options | load | options |
 |---|---|---|---|
 | `jpegsave` | `--Q`, `--subsample-mode auto\|on\|off` | `jpegload` | `--shrink 1\|2\|4\|8` |
-| `pngsave` | `--compression 0-9`, `--interlace`, `--palette`, `--bitdepth` (with `--palette`) | `pngload` | |
+| `pngsave` | `--compression 0-9`, `--interlace`, `--palette`, `--bitdepth` (2 and 4 with `--palette`; 1 without it writes a bilevel PNG from a one-band image) | `pngload` | |
 | `tiffsave` | `--compression none\|lzw\|deflate` | `tiffload` | `--page`, `--max-pages` |
 | `webpsave` | `--lossless` (required) | `webpload` | `--page`, `--n` |
 | `gifsave` | `--dither`, `--bitdepth`, `--interlace` | `gifload` | `--page`, `--n`, `--max-pages` |
-| `jxlsave` | `--lossless` (required) | `jxlload` | |
-| `jp2ksave` | `--lossless` (required), `--tile-width`, `--tile-height` | `jp2kload` | |
+| `jxlsave` | `--lossless` (required) | `jxlload` | `--page`, `--n` |
+| `jp2ksave` | `--lossless` or `--ratio N`, `--tile-width`, `--tile-height` | `jp2kload` | |
 | `fitssave` | | `fitsload` | |
-| `radsave` | | `radload` | |
+| `radsave` | `--exposure`, `--aspect` | `radload` | |
 | `uhdrsave` | `--Q`, `--gainmap-scale-factor` | `uhdrload` | |
 | `csvsave` | | `csvload` | |
 | `matrixsave` | | `matrixload` | |
@@ -374,7 +408,7 @@ Every codec libviprs ships has a `*save` and a `*load` command, spelled the way 
 
 Plus `heifload` (AVIF only), `svgload` (`--dpi`, `--scale`, `--unlimited`), `openexrload`, `niftiload`, `analyzeload` and `matload`. JPEG XL, JPEG 2000, AVIF and SVG need their cargo feature; without it the command refuses and names the feature to rebuild with.
 
-Every loader takes the five `--max-*` decode limits, and `-` reads the image from stdin (except `analyzeload`, whose image is a file pair). `csvload` and `matrixload` hand the limits to the core, which sizes the grid from the text and checks it before building anything, so a ragged CSV is priced at its padded width and refused with exit 1 when it doesn't fit. `webpsave`, `jxlsave` and `jp2ksave` only write lossless, while vips defaults to lossy for all three, so they insist on `--lossless` rather than quietly writing something other than what the vips spelling asks for.
+Every loader takes the five `--max-*` decode limits, and `-` reads the image from stdin (except `analyzeload`, whose image is a file pair). `csvload` and `matrixload` hand the limits to the core, which sizes the grid from the text and checks it before building anything, so a ragged CSV is priced at its padded width and refused with exit 1 when it doesn't fit. `webpsave`, `jxlsave` and `jp2ksave` only write lossless, while vips defaults to lossy for all three, so they insist on `--lossless` rather than quietly writing something other than what the vips spelling asks for. `jp2ksave` can write lossy too, with `--ratio N` in place of `--lossless`: that is the core encoder's target compression ratio (20 is about twenty times smaller than the raw samples), and it is not vips's `Q`, which is why it has its own name. `--ratio`, and `radsave --exposure` and `--aspect` (vips only takes those from the image's fields), are viprs extensions.
 
 The op commands also pick the encoder from the output extension, so `viprs copy in.png out.webp` works for `.webp`, `.gif`, `.jxl`, `.jp2`, `.fits`, `.hdr`, `.csv` and `.mat` as well as `.png`, `.tif`, `.ppm` and `.v`. `.jpg` is the exception: it stays banned there, because those commands are the ones the vips differential suite compares, and `jpegsave` is the way to write one.
 

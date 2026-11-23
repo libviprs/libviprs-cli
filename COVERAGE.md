@@ -48,21 +48,21 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 | JPEG save (`Q`, subsample) and load (`shrink`) | `jpegsave`, `jpegload` | covered |
 | JPEG restart interval | none | not-CLI: `jpegsave_buffer_restart` is a refusal stub in the core |
 | PNG save: deflate level, interlace, palette | `pngsave` | covered |
-| PNG bilevel save (`encode_png_bilevel`) | none | missing, CV1.5 (`pngsave --bitdepth 1` on a one-band image, as vips does) |
+| PNG bilevel save (`encode_png_bilevel`) | `pngsave --bitdepth 1` on a one-band image, as vips does | covered (CV1.5) |
 | TIFF save: none, LZW, deflate; load: page, max-pages | `tiffsave`, `tiffload` | covered |
 | TIFF JPEG, CCITT and JPEG 2000 compression, tiled, pyramid, sub-IFD, BigTIFF | none | not-CLI: refusal stubs in the core (`save_tiff_tiled`, `save_bigtiff`, `unsupported_compression`) |
 | WebP save (lossless) and load (page, n) | `webpsave`, `webpload` | covered |
 | WebP save `keep` (metadata chunks) | always `Keep::None` | partial, CV2.3 (`webpsave --keep`) |
 | GIF save (dither, bitdepth, interlace) and load (page, n, max-pages) | `gifsave`, `gifload` | covered |
 | JPEG XL save (lossless) | `jxlsave` | covered |
-| JPEG XL load `page`, `n` (`decode_jxl_with`) | `jxlload` ignores them | missing, CV1.5 |
+| JPEG XL load `page`, `n` (`decode_jxl_with`) | `jxlload --page --n` | covered (CV1.5) |
 | JPEG 2000 save lossless with tile size; load | `jp2ksave`, `jp2kload` | covered |
-| JPEG 2000 lossy (`Compression::Lossy { ratio }`) | none | missing, CV1.5 (`jp2ksave --ratio N`, a viprs extension because vips takes a `Q`) |
-| Radiance save `exposure`, `aspect` | `radsave` writes defaults | missing, CV1.5 |
+| JPEG 2000 lossy (`Compression::Lossy { ratio }`) | `jp2ksave --ratio N`, a viprs extension because vips takes a `Q` | covered (CV1.5) |
+| Radiance save `exposure`, `aspect` | `radsave --exposure --aspect` (viprs extensions) | covered (CV1.5) |
 | Radiance, FITS, CSV, matrix, PPM load and save; Ultra HDR load and save (`Q`, gain map shrink) | the vips-named loaders and savers | covered |
 | OpenEXR, NIfTI, Analyze, Matlab, AVIF, SVG (dpi, scale, unlimited) load | the vips-named loaders | covered |
 | `.v` read and write | every op OUT, `copy` | covered |
-| Metadata fields (`get_fields`, `get_field`, `get_typeof`) | none | missing, CV1.5 (`viprs info --fields`, the `vipsheader -a` view) |
+| Metadata fields (`get_fields`, `get_field`) | `viprs info --fields`, the `vipsheader -a` view | covered (CV1.5) |
 | Setting arbitrary metadata fields | none | not-CLI: vips has no CLI for it either; `copy` covers the typed ones |
 | HEIF/HEIC save, OpenSlide, ImageMagick, `dzsave_buffer` | none | not-CLI: `foreign_stubs`, refusal stubs |
 | `decode_file_sequential` | none | not-CLI: a documented alias of `decode_file` |
@@ -139,7 +139,7 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 | Capability | viprs `pvec` | Status |
 |---|---|---|
 | DWG to `.pvec` per paper layout, one layout, or model space; stem; unit; geometry only; regions | `convert` | covered |
-| `recalibrate` (set, replace or remove the scale record) | none | missing, CV1.4 (`pvec calibrate`) |
+| `recalibrate` (set, replace or remove the scale record) | `pvec calibrate`, through the facade's `recalibrate_file` | covered (CV1.4) |
 | `PdfConversion` (a PDF page to `.pvec`, image limits) | none | missing, CV2.2 |
 | `ConversionProfile`, `CapabilityPolicy`, `allowed_capabilities` | none | missing, CV2.2 |
 | Calibration at convert time (`Calibration`, `ScaleClaim`, georeference sidecar import) | none | missing, CV2.2 |
@@ -153,11 +153,11 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 
 | Capability | viprs | Status |
 |---|---|---|
-| `PvecReader::manifest`, `entity_count`, `streams` (layers, line styles, text, hatch, provenance, paint), skipped streams | none | missing, CV1.1 (`pvec info`) |
-| `PvecReader::{calibration, georeference, effective_scale}` | none | missing, CV1.1 |
-| Open-time checksum and digest checks, `entities`, `styles`, stream decode | none | missing, CV1.2 (`pvec validate`) |
-| `TextStream` records | none | missing, CV1.3 (`pvec text`) |
-| `recalibrate_file` | none | missing, CV1.4 |
+| `PvecReader::manifest`, `entity_count`, `streams` (layers, line styles, text, hatch, provenance, paint), skipped streams | `pvec info` | covered (CV1.1) |
+| `PvecReader::{calibration, georeference, effective_scale}` | `pvec info` | covered (CV1.1) |
+| Open-time checksum and digest checks, `entities`, `styles`, stream decode | `pvec validate` | covered (CV1.2) |
+| `TextStream` records | `pvec text` | covered (CV1.3) |
+| `recalibrate_file` | `pvec calibrate` | covered (CV1.4) |
 | Raster placements and tiles | `pvec rasters` | covered |
 | `PickIndex` (point, rect, nearest) | none | missing, CV2.5 |
 | `Tessellate` against an error budget | none | missing, CV2.5 |
@@ -165,7 +165,8 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 | Streaming API (spatial directory, Tier 0, viewport queries) | none | not-CLI: incremental loading for a viewer; a one-shot command has no viewport. `pvec info` reports whether the directory exists |
 | `pvec-scene` paint plan | none | not-CLI: PVec ships no rasteriser, so there is no `.pvec` to image path to expose (owner question) |
 | `pvec-wasm` | none | not-CLI: the browser ABI |
-| PVec's own `pvec` binary: `inspect`, `validate`, `calibrate`, `dump-manifest`, `capabilities`, `tessellate` | none | missing: CV1.1, CV1.2, CV1.4, CV1.1 (`--json`), CV1.1, CV2.5 |
+| PVec's own `pvec` binary: `inspect`, `validate`, `calibrate`, `dump-manifest`, `capabilities` | `pvec info`, `pvec validate`, `pvec calibrate`, `pvec info --json`, `pvec info` (manifest capabilities and skipped streams) | covered (CV1.1, CV1.2, CV1.4) |
+| PVec's own `pvec tessellate` | none | missing, CV2.5 |
 | `pvec compare-step` | none | not in this epic: it needs an external OpenCASCADE evaluator report |
 | `pvec bench-open` | none | not-CLI: a benchmark, which only runs through the Mercury queue |
 

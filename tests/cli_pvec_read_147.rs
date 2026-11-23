@@ -371,7 +371,17 @@ mod with_facade {
         assert_eq!(v["metres_per_unit"], 0.001);
         assert_eq!(v["bounds"]["min"], serde_json::json!([0.0, 0.0]));
         assert_eq!(v["bounds"]["max"], serde_json::json!([4000.0, 4000.0]));
-        assert_eq!(v["capabilities"], serde_json::json!([]));
+        // PVec's writer declares the capability of every stream it carries, so the manifest lists
+        // layer (14) and text (16) though the drawing asked for none: what the reader says is
+        // what info has to print.
+        let declared: Vec<u32> = open(&f)
+            .manifest()
+            .capabilities
+            .iter()
+            .map(|c| c.get())
+            .collect();
+        assert_eq!(declared, [14, 16]);
+        assert_eq!(v["capabilities"], serde_json::json!(declared));
         assert_eq!(v["entities"], 2);
         let names: Vec<&str> = v["streams"]
             .as_array()
