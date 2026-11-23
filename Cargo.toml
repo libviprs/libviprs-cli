@@ -114,3 +114,9 @@ pvec-geometry = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0f
 # `TextStream` but not `TextRecord`, so a test that writes one names the components crate.
 # Same revision as the facade, and already in the lock through it.
 pvec-components = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }
+# PVec's own validator, the oracle `pvec validate` is held to (libviprs-cli#148): the `pvec`
+# command line tool's library half, called from the tests and never from viprs, so the verdict
+# the tests compare against is PVec's code and not a copy of viprs's calls.
+pvec-conformance = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }
+# PVec's hostile raster corpus: a file whose only fault is a tile the reader refuses.
+pvec-testkit = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }

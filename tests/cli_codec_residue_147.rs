@@ -231,6 +231,14 @@ fn jp2ksave_ratio_writes_a_smaller_lossy_file_that_decodes() {
         small < big,
         "ratio 20 ({small} bytes) must be smaller than lossless ({big} bytes)"
     );
+    // The number is used, not only the switch: twice the ratio is a smaller file again.
+    let lossier = dir.join("lossier.jp2");
+    ok(&["jp2ksave", s(&input), s(&lossier), "--ratio", "40"]);
+    let smaller = std::fs::metadata(&lossier).unwrap().len();
+    assert!(
+        smaller < small,
+        "ratio 40 ({smaller} bytes) must be smaller than ratio 20 ({small} bytes)"
+    );
     let back = dir.join("back.v");
     ok(&["jp2kload", s(&lossy), s(&back)]);
     let info: serde_json::Value =
@@ -351,4 +359,116 @@ fn info_fields_lists_the_header_fields_with_their_values() {
     assert_eq!(v["fields"]["width"], 70);
     assert_eq!(v["fields"]["height"], 30);
     assert_eq!(v["fields"]["bands"], 3);
+}
+
+// Review of #149: the regression, the contract and the help text.
+
+#[test]
+fn pngsave_bitdepth_8_without_a_palette_is_a_usage_error_as_on_main() {
+    // 8 without --palette used to be refused, and the bilevel change let it through to a plain
+    // encode that ignores it (a 16-bit input stayed 16-bit). Only 1 works without --palette.
+    let dir = scratch("png8");
+    let out = dir.join("out.png");
+    exits(
+        2,
+        &["pngsave", s(&rgb(&dir, 8, 8)), s(&out), "--bitdepth", "8"],
+        "--palette",
+    );
+    assert!(!out.exists());
+}
+
+/// The long names of a command's flags in `__dump-commands --json`, searched through every level.
+fn dumped_flags(command: &str) -> Vec<String> {
+    fn find<'a>(nodes: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+        nodes.as_array()?.iter().find_map(|c| {
+            if c["name"] == name {
+                Some(c)
+            } else {
+                find(&c["subcommands"], name)
+            }
+        })
+    }
+    let doc: serde_json::Value =
+        serde_json::from_slice(&ok(&["__dump-commands", "--json"]).stdout).unwrap();
+    let cmd =
+        find(&doc["commands"], command).unwrap_or_else(|| panic!("{command} is not in the dump"));
+    cmd["flags"]
+        .as_array()
+        .expect("flags is an array")
+        .iter()
+        .filter_map(|f| f["long"].as_str().map(|l| format!("--{l}")))
+        .collect()
+}
+
+#[test]
+fn the_viprs_extension_flags_are_hidden_from_help_and_the_dump() {
+    // CLI_CONTRACT.md `3-deviations: a flag vips does not have is hidden, and OP_MAP.md records
+    // it. copy --orientation is the first of them and had leaked into the dump.
+    for (command, hidden, shown) in [
+        ("jp2ksave", &["--ratio"][..], "--lossless"),
+        ("radsave", &["--exposure", "--aspect"][..], "--max-pixels"),
+        ("copy", &["--orientation"][..], "--interpretation"),
+    ] {
+        let help = stdout(&ok(&[command, "--help"]));
+        let dumped = dumped_flags(command);
+        assert!(help.contains(shown), "{command} --help:\n{help}");
+        assert!(
+            dumped.iter().any(|f| f == shown),
+            "{command} in the dump: {dumped:?}"
+        );
+        for flag in hidden {
+            assert!(
+                !help.contains(flag),
+                "{command} --help shows {flag}:\n{help}"
+            );
+            assert!(
+                !dumped.iter().any(|f| f == flag),
+                "{command} in the dump has {flag}: {dumped:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_hidden_extension_flags_still_work() {
+    let dir = scratch("hidden-work");
+    let float = float_rgb(&dir);
+    let out = dir.join("asked.hdr");
+    ok(&[
+        "radsave",
+        s(&float),
+        s(&out),
+        "--exposure",
+        "3",
+        "--aspect",
+        "2",
+    ]);
+    let header = radiance_header(&out);
+    assert!(
+        header.lines().any(|l| l == "EXPOSURE=3.000000e+00"),
+        "{header}"
+    );
+    exits(
+        2,
+        &["jp2ksave", s(&float), s(&dir.join("x.jp2")), "--ratio", "0"],
+        "--ratio",
+    );
+}
+
+#[test]
+fn jp2ksave_lossless_help_no_longer_says_it_is_required_or_that_lossy_cannot_be_written() {
+    let help = stdout(&ok(&["jp2ksave", "--help"]));
+    assert!(!help.contains("cannot encode"), "{help}");
+    assert!(!help.contains("(required"), "{help}");
+    // webpsave keeps the old wording: there it is still true.
+    let webp = stdout(&ok(&["webpsave", "--help"]));
+    assert!(webp.contains("required"), "{webp}");
+}
+
+#[test]
+fn info_fields_on_a_pdf_is_a_usage_error() {
+    let dir = scratch("fields-pdf");
+    let pdf = dir.join("plan.pdf");
+    std::fs::write(&pdf, b"%PDF-1.4\n").unwrap();
+    exits(2, &["info", s(&pdf), "--fields"], "--fields");
 }

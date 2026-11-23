@@ -1463,7 +1463,9 @@ dependencies = [
  "pvec",
  "pvec-capabilities",
  "pvec-components",
+ "pvec-conformance",
  "pvec-geometry",
+ "pvec-testkit",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -2011,6 +2013,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pvec-conformance"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=e1a768ba53b0fc4d530fc8b528c04159299c6f10#e1a768ba53b0fc4d530fc8b528c04159299c6f10"
+dependencies = [
+ "pvec-capabilities",
+ "pvec-components",
+ "pvec-container",
+ "pvec-entity",
+ "pvec-geometry",
+ "pvec-interchange",
+]
+
+[[package]]
 name = "pvec-container"
 version = "0.0.0"
 source = "git+https://github.com/libviprs/pvec?rev=e1a768ba53b0fc4d530fc8b528c04159299c6f10#e1a768ba53b0fc4d530fc8b528c04159299c6f10"
@@ -2023,6 +2038,15 @@ dependencies = [
  "pvec-geometry",
  "pvec-numeric",
  "xxhash-rust",
+]
+
+[[package]]
+name = "pvec-corpus"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=e1a768ba53b0fc4d530fc8b528c04159299c6f10#e1a768ba53b0fc4d530fc8b528c04159299c6f10"
+dependencies = [
+ "pvec-capabilities",
+ "pvec-numeric",
 ]
 
 [[package]]
@@ -2043,6 +2067,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pvec-interchange"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=e1a768ba53b0fc4d530fc8b528c04159299c6f10#e1a768ba53b0fc4d530fc8b528c04159299c6f10"
+dependencies = [
+ "miniz_oxide 0.9.1",
+ "pvec-capabilities",
+ "pvec-components",
+ "pvec-container",
+ "pvec-entity",
+ "pvec-geometry",
+ "pvec-numeric",
+]
+
+[[package]]
 name = "pvec-numeric"
 version = "0.0.0"
 source = "git+https://github.com/libviprs/pvec?rev=e1a768ba53b0fc4d530fc8b528c04159299c6f10#e1a768ba53b0fc4d530fc8b528c04159299c6f10"
@@ -2054,6 +2092,20 @@ source = "git+https://github.com/libviprs/pvec?rev=e1a768ba53b0fc4d530fc8b528c04
 dependencies = [
  "pvec-components",
  "pvec-container",
+ "pvec-entity",
+ "pvec-geometry",
+ "pvec-numeric",
+]
+
+[[package]]
+name = "pvec-testkit"
+version = "0.0.0"
+source = "git+https://github.com/libviprs/pvec?rev=e1a768ba53b0fc4d530fc8b528c04159299c6f10#e1a768ba53b0fc4d530fc8b528c04159299c6f10"
+dependencies = [
+ "pvec-capabilities",
+ "pvec-components",
+ "pvec-container",
+ "pvec-corpus",
  "pvec-entity",
  "pvec-geometry",
  "pvec-numeric",
