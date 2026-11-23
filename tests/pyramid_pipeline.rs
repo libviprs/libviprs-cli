@@ -968,18 +968,15 @@ fn ctrl_c_stops_a_memory_budget_run_with_130() {
 }
 
 // ---------------------------------------------------------------------------
-// The stub object store stays out of sight
+// The object store is advertised for what it is
 // ---------------------------------------------------------------------------
 
-#[test]
-fn the_stub_store_flag_is_not_advertised() {
-    let out = run(&["pyramid", "--help"]);
-    ok(&out, "pyramid --help");
-    assert!(
-        !stdout(&out).contains("--object-store-root"),
-        "the local stub store is a test seam, not user surface"
-    );
-}
+// `--object-store-root` used to be hidden as a test seam "until a real
+// transport exists". The decision recorded on #147 (after libviprs#1119) is
+// that none will: the object-store sink writes its key layout into a directory
+// and the caller uploads it, so the flag is user surface now and the help says
+// so. The cell is `pyramid_help_says_the_object_store_uploads_nothing` in
+// tests/cli_pyramid_knobs_152.rs (#152).
 
 #[cfg(any(feature = "s3", feature = "object-store-sink"))]
 #[test]
