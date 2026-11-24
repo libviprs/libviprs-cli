@@ -191,6 +191,98 @@ fn export_will_not_write_over_its_own_input() {
     assert_eq!(std::fs::read(&f).unwrap(), before);
 }
 
+/// Exit 2 naming --report, and every file exactly as it was (the report is never written over
+/// the drawing, or over the export it belongs to).
+#[track_caller]
+fn report_refused(f: &std::path::Path, out: &std::path::Path, report: &std::path::Path) {
+    let before = std::fs::read(f).unwrap();
+    let out_before = std::fs::read(out).ok();
+    usage(
+        &[
+            "pvec",
+            "export",
+            s(f),
+            s(out),
+            "--format",
+            "gml",
+            "--tolerance",
+            "1",
+            "--report",
+            s(report),
+        ],
+        &["--report"],
+    );
+    assert_eq!(std::fs::read(f).unwrap(), before, "the input is untouched");
+    assert_eq!(std::fs::read(out).ok(), out_before, "OUT is untouched");
+}
+
+#[test]
+fn export_report_may_not_be_the_input() {
+    let dir = scratch("report-input");
+    let f = placeholder(&dir);
+    report_refused(&f, &dir.join("o.gml"), &f);
+}
+
+#[test]
+fn export_report_may_not_be_out() {
+    let dir = scratch("report-out");
+    let f = placeholder(&dir);
+    let out = dir.join("o.gml");
+    report_refused(&f, &out, &out);
+}
+
+#[test]
+fn export_report_may_not_reach_the_input_or_out_by_another_name() {
+    let dir = scratch("report-alias");
+    let f = placeholder(&dir);
+    let out = dir.join("o.gml");
+    std::fs::write(&out, b"an earlier export").unwrap();
+    // a path with a detour in it
+    report_refused(
+        &f,
+        &out,
+        &dir.join("sub").join("..").join("placeholder.pvec"),
+    );
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    report_refused(&f, &out, &dir.join("sub").join("..").join("o.gml"));
+    // a relative name for a file that does not exist yet is the same file as OUT
+    let fresh = dir.join("fresh.gml");
+    report_refused(&f, &fresh, &dir.join("sub").join("..").join("fresh.gml"));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&f, dir.join("link-to-input")).unwrap();
+        report_refused(&f, &out, &dir.join("link-to-input"));
+        std::os::unix::fs::symlink(&out, dir.join("link-to-out")).unwrap();
+        report_refused(&f, &out, &dir.join("link-to-out"));
+        // a hard link is the same file too
+        std::fs::hard_link(&f, dir.join("hard-to-input")).unwrap();
+        report_refused(&f, &out, &dir.join("hard-to-input"));
+    }
+}
+
+#[test]
+fn export_out_may_not_reach_the_input_through_a_link() {
+    let dir = scratch("out-alias");
+    let f = placeholder(&dir);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&f, dir.join("link.gml")).unwrap();
+        let before = std::fs::read(&f).unwrap();
+        usage(
+            &[
+                "pvec",
+                "export",
+                s(&f),
+                s(&dir.join("link.gml")),
+                "--format",
+                "step",
+            ],
+            &["input"],
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), before);
+    }
+}
+
 #[cfg(not(feature = "pvec-export"))]
 #[test]
 fn a_build_without_pvec_export_names_the_feature() {
