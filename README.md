@@ -73,6 +73,7 @@ cargo install --path .
 | `svg` | SVG rasterising: a `.svg` file, or any input whose root element is `svg` (the core sniffs it by content); a gzipped `.svgz` is refused |
 | `jxl` | JPEG XL decoding |
 | `jp2k` | JPEG 2000 decoding |
+| `jbig2` | JBIG2 image streams in a PDF page, for `viprs pvec convert PAGE.pdf`. In neither the default set nor `full`: the core keeps it out of its own default until its fuzz target has 24 clean hours, and `full` is what gets shipped and tested as everything. Without it a page that needs the decoder exits 1 and names the feature |
 | `dwg-acadrust` (default) | the default DWG reader behind `viprs vector views`, `build` and `report`: the pure Rust acadrust reader, no native library (see [`viprs vector`](#viprs-vector)) |
 | `dwg-acadsharp` | the experimental DWG reader, chosen with `viprs vector ... --provider acadsharp` (ACadSharp through `acadsharp-rs`, over a native library). In `full`, not in the default set |
 | `pvec-raster` (default) | the `.pvec` raster commands, `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters`, and the read side, `viprs pvec info`, `validate`, `text` and `calibrate` (see [`viprs pvec`](#viprs-pvec)) |
@@ -82,7 +83,7 @@ cargo install --path .
 | `s3` | the same sink under its old name (the core treats `s3` as a deprecated alias for `object-store-sink`); `s3://` still works and prints one deprecation line |
 | `packfile` | the `packfile://` tar/zip sink |
 | `tracing` | `--trace-level` span output |
-| `full` | all of the above except `pdfium-static` |
+| `full` | all of the above except `pdfium-static` and `jbig2` |
 
 ```bash
 # Everything a runtime-pdfium build can have (the default already has pdfium and pvec-raster)
@@ -561,7 +562,7 @@ tools/install-hooks.sh
 ```
 
 - **pre-commit** is the lint half: `cargo fmt -- --check` and clippy over every feature cell in `.github/workflows/ci.yml`.
-- **pre-push** is the test half: the MSRV claims, `cargo check`, `cargo test`, `cargo test --no-default-features` and `cargo test --features full`, then the native `viprs vector` cells. Those fetch the pinned ACadSharp archive from libviprs-dep, check its sha256, and run `cargo test --features dwg-acadsharp --test vector_cli` with `LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1`, so a missing archive fails the push instead of skipping. `tools/gate.sh native` runs just those.
+- **pre-push** is the test half: the MSRV claims, `cargo check`, `cargo test`, `cargo test --no-default-features` and `cargo test --features full` and `cargo test --features jbig2 --test cli_pvec_pdf_151`, then the native `viprs vector` cells. Those fetch the pinned ACadSharp archive from libviprs-dep, check its sha256, and run `cargo test --features dwg-acadsharp --test vector_cli` with `LIBVIPRS_REQUIRE_ACADSHARP_NATIVE=1`, so a missing archive fails the push instead of skipping. `tools/gate.sh native` runs just those.
 
 `tools/gate.sh` does the work (`lint`, `test`, or `clean` to drop the cargo and target volumes on MARS). It streams the tree over ssh, keeps `CARGO_TARGET_DIR=/tmp/target` in a docker volume, and leaves no scratch directory behind. `tests/hooks_gate_135.rs` fails if the gate's cargo cells drift from CI's.
 

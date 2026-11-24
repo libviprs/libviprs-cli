@@ -75,6 +75,7 @@ cargo clippy --all-targets --features avif -- -D warnings -W clippy::incompatibl
 cargo clippy --all-targets --features svg -- -D warnings -W clippy::incompatible_msrv -W deprecated
 cargo clippy --all-targets --features jxl -- -D warnings -W clippy::incompatible_msrv -W deprecated
 cargo clippy --all-targets --features jp2k -- -D warnings -W clippy::incompatible_msrv -W deprecated
+cargo clippy --all-targets --features jbig2 -- -D warnings -W clippy::incompatible_msrv -W deprecated
 cargo clippy --all-targets --features dwg-acadsharp -- -D warnings -W clippy::incompatible_msrv -W deprecated
 cargo clippy --all-targets --features object-store-sink -- -D warnings -W clippy::incompatible_msrv -W deprecated
 RUSTFLAGS= cargo clippy --all-targets --features pdfium-static -- -D warnings -W clippy::incompatible_msrv -W deprecated
@@ -126,6 +127,7 @@ cargo check --all-targets
 cargo test
 cargo test --no-default-features
 cargo test --features full
+cargo test --features jbig2 --test cli_pvec_pdf_151
 # --- container:end
 SCRIPT
   native_script

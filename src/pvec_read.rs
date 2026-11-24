@@ -106,7 +106,7 @@ pub(crate) struct CalibrateArgs {
     uncertainty: Option<f64>,
 }
 
-fn non_negative(text: &str) -> Result<f64, String> {
+pub(crate) fn non_negative(text: &str) -> Result<f64, String> {
     match text.parse::<f64>() {
         Ok(v) if v.is_finite() && v >= 0.0 => Ok(v),
         _ => Err("expected a finite number, 0 or more".into()),
@@ -114,7 +114,7 @@ fn non_negative(text: &str) -> Result<f64, String> {
 }
 
 /// `N:D`, two whole numbers above 0.
-fn ratio(text: &str) -> Result<(u32, u32), String> {
+pub(crate) fn ratio(text: &str) -> Result<(u32, u32), String> {
     let whole = |s: &str| s.parse::<u32>().ok().filter(|&n| n > 0);
     text.split_once(':')
         .and_then(|(n, d)| Some((whole(n)?, whole(d)?)))
@@ -122,7 +122,7 @@ fn ratio(text: &str) -> Result<(u32, u32), String> {
 }
 
 /// `X0,Y0,X1,Y1`, four finite numbers naming two different points.
-fn segment(text: &str) -> Result<[f64; 4], String> {
+pub(crate) fn segment(text: &str) -> Result<[f64; 4], String> {
     const SHAPE: &str = "expected four finite numbers, as 0,0,3,4";
     let numbers: Vec<f64> = text
         .split(',')
