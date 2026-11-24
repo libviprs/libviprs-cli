@@ -144,15 +144,16 @@ pub(crate) struct PipelineArgs {
 
     /// The header's centre as "lon,lat" or "lon,lat,zoom" in degrees (default
     /// 0,0 at the middle of the zoom range the tiles cover). Advisory.
-    /// Archives only.
+    /// Archives only. Spelled like `--centre`; `--pmtiles-center` also works.
     #[arg(
-        long,
+        long = "pmtiles-centre",
+        alias = "pmtiles-center",
         value_name = "LON,LAT[,ZOOM]",
         value_parser = parse_center,
         allow_hyphen_values = true,
         help_heading = "PMTiles"
     )]
-    pub(crate) pmtiles_center: Option<Center>,
+    pub(crate) pmtiles_centre: Option<Center>,
 
     /// Write the resume checkpoint every N tiles.
     ///
@@ -276,7 +277,7 @@ impl From<InternalCompressionArg> for Compression {
     }
 }
 
-/// `--pmtiles-center lon,lat[,zoom]`.
+/// `--pmtiles-centre lon,lat[,zoom]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Center {
     lon: f64,
@@ -327,7 +328,7 @@ fn parse_center(text: &str) -> Result<Center, String> {
             ));
         }
     };
-    let values = parse_degrees(&coords.join(","), "--pmtiles-center")?;
+    let values = parse_degrees(&coords.join(","), "--pmtiles-centre")?;
     let [lon, lat] = values.as_slice() else {
         return Err(format!("expected `lon,lat`, got {text:?}"));
     };
@@ -459,7 +460,7 @@ impl PipelineArgs {
                 "--pmtiles-internal-compression",
             ),
             (self.pmtiles_bounds.is_some(), "--pmtiles-bounds"),
-            (self.pmtiles_center.is_some(), "--pmtiles-center"),
+            (self.pmtiles_centre.is_some(), "--pmtiles-centre"),
         ]
         .into_iter()
         .find_map(|(given, flag)| given.then_some(flag))
@@ -572,6 +573,7 @@ pub(crate) fn check_knobs(args: &PyramidArgs) -> Result<(), Refusal> {
             (args.engine.is_some(), "--engine"),
             (args.render_stream, "--render-stream"),
             (args.min_dpi.is_some(), "--min-dpi"),
+            (args.iiif_id.is_some(), "--iiif-id"),
         ] {
             if given {
                 return Err(Refusal::new(
@@ -586,6 +588,30 @@ pub(crate) fn check_knobs(args: &PyramidArgs) -> Result<(), Refusal> {
             "--engine monolithic takes no --memory-budget",
             "the budget sizes the streaming engines' strips, and the monolithic engine holds \
              the whole image; drop one of the two",
+        ));
+    }
+    // The strip engines emit tiles as their strips finish, so tile id order is
+    // the core's `UnsupportedEmissionOrder` after the input is decoded; the
+    // command line alone already says so.
+    if args.pipeline.ordered_emission
+        && let Some(engine) = args.engine.filter(|e| {
+            matches!(
+                e,
+                EngineArg::Streaming | EngineArg::MapReduce | EngineArg::MapReduceHotCache
+            )
+        })
+    {
+        let name = engine
+            .to_possible_value()
+            .map(|v| v.get_name().to_string())
+            .unwrap_or_default();
+        return Err(Refusal::new(
+            format!(
+                "--engine {name} cannot emit tiles in tile id order, which --ordered-emission asks for"
+            ),
+            "the strip engines hand tiles over as their strips finish; drop --ordered-emission \
+             (an `--pmtiles-layout arrival` archive is then written in arrival order), or use \
+             --engine monolithic",
         ));
     }
     if args.engine.is_some() && args.pipeline.region.is_some() {
@@ -619,6 +645,13 @@ pub(crate) fn check_knobs(args: &PyramidArgs) -> Result<(), Refusal> {
         } else {
             "--min-dpi"
         };
+        if args.memory_limit > 0 {
+            return Err(Refusal::new(
+                format!("--memory-limit cannot be checked on a {flag} run"),
+                "--memory-limit prices the decoded page, and this path never decodes it into one \
+                 raster; --memory-budget is what bounds it, so drop --memory-limit",
+            ));
+        }
         if args.memory_budget == Some(0) {
             return Err(Refusal::new(
                 format!("{flag} needs a non-zero --memory-budget"),
@@ -1277,7 +1310,9 @@ pub(crate) fn run(args: PyramidArgs, cancel: CancelToken) {
             (run.engine(&sink, Some(policy)), dir)
         }
         Target::ObjectStore { bucket, prefix } => {
-            let store = object_store.expect("prepared above for an object-store target");
+            let Some(store) = object_store else {
+                operational_error("the object-store sink was not prepared before the run");
+            };
             object_store::run(&run, store, &bucket, &prefix, tile_format)
         }
     };
@@ -1319,7 +1354,7 @@ fn archive_sink(
     if let Some(bounds) = p.pmtiles_bounds {
         options = options.with_bounds_degrees(bounds);
     }
-    if let Some(center) = p.pmtiles_center {
+    if let Some(center) = p.pmtiles_centre {
         options = options
             .with_center_degrees(center.lon, center.lat)
             .with_center_zoom(center.zoom);

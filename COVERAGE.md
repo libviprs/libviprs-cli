@@ -104,7 +104,7 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 |---|---|---|
 | Filesystem tree (manifest, checksums, dedupe, resume) | `--storage directory` | covered |
 | PMTiles sink (layout, ordered emission, dedupe window, geo transform) | `--storage pmtiles` | covered |
-| PMTiles writer metadata (name, description, attribution), internal compression, bounds, centre | `--pmtiles-name`, `--pmtiles-description`, `--pmtiles-attribution`, `--pmtiles-internal-compression`, `--pmtiles-bounds`, `--pmtiles-center` | covered (CV2.3) |
+| PMTiles writer metadata (name, description, attribution), internal compression, bounds, centre | `--pmtiles-name`, `--pmtiles-description`, `--pmtiles-attribution`, `--pmtiles-internal-compression`, `--pmtiles-bounds`, `--pmtiles-centre` | covered (CV2.3) |
 | PMTiles tile compression | set from `--format` | not-CLI: the field describes the stored blobs, and PNG, JPEG and WebP tiles are compressed already, so a flag could only mislabel them |
 | Packfile (tar, tar.gz, zip) | `--packfile`, `packfile://` | covered |
 | Object store sink (key prefix, image name) | the object-store key layout written into a directory; `object-store://`, with `s3://` as a deprecated alias | covered (CV2.3) |

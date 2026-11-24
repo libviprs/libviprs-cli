@@ -197,7 +197,7 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | `--retry-multiplier F` / `--no-retry-jitter` | all | Grow each delay by F (at least 1, default 2), and sleep exactly that rather than adding up to half again at random. Both need a retrying policy (`--retries` or `--on-failure retry=...`) |
 | `--pmtiles-name` / `--pmtiles-description` / `--pmtiles-attribution` | archive | The TileJSON fields of the archive's metadata, beside the core's own `vnd.libviprs` |
 | `--pmtiles-internal-compression gzip\|none` | archive | How the directories and metadata are compressed. The tiles are stored as encoded, so there is no tile compression to pick |
-| `--pmtiles-bounds W,S,E,N` / `--pmtiles-center LON,LAT[,ZOOM]` | archive | The header's advisory bounds and centre, in degrees |
+| `--pmtiles-bounds W,S,E,N` / `--pmtiles-centre LON,LAT[,ZOOM]` | archive | The header's advisory bounds and centre, in degrees |
 | `--skip-failed` | all | Skip a tile that still fails and carry on; the run then exits 1 at the end, since the output has holes |
 | `--fail-fast` | all | Abort on the first failure (the default) |
 | `--checksum` / `--manifest-source-hash` | tree | Per-tile checksums (re-hashed before the run succeeds) and the BLAKE3 of the source file's bytes, in `manifest.json` |

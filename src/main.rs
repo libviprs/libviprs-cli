@@ -1704,7 +1704,11 @@ fn run_pdfium_strips(
         source.dpi()
     );
     let (width, height) = (source.width(), source.height());
-    eprintln!("Source: {width}x{height}, rendered strip by strip");
+    if args.render_stream {
+        eprintln!("Source: {width}x{height}, rendered strip by strip");
+    } else {
+        eprintln!("Source: {width}x{height}, rendered whole and handed to the engine in strips");
+    }
     let planner = PyramidPlanner::new(width, height, args.tile_size, args.overlap, layout)
         .unwrap_or_else(|e| operational_error(&format!("creating pyramid plan: {e}")))
         .with_centre(args.centre);
