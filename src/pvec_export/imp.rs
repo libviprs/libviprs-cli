@@ -9,7 +9,7 @@ use std::path::Path;
 
 use pvec_container::source::MemorySource;
 use pvec_container::{ContainerReader, ReaderConfig};
-use pvec_facade::{Curve, EntityId, PvecReader, Transform2};
+use pvec_facade::{PvecReader, Transform2};
 use pvec_interchange::mvt::{MvtEntity, MvtOptions, MvtTile, Projection, TileId};
 use pvec_interchange::report::Report;
 use pvec_interchange::step::{StepEntity, StepOptions};
@@ -19,15 +19,6 @@ use serde_json::Value;
 use super::{ExportArgs, Format};
 use crate::pvec_raster::imp::{chain, read_file};
 use crate::{operational_error, usage_error};
-
-/// The `last_change` stamp of a STEP file: no clock is read, so the file is reproducible.
-const STEP_STAMP: &str = "1970-01-01T00:00:00";
-
-/// The layer every entity of a tile goes to; the file's own layer table is not read here.
-const TILE_LAYER: &str = "entities";
-
-/// The map a tile is cut from is 256 pixels wide per tile.
-const TILE_PX: f64 = 256.0;
 
 /// An export: the bytes, and what the writer says it did to each entity.
 struct Product {
@@ -59,32 +50,6 @@ fn reached(tiles: &[MvtTile]) -> u32 {
         .map(|r| r.entity_id().index())
         .collect();
     u32::try_from(ids.len()).expect("fewer entities than u32")
-}
-
-/// The drawing's declared bounds fitted into a square map with their top-left at the map's
-/// top-left (tile `0/0/0` is the whole drawing), source y up becoming tile y down.
-fn projection(reader: &PvecReader) -> Projection {
-    let b = reader.manifest().bounds;
-    let size = (b.max[0] - b.min[0]).max(b.max[1] - b.min[1]);
-    if !(size.is_finite() && size > 0.0) {
-        operational_error(
-            "the drawing's declared bounds have no extent, so there is nothing to tile",
-        );
-    }
-    let to_map = Transform2::new([1.0, 0.0, 0.0, -1.0, -b.min[0], b.max[1]])
-        .unwrap_or_else(|e| refused("the drawing's bounds cannot be mapped", &e));
-    Projection::new(to_map, size, TILE_PX)
-        .unwrap_or_else(|e| refused("the drawing's bounds cannot be tiled", &e))
-}
-
-fn tile_entities(entities: &[(EntityId, Curve)]) -> Vec<MvtEntity> {
-    entities
-        .iter()
-        .map(|(id, curve)| {
-            MvtEntity::new(*id, TILE_LAYER, curve.clone())
-                .unwrap_or_else(|e| refused("building a tile entity", &e))
-        })
-        .collect()
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) {
@@ -174,7 +139,7 @@ pub(crate) fn run(a: &ExportArgs) {
                 .raster_placements()
                 .unwrap_or_else(|e| refused("reading the raster stream", &e))
                 .len();
-            let options = StepOptions::new(&name, STEP_STAMP)
+            let options = StepOptions::new(&name, "1970-01-01T00:00:00") // no clock is read, so the file is reproducible
                 .unwrap_or_else(|e| refused("the STEP header", &e))
                 .with_transform(transform(a.affine))
                 .with_rasters((0..u32::try_from(rasters).expect("few rasters")).collect());
@@ -193,12 +158,32 @@ pub(crate) fn run(a: &ExportArgs) {
             }
         }
         Format::Mvt | Format::Pmtiles => {
-            let projection = projection(&reader);
+            // The drawing's declared bounds fitted into a square map with their top-left at the
+            // map's top-left (tile 0/0/0 is the whole drawing), source y up becoming tile y down.
+            let b = reader.manifest().bounds;
+            let size = (b.max[0] - b.min[0]).max(b.max[1] - b.min[1]);
+            if !(size.is_finite() && size > 0.0) {
+                operational_error(
+                    "the drawing's declared bounds have no extent, so there is nothing to tile",
+                );
+            }
+            let to_map = Transform2::new([1.0, 0.0, 0.0, -1.0, -b.min[0], b.max[1]])
+                .unwrap_or_else(|e| refused("the drawing's bounds cannot be mapped", &e));
+            // A tile is 256 pixels wide.
+            let projection = Projection::new(to_map, size, 256.0)
+                .unwrap_or_else(|e| refused("the drawing's bounds cannot be tiled", &e));
             let mut options = MvtOptions::default();
             if let Some(px) = a.error_px {
                 options.screen_tolerance_px = px;
             }
-            let list = tile_entities(&entities);
+            // Every entity goes to one layer; the file's own layer table is not read here.
+            let list: Vec<MvtEntity> = entities
+                .iter()
+                .map(|(id, curve)| {
+                    MvtEntity::new(*id, "entities", curve.clone())
+                        .unwrap_or_else(|e| refused("building a tile entity", &e))
+                })
+                .collect();
             let tile_at = |z: u8, x: u32, y: u32| {
                 let id = TileId::new(z, x, y).unwrap_or_else(|e| refused("the tile address", &e));
                 mvt::export_tile(&list, &projection, id, &options)
@@ -268,10 +253,16 @@ fn say_if_lossy(report: &Report, format: Format) {
     let total = doc["entities"]["total"].as_u64().unwrap_or(0);
     let largest = doc["approximation_error"]["max"].as_f64();
     let display = matches!(format, Format::Mvt | Format::Pmtiles);
+    // Tiles measure in the drawing's source units; gml and gpkg in the output's.
+    let unit = if display {
+        "source units"
+    } else {
+        "output units"
+    };
     eprintln!(
         "lossy export{}: {approximated} of {total} entities are approximations{}, {left_out} left out; \
          --report PATH writes the full record",
         if display { " (display only)" } else { "" },
-        largest.map_or(String::new(), |m| format!(" (largest error {m})")),
+        largest.map_or(String::new(), |m| format!(" (largest error {m} {unit})")),
     );
 }

@@ -237,13 +237,13 @@ fn export_report_may_not_reach_the_input_or_out_by_another_name() {
     let f = placeholder(&dir);
     let out = dir.join("o.gml");
     std::fs::write(&out, b"an earlier export").unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
     // a path with a detour in it
     report_refused(
         &f,
         &out,
         &dir.join("sub").join("..").join("placeholder.pvec"),
     );
-    std::fs::create_dir_all(dir.join("sub")).unwrap();
     report_refused(&f, &out, &dir.join("sub").join("..").join("o.gml"));
     // a relative name for a file that does not exist yet is the same file as OUT
     let fresh = dir.join("fresh.gml");

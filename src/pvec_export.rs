@@ -22,12 +22,6 @@ use crate::usage_error;
 #[cfg(feature = "pvec-export")]
 pub(crate) mod imp;
 
-/// The deepest zoom `--zooms` takes: 4^6 tiles is already 4096 files' worth of tessellation.
-const MAX_ZOOM: u8 = 6;
-
-/// The deepest zoom `--tile` takes.
-const MAX_TILE_ZOOM: u8 = 22;
-
 /// What to write.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Format {
@@ -147,8 +141,8 @@ fn tile(text: &str) -> Result<(u8, u32, u32), String> {
         x.parse::<u32>().map_err(|_| SHAPE)?,
         y.parse::<u32>().map_err(|_| SHAPE)?,
     );
-    if z > MAX_TILE_ZOOM {
-        return Err(format!("zoom {z} is past {MAX_TILE_ZOOM}"));
+    if z > 22 {
+        return Err(format!("zoom {z} is past 22"));
     }
     if u64::from(x) >= 1 << z || u64::from(y) >= 1 << z {
         return Err(format!(
@@ -159,7 +153,7 @@ fn tile(text: &str) -> Result<(u8, u32, u32), String> {
     Ok((z, x, y))
 }
 
-/// `MIN-MAX`, two whole numbers, at most [`MAX_ZOOM`].
+/// `MIN-MAX`, two whole numbers, at most 6 (4^6 tiles is already 4096 tiles of tessellation).
 fn zooms(text: &str) -> Result<(u8, u8), String> {
     let range = text
         .split_once('-')
@@ -168,8 +162,8 @@ fn zooms(text: &str) -> Result<(u8, u8), String> {
     if range.0 > range.1 {
         return Err(format!("{} is above {}", range.0, range.1));
     }
-    if range.1 > MAX_ZOOM {
-        return Err(format!("zoom {} is past {MAX_ZOOM}", range.1));
+    if range.1 > 6 {
+        return Err(format!("zoom {} is past 6", range.1));
     }
     Ok(range)
 }
@@ -207,17 +201,50 @@ pub(crate) fn check(a: &ExportArgs) {
             "it is the most a curve written as line segments may deviate, in the output's units",
         );
     }
-    let same = a.file == a.out
-        || std::fs::canonicalize(&a.file)
-            .ok()
-            .zip(std::fs::canonicalize(&a.out).ok())
-            .is_some_and(|(f, o)| f == o);
-    if same {
+    if same_file(&a.file, &a.out) {
         usage_error(
             "OUT is the input file",
             "an export never writes over the drawing it reads; give another path",
         );
     }
+    if let Some(report) = &a.report {
+        if same_file(&a.file, report) {
+            usage_error(
+                "--report is the input file",
+                "the report would overwrite the drawing; give another path",
+            );
+        }
+        if same_file(&a.out, report) {
+            usage_error(
+                "--report is OUT",
+                "the report and the export would replace each other; give another path",
+            );
+        }
+    }
+}
+
+/// Whether two paths name one file: the same path once the directory part is resolved (so a
+/// detour, a symlink or a file that does not exist yet is seen through), or on Unix the same
+/// device and inode (a hard link).
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let resolve = |p: &std::path::Path| {
+        std::fs::canonicalize(p).ok().or_else(|| {
+            let parent = p.parent().filter(|d| !d.as_os_str().is_empty());
+            let dir = std::fs::canonicalize(parent.unwrap_or(std::path::Path::new("."))).ok()?;
+            Some(dir.join(p.file_name()?))
+        })
+    };
+    if resolve(a).zip(resolve(b)).is_some_and(|(x, y)| x == y) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return (x.dev(), x.ino()) == (y.dev(), y.ino());
+        }
+    }
+    false
 }
 
 /// `viprs pvec export`.
