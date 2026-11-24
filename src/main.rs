@@ -48,6 +48,7 @@ mod input;
 
 /// `viprs pdf`, `viprs geo` and the planner query flags (#68).
 mod pdf_geo_plan;
+mod plot;
 
 /// The pipeline controls on `viprs pyramid`, and `viprs verify`
 /// (libviprs-cli#66).
@@ -141,6 +142,16 @@ enum Command {
     /// one, both on by default; a `--no-default-features` build leaves them out,
     /// like `pyramid --storage pvec` and `pmtiles to-pvec`, which put a raster into one.
     Pvec(Box<pvec_raster::PvecArgs>),
+
+    /// Plot a DWG's print layouts, or its model space, with a plot style table and a plotter config.
+    ///
+    /// `viprs plot DRAWING OUT` writes a PDF with a page per print layout (a PDF OUT), or with
+    /// `--format pmtiles` or `--format pvec` a directory with one archive or one .pvec per layout and an
+    /// index. `--ctb` and `--pc3` are read through the core's loaders (1 MiB each, 8 MiB for what a CTB
+    /// inflates to), and `--pc3` needs `--ctb`. A layout's own page setup wins over the PC3. `--layout` is
+    /// repeatable, `--model` plots model space as a PVEC, and `--layer-state NAME` applies a saved layer
+    /// state first. It needs the `pvec-convert` feature, and PMTiles the `pdfium` one.
+    Plot(Box<plot::PlotArgs>),
 }
 
 #[derive(Parser)]
@@ -1128,7 +1139,7 @@ fn main() {
     match matches.subcommand() {
         Some((
             "pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features" | "pdf" | "geo"
-            | "verify" | "vector" | "pvec",
+            | "verify" | "vector" | "pvec" | "plot",
             _,
         )) => {
             let cli = Cli::from_arg_matches(&matches)
@@ -1145,6 +1156,7 @@ fn main() {
                 Command::Verify(args) => verify::run(args),
                 Command::Vector(args) => vector::run(*args),
                 Command::Pvec(args) => pvec_raster::run(*args),
+                Command::Plot(args) => plot::run(*args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),
