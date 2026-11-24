@@ -45,7 +45,7 @@ enum PvecCommand {
     /// (`<stem>.<NN>-<slug>.pvec` and `<stem>.sheets.json`), one layout with
     /// `--layout`, or model space with `--model`. Exits 1 when a sheet failed or
     /// no sheet was written.
-    Convert(crate::pvec_convert::ConvertArgs),
+    Convert(Box<crate::pvec_convert::ConvertArgs>),
     /// List the paper layouts of a DWG in tab order, and whether each is a sheet
     /// that `convert` would write, without converting anything.
     Layouts(crate::pvec_convert::LayoutsArgs),
@@ -495,7 +495,7 @@ pub(crate) fn run_to_pvec(args: ToPvecArgs) {
 /// `viprs pvec ...`.
 pub fn run(args: PvecArgs) {
     match args.command {
-        PvecCommand::Convert(a) => crate::pvec_convert::run(a),
+        PvecCommand::Convert(a) => crate::pvec_convert::run(*a),
         PvecCommand::Layouts(a) => crate::pvec_convert::run_layouts(a),
         PvecCommand::Thumbnail(a) => crate::pvec_thumbnail::run(a),
         PvecCommand::Rasters(a) => {

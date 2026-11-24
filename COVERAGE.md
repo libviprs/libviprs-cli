@@ -32,7 +32,7 @@ The pin is its own commit (the first of CV2.1), gated on its own, so a regressio
 | `pvec-write`, `pvec-normalized`, `pvec-spline` | through `pvec-convert` and `dwg-acadrust` | covered |
 | `pvec-raster-thumbnail` | `pvec-raster-thumbnail` (in `full`, not in `default`) | covered (CV2.1) |
 | none (`pvec-interchange` is PVec's, not the core's) | `pvec-export` (in `full`, not in `default`) | covered (CV2.5) |
-| `jbig2` | none | missing, CV2.2 (JBIG2 image streams in a PDF page) |
+| `jbig2` | `jbig2` (not in `default`, and not in `full` until the core records its 24 clean fuzz hours) | covered (CV2.2); without it a PDF page that needs the decoder exits 1 and names the feature |
 | `serde` | none | not-CLI: it only widens the Rust API; every viprs `--json` output is its own schema |
 | `test-util` | none | not-CLI: a sink that sleeps on purpose, for stress tests |
 
@@ -147,14 +147,14 @@ The pin is its own commit (the first of CV2.1), gated on its own, so a regressio
 | `PvecConversion::element_rules` (layer, block, colour and lineweight rules for the regions step) | `convert --regions --element-rule` | covered (CV2.1) |
 | `PvecConversion::thumbnail`, `pvec::thumbnail` (a PNG of a sheet, strokes only) | `convert --thumbnail` (sheets only, a usage error with `--model` because the core does not cap the height), `pvec thumbnail` (caps width and height; feature `pvec-raster-thumbnail`) | covered (CV2.1) |
 | `recalibrate` (set, replace or remove the scale record) | `pvec calibrate`, through the facade's `recalibrate_file` | covered (CV1.4) |
-| `PdfConversion` (a PDF page to `.pvec`, image limits) | none | missing, CV2.2 |
-| `ConversionProfile`, `CapabilityPolicy`, `allowed_capabilities` | none | missing, CV2.2 |
-| Calibration at convert time (`Calibration`, `ScaleClaim`, georeference sidecar import) | none | missing, CV2.2 |
-| `ViewProfile` knobs, `SourceLimits`, `LeafConfig`, `SpillConfig`, `RegionConfig` tuning | none | missing, CV2.2 |
+| `PdfConversion` (a PDF page to `.pvec`, image limits) | `convert PAGE.pdf OUT --page N`, with `--max-images`, `--max-image-bytes`, `--max-image-stream-bytes`, `--max-image-pixels` and `--max-pixels-per-image` (needs `pvec-raster` too) | covered (CV2.2) |
+| `ConversionProfile`, `CapabilityPolicy`, `allowed_capabilities` | `convert --profile`, `--capability-policy`, `--allow-capability` | covered (CV2.2) |
+| Calibration at convert time (`Calibration`, `ScaleClaim`, georeference sidecar import) | `convert --scale`, `--plan-scale` with `--paper-unit`, `--measured` with `--distance`, `--scale-note`, `--scale-uncertainty`, `--georef-sidecar` | covered (CV2.2); a georeference itself (control points, a CRS) is not stated by any flag, since the core fits one only from a PDF viewport |
+| `ViewProfile` knobs, `SourceLimits`, `LeafConfig`, `SpillConfig`, `RegionConfig` tuning | `convert --off-layers` ... `--layer-visible` (the view rules), `--max-block-depth` ... `--max-name-bytes` (one flag per limit), `--leaf-capacity` and `--tier0-max-error`, `--spill-dir` and `--spill-budget`, `--region-gap` ... `--region-keep-unlabelled` | covered (CV2.2) |
 | `paper_sheets` (list paper layouts without converting) | `pvec layouts` | covered (CV2.1) |
 | `PdfPlot` (DWG layouts to a PDF), `PlotSettings`, PC3 and plot style files (`load_pc3`, `load_plot_style`) | none | missing, #157 (`viprs plot`) |
 | `cad_manifest`, `CadChoices`, `apply_choices`, `check_layer_state`, `resolve_visibility` (layer states and visibility choices, `LayerStateNotFound`) | none | missing, later (the plot work in #157 reads it first) |
-| `PdfConversion` layer choices (`pdf_manifest`, `apply_pdf_layers`, `PdfLayerChoices`) | none | missing, CV2.2 |
+| `PdfConversion` layer choices (`pdf_manifest`, `apply_pdf_layers`, `PdfLayerChoices`) | none | missing, later (CV2.2 did the page and the image limits, not these) |
 | `PvecConversion::{images, xref, plot_settings, plot_style_table}` (DWG images, external references, plot settings at convert time) | none | missing, later |
 | `deadline`, `cancel` and `observer` on `PvecConversion`, `PvecLayoutSet` and `PdfPlot`; the `code()` strings of the error types | SIGINT is the cancel token of `convert`; no deadline flag, no observer, the codes are not printed | partial, later |
 | Raster pyramids into `.pvec` | `pyramid --storage pvec`, `pmtiles to-pvec`, `pvec rasters` | covered |

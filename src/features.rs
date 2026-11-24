@@ -21,6 +21,7 @@ const FEATURES: &[(&str, bool)] = &[
     ("avif", cfg!(feature = "avif")),
     ("dwg-acadrust", cfg!(feature = "dwg-acadrust")),
     ("dwg-acadsharp", cfg!(feature = "dwg-acadsharp")),
+    ("jbig2", cfg!(feature = "jbig2")),
     ("jp2k", cfg!(feature = "jp2k")),
     ("jxl", cfg!(feature = "jxl")),
     ("object-store-sink", cfg!(feature = "object-store-sink")),
