@@ -136,10 +136,16 @@ struct DrawingArgs {
 
     /// Deepest INSERT nesting either reader follows. acadrust's default is 64; ACadSharp sets
     /// none unless `--hardened` (64).
+    ///
+    /// The two readers count nesting their own way. On plain nested INSERTs they agree: a
+    /// drawing nested six deep is refused at 5 and read at 6 by both. On some drawings ACadSharp
+    /// counts deeper than acadrust does (one of the test drawings needs 3 under ACadSharp and 1
+    /// under acadrust), so leave room when you switch readers.
     #[arg(
         long,
         value_name = "N",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::value_parser!(u32).range(1..)
     )]
     #[cfg_attr(
         not(any(feature = "dwg-acadrust", feature = "dwg-acadsharp")),
@@ -152,7 +158,8 @@ struct DrawingArgs {
     #[arg(
         long,
         value_name = "N",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     #[cfg_attr(
         not(any(feature = "dwg-acadrust", feature = "dwg-acadsharp")),
@@ -165,7 +172,8 @@ struct DrawingArgs {
     #[arg(
         long,
         value_name = "N",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     #[cfg_attr(
         not(any(feature = "dwg-acadrust", feature = "dwg-acadsharp")),
@@ -177,7 +185,8 @@ struct DrawingArgs {
     #[arg(
         long,
         value_name = "N",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
     )]
     max_spline_control_points: Option<usize>,
 
@@ -186,7 +195,8 @@ struct DrawingArgs {
     #[arg(
         long,
         value_name = "N",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
     )]
     max_spline_knots: Option<usize>,
 
@@ -195,7 +205,8 @@ struct DrawingArgs {
     #[arg(
         long,
         value_name = "N",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     max_insert_grid: Option<u64>,
 
@@ -204,23 +215,27 @@ struct DrawingArgs {
     #[arg(
         long,
         value_name = "N",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     max_expanded_instances: Option<u64>,
 
     /// acadrust only: estimated bytes of entity data held or produced. 2 GiB by default.
+    /// Spelled like the decode limits' `--max-alloc-bytes`; the field is `max_allocation_bytes`.
     #[arg(
         long,
         value_name = "BYTES",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
-    max_allocation_bytes: Option<u64>,
+    max_alloc_bytes: Option<u64>,
 
     /// acadrust only: longest layer, block or class name, in bytes. 1020 by default.
     #[arg(
         long,
         value_name = "BYTES",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
     )]
     max_name_bytes: Option<usize>,
 
@@ -229,7 +244,8 @@ struct DrawingArgs {
     #[arg(
         long,
         value_name = "BYTES",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     max_input_bytes: Option<u64>,
 
@@ -238,7 +254,8 @@ struct DrawingArgs {
     #[arg(
         long,
         value_name = "BYTES",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     max_string_bytes: Option<u64>,
 
@@ -246,7 +263,8 @@ struct DrawingArgs {
     #[arg(
         long,
         value_name = "BYTES",
-        help_heading = "Reader limits (layered over --hardened)"
+        help_heading = "Reader limits (layered over --hardened)",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     max_output_bytes: Option<u64>,
 }
@@ -593,10 +611,7 @@ fn with_drawing<T>(args: &DrawingArgs, then: impl FnOnce(&dyn CadDrawing) -> T) 
                     "--max-expanded-instances",
                     args.max_expanded_instances.is_some(),
                 ),
-                (
-                    "--max-allocation-bytes",
-                    args.max_allocation_bytes.is_some(),
-                ),
+                ("--max-alloc-bytes", args.max_alloc_bytes.is_some()),
                 ("--max-name-bytes", args.max_name_bytes.is_some()),
             ],
             "acadrust",
@@ -617,42 +632,12 @@ fn with_drawing<T>(args: &DrawingArgs, then: impl FnOnce(&dyn CadDrawing) -> T) 
         #[cfg(feature = "dwg-acadrust")]
         ProviderKind::Acadrust => {
             use libviprs::cad::acadrust::AcadrustDecoder;
-            // `SourceLimits` is non-exhaustive, so it is the defaults with the flags written over
-            // them. With no flag this is exactly what an unlimited decoder walks under.
-            let mut limits = libviprs::pvec::SourceLimits::default();
-            if let Some(v) = args.max_block_depth {
-                limits.max_block_depth = v;
-            }
-            if let Some(v) = args.max_entities {
-                limits.max_entities = v;
-            }
-            if let Some(v) = args.max_polyline_points {
-                limits.max_polyline_vertices = usize::try_from(v).unwrap_or(usize::MAX);
-            }
-            if let Some(v) = args.max_spline_control_points {
-                limits.max_spline_control_points = v;
-            }
-            if let Some(v) = args.max_spline_knots {
-                limits.max_spline_knots = v;
-            }
-            if let Some(v) = args.max_insert_grid {
-                limits.max_insert_grid = v;
-            }
-            if let Some(v) = args.max_expanded_instances {
-                limits.max_expanded_instances = v;
-            }
-            if let Some(v) = args.max_allocation_bytes {
-                limits.max_allocation_bytes = v;
-            }
-            if let Some(v) = args.max_name_bytes {
-                limits.max_name_bytes = v;
-            }
             let base = if args.hardened {
                 AcadrustDecoder::hardened()
             } else {
                 AcadrustDecoder::new()
             };
-            Ok(Box::new(base.with_limits(limits)))
+            Ok(Box::new(base.with_limits(source_limits(args))))
         }
         #[cfg(feature = "dwg-acadsharp")]
         ProviderKind::AcadSharp => {
@@ -694,6 +679,42 @@ fn with_drawing<T>(args: &DrawingArgs, then: impl FnOnce(&dyn CadDrawing) -> T) 
         Err(e) => operational_error(&format!("{}: {}", args.input.display(), with_causes(&e))),
     };
     then(drawing.as_ref())
+}
+
+/// The acadrust INSERT-walk limits the flags ask for. `SourceLimits` is non-exhaustive, so it is
+/// the library's defaults with each flag that was given written over its field; with none given
+/// it is exactly what an unlimited decoder walks under.
+#[cfg(feature = "dwg-acadrust")]
+fn source_limits(args: &DrawingArgs) -> libviprs::pvec::SourceLimits {
+    let mut limits = libviprs::pvec::SourceLimits::default();
+    if let Some(v) = args.max_block_depth {
+        limits.max_block_depth = v;
+    }
+    if let Some(v) = args.max_entities {
+        limits.max_entities = v;
+    }
+    if let Some(v) = args.max_polyline_points {
+        limits.max_polyline_vertices = usize::try_from(v).unwrap_or(usize::MAX);
+    }
+    if let Some(v) = args.max_spline_control_points {
+        limits.max_spline_control_points = v;
+    }
+    if let Some(v) = args.max_spline_knots {
+        limits.max_spline_knots = v;
+    }
+    if let Some(v) = args.max_insert_grid {
+        limits.max_insert_grid = v;
+    }
+    if let Some(v) = args.max_expanded_instances {
+        limits.max_expanded_instances = v;
+    }
+    if let Some(v) = args.max_alloc_bytes {
+        limits.max_allocation_bytes = v;
+    }
+    if let Some(v) = args.max_name_bytes {
+        limits.max_name_bytes = v;
+    }
+    limits
 }
 
 fn run_views(args: &ViewsArgs) {
@@ -1090,6 +1111,57 @@ mod tests {
                 .chain(["in.dwg"]),
         )
         .run
+    }
+
+    /// Every acadrust limit flag lands in its own `SourceLimits` field. `--max-insert-grid` has
+    /// no committed drawing that trips it (none holds a MINSERT), so this is where it is pinned.
+    #[cfg(feature = "dwg-acadrust")]
+    #[test]
+    fn every_acadrust_limit_flag_lands_in_its_source_limits_field() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            drawing: DrawingArgs,
+        }
+        let given = Wrap::parse_from([
+            "t",
+            "in.dwg",
+            "--max-block-depth",
+            "3",
+            "--max-entities",
+            "11",
+            "--max-polyline-points",
+            "12",
+            "--max-spline-control-points",
+            "13",
+            "--max-spline-knots",
+            "14",
+            "--max-insert-grid",
+            "15",
+            "--max-expanded-instances",
+            "16",
+            "--max-alloc-bytes",
+            "17",
+            "--max-name-bytes",
+            "18",
+        ])
+        .drawing;
+        let l = source_limits(&given);
+        assert_eq!(l.max_block_depth, 3);
+        assert_eq!(l.max_entities, 11);
+        assert_eq!(l.max_polyline_vertices, 12);
+        assert_eq!(l.max_spline_control_points, 13);
+        assert_eq!(l.max_spline_knots, 14);
+        assert_eq!(l.max_insert_grid, 15);
+        assert_eq!(l.max_expanded_instances, 16);
+        assert_eq!(l.max_allocation_bytes, 17);
+        assert_eq!(l.max_name_bytes, 18);
+        let none = Wrap::parse_from(["t", "in.dwg"]).drawing;
+        assert_eq!(
+            source_limits(&none),
+            libviprs::pvec::SourceLimits::default()
+        );
     }
 
     #[test]
