@@ -1,6 +1,6 @@
 # viprs coverage of libviprs and pvec
 
-I keep this file as the map of what `viprs` exposes against what the two libraries it sits on can do. It is the follow-up to EPIC Q (#63), which brought the CLI level with libviprs 0.5.0. Since then libviprs grew DWG and PDF to PVec conversion and the CLI started reading `.pvec` files through PVec's own facade, so I re-audited both libraries against `viprs` at `b32a5b3` (2026-11-23). The epic that closes the gaps is #147.
+I keep this file as the map of what `viprs` exposes against what the two libraries it sits on can do. It is the follow-up to EPIC Q (#63), which brought the CLI level with libviprs 0.5.0. Since then libviprs grew DWG and PDF to PVec conversion and the CLI started reading `.pvec` files through PVec's own facade, so I re-audited both libraries against `viprs` at `b32a5b3` (2026-11-23), and again for CV2.1 (#150) against libviprs `4b443f2f` (2026-11-24), the pin this file now describes. The epic that closes the gaps is #147.
 
 Status words:
 
@@ -13,10 +13,10 @@ Status words:
 
 | Dependency | Pinned rev | Upstream main | What the difference holds |
 |---|---|---|---|
-| libviprs | `71cbbe0` | `98e57251` (44 commits ahead) | Only `src/cad`, `src/pvec`, `src/pvec_convert` changed: `paper_sheets`, `PvecConversion::{annotations, element_rules}`, PDF image limits, `frozen_text`/`no_plot_text` visibility. Ops, codecs, engine, sinks and PMTiles are identical. |
-| pvec (facade, capabilities, geometry) | `e1a768ba` | `419535c` (12 commits ahead) | `PreviewStyle` (viewer only) and four new paint-driver capabilities. Nothing a CLI needs. libviprs main pins the same `e1a768ba`. |
+| libviprs | `4b443f2f` (moved from `71cbbe0` by CV2.1) | `4b443f2f`, the pin is main's tip | The old pin was 312 commits behind this main, not the 44 the first audit counted. Under `src/` the delta was 37 files, +9704/-705, all in `src/pvec`, `src/pvec_convert`, `src/cad`, `src/cancel.rs`, `src/observe.rs` and `src/lib.rs`: `paper_sheets`, `PvecConversion::{annotations, element_rules, thumbnail, plot_settings, deadline}`, `pvec::thumbnail`, the plot side (`PdfPlot`, PC3 and plot style files, `CadManifest` and layer choices), PDF layers and xrefs. Ops, codecs, engine, sinks and PMTiles are identical, and the crate is still 0.6.1. |
+| pvec (facade, capabilities, container, components, geometry) | `e1a768ba` | `419535c` (12 commits ahead) | `PreviewStyle` (viewer only) and four new paint-driver capabilities. Nothing a CLI needs. libviprs `4b443f2f` pins the same `e1a768ba`, and `tests/pvec_rev_lockstep_150.rs` fails if this crate and the pinned core ever name different ones. |
 
-Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin stays with the core's.
+The pin is its own commit (the first of CV2.1), gated on its own, so a regression bisects to the pin and not to a command. The pvec pin stays with the core's; when the core moves it, the same test says so.
 
 ## Cargo features
 
@@ -30,6 +30,7 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 | `object-store-sink`, `s3` | same names | covered (see the object store row) |
 | `pvec-raster`, `pvec-convert` | same names (default) | covered |
 | `pvec-write`, `pvec-normalized`, `pvec-spline` | through `pvec-convert` and `dwg-acadrust` | covered |
+| `pvec-raster-thumbnail` | `pvec-raster-thumbnail` (in `full`, not in `default`) | covered (CV2.1) |
 | `jbig2` | none | missing, CV2.2 (JBIG2 image streams in a PDF page) |
 | `serde` | none | not-CLI: it only widens the Rust API; every viprs `--json` output is its own schema |
 | `test-util` | none | not-CLI: a sink that sleeps on purpose, for stress tests |
@@ -141,13 +142,20 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 | Capability | viprs `pvec` | Status |
 |---|---|---|
 | DWG to `.pvec` per paper layout, one layout, or model space; stem; unit; geometry only; regions | `convert` | covered |
+| `PvecConversion::annotations` (TEXT, MTEXT and the rest into the text stream, HATCH and SOLID into the hatch stream) | `convert --annotations` | covered (CV2.1); `texts` and `fills` on their own are missing, later |
+| `PvecConversion::element_rules` (layer, block, colour and lineweight rules for the regions step) | `convert --regions --element-rule` | covered (CV2.1) |
+| `PvecConversion::thumbnail`, `pvec::thumbnail` (a PNG of a sheet, strokes only) | `convert --thumbnail` (sheets only, a usage error with `--model` because the core does not cap the height), `pvec thumbnail` (caps width and height; feature `pvec-raster-thumbnail`) | covered (CV2.1) |
 | `recalibrate` (set, replace or remove the scale record) | `pvec calibrate`, through the facade's `recalibrate_file` | covered (CV1.4) |
 | `PdfConversion` (a PDF page to `.pvec`, image limits) | none | missing, CV2.2 |
 | `ConversionProfile`, `CapabilityPolicy`, `allowed_capabilities` | none | missing, CV2.2 |
 | Calibration at convert time (`Calibration`, `ScaleClaim`, georeference sidecar import) | none | missing, CV2.2 |
 | `ViewProfile` knobs, `SourceLimits`, `LeafConfig`, `SpillConfig`, `RegionConfig` tuning | none | missing, CV2.2 |
-| `paper_sheets` (list paper layouts without converting) | none | missing, CV2.1, needs the pin bump |
-| `PvecConversion::{annotations, element_rules}` | none | missing, CV2.1, needs the pin bump |
+| `paper_sheets` (list paper layouts without converting) | `pvec layouts` | covered (CV2.1) |
+| `PdfPlot` (DWG layouts to a PDF), `PlotSettings`, PC3 and plot style files (`load_pc3`, `load_plot_style`) | none | missing, #157 (`viprs plot`) |
+| `cad_manifest`, `CadChoices`, `apply_choices`, `check_layer_state`, `resolve_visibility` (layer states and visibility choices, `LayerStateNotFound`) | none | missing, later (the plot work in #157 reads it first) |
+| `PdfConversion` layer choices (`pdf_manifest`, `apply_pdf_layers`, `PdfLayerChoices`) | none | missing, CV2.2 |
+| `PvecConversion::{images, xref, plot_settings, plot_style_table}` (DWG images, external references, plot settings at convert time) | none | missing, later |
+| `deadline`, `cancel` and `observer` on `PvecConversion`, `PvecLayoutSet` and `PdfPlot`; the `code()` strings of the error types | SIGINT is the cancel token of `convert`; no deadline flag, no observer, the codes are not printed | partial, later |
 | Raster pyramids into `.pvec` | `pyramid --storage pvec`, `pmtiles to-pvec`, `pvec rasters` | covered |
 | `drift`, `dump` | none | not-CLI: fixture regression tooling (the `pvec_drift` example) |
 

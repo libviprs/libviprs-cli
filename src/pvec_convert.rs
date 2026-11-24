@@ -6,10 +6,14 @@
 //! viprs pvec convert <drawing.dwg> <out-dir> --model         model space, one .pvec
 //! viprs pvec convert <drawing.dwg> <out-dir> --regions       also rooms and corridors
 //! viprs pvec convert <drawing.dwg> <out-dir> --geometry-only no layer, line style or provenance
+//! viprs pvec convert <drawing.dwg> <out-dir> --annotations   also text, hatches and solid fills
+//! viprs pvec convert <drawing.dwg> <out-dir> --regions --element-rule layer:A-WALL*=wall
+//! viprs pvec convert <drawing.dwg> <out-dir> --thumbnail 512  also a PNG of each sheet
+//! viprs pvec layouts <drawing.dwg>                           the paper layouts, nothing converted
 //! ```
 //!
 //! A thin call onto `libviprs::pvec_convert`: `PvecLayoutSet` for the sheets, `PvecConversion` for
-//! model space. A sheet is `<stem>.<NN>-<slug>.pvec` with its report beside it and the set index
+//! model space, and `paper_sheets` for `viprs pvec layouts` (libviprs-cli#150). A sheet is `<stem>.<NN>-<slug>.pvec` with its report beside it and the set index
 //! `<stem>.sheets.json` written last; model space is `<stem>.pvec` and its report. This file
 //! parses arguments, prints one line per sheet and picks the exit code.
 //!
@@ -25,6 +29,84 @@ use std::path::PathBuf;
 use clap::Args;
 
 use crate::usage_error;
+
+/// The widest picture `--thumbnail` and `viprs pvec thumbnail` draw, in pixels.
+pub(crate) const MAX_THUMBNAIL_WIDTH: u32 = 4096;
+
+/// `viprs pvec layouts`.
+#[derive(Args)]
+pub(crate) struct LayoutsArgs {
+    /// The drawing (a DWG).
+    drawing: PathBuf,
+
+    /// Print `{"v": 1, "layouts": [...]}` instead of one line per layout. A layout is an
+    /// object with `tab_order` (1-based, the number `pvec convert` gives its file), `layout`,
+    /// `sheet` (whether it would be converted) and `skip`: `null` for a sheet, else `"empty"`
+    /// or `"empty-after-view"`.
+    #[arg(long)]
+    json: bool,
+}
+
+/// One `--element-rule`: what it matches and whether the lines it matches are walls or columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "pvec-convert"), allow(dead_code))]
+pub(crate) struct ElementRule {
+    matcher: Matcher,
+    wall: bool,
+}
+
+/// What an `--element-rule` matches against, as the core's rule list takes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "pvec-convert"), allow(dead_code))]
+enum Matcher {
+    Layer(String),
+    Block(String),
+    Colour(u8),
+    Lineweight(u16),
+}
+
+/// `KIND:MATCH=CLASS`, for `--element-rule`. KIND is `layer` or `block` (a glob with `*` and
+/// `?`, case ignored), `colour` (an AutoCAD colour index, 1 to 255) or `lineweight` (hundredths of
+/// a millimetre); CLASS is `wall` or `column`.
+fn parse_element_rule(spec: &str) -> Result<ElementRule, String> {
+    let shape = "expected KIND:MATCH=CLASS, such as layer:A-WALL*=wall";
+    let (left, class) = spec.rsplit_once('=').ok_or(shape)?;
+    let (kind, pattern) = left.split_once(':').ok_or(shape)?;
+    let wall = match class.to_ascii_lowercase().as_str() {
+        "wall" => true,
+        "column" => false,
+        _ => return Err(format!("the class is `wall` or `column`, not {class:?}")),
+    };
+    if pattern.is_empty() {
+        return Err(format!("the match after `{kind}:` is empty"));
+    }
+    let matcher = match kind.to_ascii_lowercase().as_str() {
+        "layer" => Matcher::Layer(pattern.to_owned()),
+        "block" => Matcher::Block(pattern.to_owned()),
+        "colour" | "color" => match pattern.parse::<u8>() {
+            Ok(n) if n >= 1 => Matcher::Colour(n),
+            _ => {
+                return Err(format!(
+                    "a colour is an AutoCAD colour index from 1 to 255, not {pattern:?}"
+                ));
+            }
+        },
+        "lineweight" => pattern
+            .parse::<u16>()
+            .map(Matcher::Lineweight)
+            .map_err(|_| {
+                format!(
+                    "a lineweight is a whole number of hundredths of a millimetre, not {pattern:?}"
+                )
+            })?,
+        _ => {
+            return Err(format!(
+                "the kind is `layer`, `block`, `colour` or `lineweight`, not {kind:?}"
+            ));
+        }
+    };
+    Ok(ElementRule { matcher, wall })
+}
 
 /// `viprs pvec convert`.
 #[derive(Args)]
@@ -66,9 +148,46 @@ pub(crate) struct ConvertArgs {
     /// they are off unless asked for.
     #[arg(long)]
     regions: bool,
+
+    /// Also carry text (TEXT, MTEXT, ATTDEF, a MULTILEADER's text, a TOLERANCE's frame text) in the
+    /// text stream and HATCH and SOLID in the hatch stream. Off by default, and it needs the line
+    /// style stream, so it cannot be combined with --geometry-only.
+    #[arg(long, conflicts_with = "geometry_only")]
+    annotations: bool,
+
+    /// Which lines are walls and columns for --regions (repeatable): KIND:MATCH=CLASS. KIND is
+    /// `layer` or `block` (a glob with * and ?, case ignored), `colour` (an AutoCAD colour
+    /// index, 1 to 255) or `lineweight` (hundredths of a millimetre); CLASS is `wall` or
+    /// `column`. Block rules win over layer rules, then colour, then lineweight, and the earlier
+    /// rule of a kind wins. The rules replace the default profile (A-WALL*, S-WALL*, A-COL*,
+    /// S-COL*, COLUMN*), so name every one you want. Needs --regions.
+    #[arg(
+        long = "element-rule",
+        value_name = "KIND:MATCH=CLASS",
+        requires = "regions",
+        value_parser = parse_element_rule
+    )]
+    element_rules: Vec<ElementRule>,
+
+    /// Also draw each converted sheet as a PNG WIDTH pixels wide, written beside its `.pvec` with
+    /// the extension `.png`. It draws strokes only, no text, no fills; the height follows the sheet. Needs
+    /// the `pvec-raster-thumbnail` feature (in `full`, not in the default build). Not with --model: draw
+    /// a model-space file with `viprs pvec thumbnail`, which caps the height.
+    #[arg(
+        long,
+        value_name = "WIDTH",
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_THUMBNAIL_WIDTH))
+    )]
+    thumbnail: Option<u32>,
 }
 
 pub(crate) fn run(args: ConvertArgs) {
+    if args.model && args.thumbnail.is_some() {
+        usage_error(
+            "--thumbnail cannot be used with --model",
+            "model space has no paper to bound its shape, so one stray far entity would make a huge picture; draw it with `viprs pvec thumbnail FILE OUT.png`, which caps the width and the height",
+        );
+    }
     if args.out_dir.exists() && !args.out_dir.is_dir() {
         usage_error(
             &format!("{} is not a directory", args.out_dir.display()),
@@ -91,12 +210,40 @@ pub(crate) fn run(args: ConvertArgs) {
         );
     }
     #[cfg(feature = "pvec-convert")]
-    imp::run(&args);
+    {
+        #[cfg(not(feature = "pvec-raster-thumbnail"))]
+        if args.thumbnail.is_some() {
+            crate::operational_error(
+                "`--thumbnail` is not in this build; rebuild with `--features pvec-raster-thumbnail`",
+            );
+        }
+        imp::run(&args);
+    }
     #[cfg(not(feature = "pvec-convert"))]
     {
         let _ = args;
         crate::operational_error(
             "`viprs pvec convert` is not in this build; rebuild with `--features pvec-convert`",
+        );
+    }
+}
+
+/// `viprs pvec layouts`: the drawing's paper layouts in tab order, and whether each is a sheet,
+/// without converting any of them.
+pub(crate) fn run_layouts(args: LayoutsArgs) {
+    if !args.drawing.is_file() {
+        crate::operational_error(&format!(
+            "{} does not exist or is not a file",
+            args.drawing.display()
+        ));
+    }
+    #[cfg(feature = "pvec-convert")]
+    imp::layouts(&args);
+    #[cfg(not(feature = "pvec-convert"))]
+    {
+        let _ = args;
+        crate::operational_error(
+            "`viprs pvec layouts` is not in this build; rebuild with `--features pvec-convert`",
         );
     }
 }
@@ -110,12 +257,14 @@ mod imp {
     use libviprs::cad::CadSource;
     use libviprs::pvec::DwgProvider;
     use libviprs::pvec::SourceUnit;
+    use libviprs::pvec::classify::{ElementClass, ElementRules, RuleMatch};
     use libviprs::pvec::components::StreamSelection;
     use libviprs::pvec::dwg_acadrust::AcadrustProvider;
+    use libviprs::pvec::provider::SourceColour;
     use libviprs::pvec::regions::RegionConfig;
     use libviprs::pvec::writer::WriteError;
     use libviprs::pvec_convert::{
-        LayoutSetError, PvecConversion, PvecConvertError, PvecLayoutSet, SheetSkip,
+        LayoutSetError, PvecConversion, PvecConvertError, PvecLayoutSet, SheetSkip, paper_sheets,
     };
 
     use crate::operational_error;
@@ -136,30 +285,112 @@ mod imp {
         }
     }
 
-    /// The unit, the component streams and the regions step, the same for model space and a sheet.
+    /// The unit, the component streams, the regions step and the thumbnail, the same for model
+    /// space and a sheet.
     fn configure<'a>(
         c: PvecConversion<'a>,
+        args: &ConvertArgs,
         unit: Option<SourceUnit>,
-        geometry_only: bool,
-        regions: bool,
         per_metre: f64,
     ) -> PvecConversion<'a> {
-        let c = c.components(if geometry_only {
-            StreamSelection::NONE
+        let c = c
+            .components(if args.geometry_only {
+                StreamSelection::NONE
+            } else {
+                StreamSelection::ALL
+            })
+            .annotations(args.annotations)
+            .regions(args.regions.then_some(RegionConfig {
+                // 0.5 m and 2.5 m, in the drawing's own unit.
+                gap_tolerance: 0.5 * per_metre,
+                corridor_max_width: 2.5 * per_metre,
+                corridor_min_aspect: 3.0,
+                max_faces: 1000,
+                keep_unlabelled: false,
+            }));
+        let c = if args.element_rules.is_empty() {
+            c
         } else {
-            StreamSelection::ALL
-        });
-        let c = c.regions(regions.then_some(RegionConfig {
-            // 0.5 m and 2.5 m, in the drawing's own unit.
-            gap_tolerance: 0.5 * per_metre,
-            corridor_max_width: 2.5 * per_metre,
-            corridor_min_aspect: 3.0,
-            max_faces: 1000,
-            keep_unlabelled: false,
-        }));
+            c.element_rules(
+                args.element_rules
+                    .iter()
+                    .fold(ElementRules::new(), |rules, r| {
+                        let matcher = match &r.matcher {
+                            Matcher::Layer(g) => RuleMatch::Layer(g.clone()),
+                            Matcher::Block(g) => RuleMatch::Block(g.clone()),
+                            Matcher::Colour(n) => RuleMatch::Colour(SourceColour::Aci(*n)),
+                            Matcher::Lineweight(w) => RuleMatch::Lineweight(*w),
+                        };
+                        rules.with_rule(
+                            matcher,
+                            if r.wall {
+                                ElementClass::Wall
+                            } else {
+                                ElementClass::Column
+                            },
+                        )
+                    }),
+            )
+        };
+        #[cfg(feature = "pvec-raster-thumbnail")]
+        let c = match args.thumbnail {
+            Some(width) => c.thumbnail(width),
+            None => c,
+        };
         match unit {
             Some(u) => c.unit(u),
             None => c,
+        }
+    }
+
+    /// The PNG a conversion drew, beside its `.pvec` with the extension `.png`.
+    #[cfg(feature = "pvec-raster-thumbnail")]
+    fn save_thumbnail(artifact: &Path, png: Option<&[u8]>) -> Result<(), String> {
+        let Some(png) = png else { return Ok(()) };
+        let to = artifact.with_extension("png");
+        std::fs::write(&to, png).map_err(|e| format!("cannot write {}: {e}", to.display()))
+    }
+
+    /// `viprs pvec layouts`.
+    pub(super) fn layouts(args: &LayoutsArgs) {
+        let sheets = match paper_sheets::<AcadrustProvider>(CadSource::Path(&args.drawing)) {
+            Ok(sheets) => sheets,
+            Err(e) => operational_error(&with_causes(&e)),
+        };
+        let skip = |s: &Option<SheetSkip>| match s {
+            None => None,
+            Some(SheetSkip::Empty) => Some("empty"),
+            Some(SheetSkip::EmptyAfterView) => Some("empty-after-view"),
+            Some(_) => Some("skipped"),
+        };
+        if args.json {
+            let layouts: Vec<_> = sheets
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "tab_order": s.tab_order,
+                        "layout": s.layout,
+                        "sheet": s.skip.is_none(),
+                        "skip": skip(&s.skip),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::json!({ "v": 1, "layouts": layouts }));
+        } else {
+            for s in &sheets {
+                println!(
+                    "{:>3} {}  {}",
+                    s.tab_order,
+                    s.layout,
+                    skip(&s.skip).unwrap_or("sheet")
+                );
+            }
+        }
+        if sheets.is_empty() {
+            eprintln!(
+                "{} has no paper layout; `viprs pvec convert --model` converts model space",
+                args.drawing.display()
+            );
         }
     }
 
@@ -224,9 +455,13 @@ mod imp {
         if args.model {
             let dest: PathBuf = args.out_dir.join(format!("{stem}.pvec"));
             let c = PvecConversion::new(CadSource::Path(&args.drawing), &dest).cancel(cancel);
-            match configure(c, unit, args.geometry_only, args.regions, per_metre).convert() {
+            match configure(c, args, unit, per_metre).convert() {
                 Ok(out) => {
                     eprintln!("model  written  {} ({} entities)", name(&dest), out.written);
+                    #[cfg(feature = "pvec-raster-thumbnail")]
+                    if let Err(e) = save_thumbnail(&dest, out.thumbnail.as_deref()) {
+                        fail(&e);
+                    }
                 }
                 Err(PvecConvertError::Cancelled) => std::process::exit(EXIT_INTERRUPTED),
                 Err(e) => fail(&explain(&e, unit.is_some())),
@@ -234,18 +469,9 @@ mod imp {
             return;
         }
 
-        let (geometry_only, regions) = (args.geometry_only, args.regions);
         let mut set = PvecLayoutSet::new(CadSource::Path(&args.drawing), &args.out_dir)
             .stem(stem)
-            .sheets(move |c| {
-                configure(
-                    c.cancel(cancel.clone()),
-                    unit,
-                    geometry_only,
-                    regions,
-                    per_metre,
-                )
-            });
+            .sheets(move |c| configure(c.cancel(cancel.clone()), args, unit, per_metre));
         if !args.layout.is_empty() {
             set = set.layouts(args.layout.iter().cloned());
         }
@@ -271,6 +497,12 @@ mod imp {
                 s.layout,
                 name(&s.file)
             );
+            #[cfg(feature = "pvec-raster-thumbnail")]
+            if let Ok(o) = &s.outcome
+                && let Err(e) = save_thumbnail(&s.file, o.thumbnail.as_deref())
+            {
+                fail(&e);
+            }
         }
         if let Some(index) = &out.index {
             eprintln!("index  {}", name(index));

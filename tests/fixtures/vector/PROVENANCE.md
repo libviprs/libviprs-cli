@@ -29,3 +29,11 @@ libviprs's own, MIT). `g13_deep_blocks.dwg` nests INSERTs six deep, so `--max-bl
 readers can be held to the same depth.
 
 - bytes: 11051, sha256: `2749f007a82dd4156b61c151ebb6097cb1d36d4551d6e31611b8d39e86fb0f19`
+
+`g13_text.dwg` and `g13_hatch.dwg` are libviprs `tests/fixtures/cad/g13/g13_text.dwg` and `g13_hatch.dwg` copied byte for byte at the
+CLI's core pin (`4b443f2f`), written by ACadSharp's `DwgWriter` 3.7.1 with libviprs's own content (MIT). The first holds a
+TEXT and an MTEXT and the second a HATCH, and neither has a line in it, so `viprs pvec convert --annotations` is the only
+way either converts to a sheet with anything in it (libviprs-cli#150). Their headers declare no unit, so `--model` needs `--unit`.
+
+- `g13_text.dwg`: 10699 bytes, sha256 `c791143334c6d2ccda33a72e7e85fc2fd93e2c1b8e8acd5a75e1b2254aa54e0f`
+- `g13_hatch.dwg`: 10827 bytes, sha256 `c8697b49ce3eed4bffee80d60c69963d44bf3aa5c1661a33021737b153970da9`

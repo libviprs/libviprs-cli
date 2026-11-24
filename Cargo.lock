@@ -21,7 +21,7 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 [[package]]
 name = "acadrust"
 version = "0.6.8"
-source = "git+https://github.com/libviprs/acadrust?rev=f1e00c11f6371c8cfcff2c726620a51a45a2ad1b#f1e00c11f6371c8cfcff2c726620a51a45a2ad1b"
+source = "git+https://github.com/libviprs/acadrust?rev=5bf63c7b1653fbb5a51f2f8a5a5a3f01a567c094#5bf63c7b1653fbb5a51f2f8a5a5a3f01a567c094"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -1411,7 +1411,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "libviprs"
 version = "0.6.1"
-source = "git+https://github.com/libviprs/libviprs?rev=71cbbe0f50519037766bf1116b910b33e0df7c15#71cbbe0f50519037766bf1116b910b33e0df7c15"
+source = "git+https://github.com/libviprs/libviprs?rev=4b443f2f81e2701559127904a9008c09387c5122#4b443f2f81e2701559127904a9008c09387c5122"
 dependencies = [
  "ab_glyph",
  "acadrust",

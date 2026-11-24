@@ -155,6 +155,10 @@ fn expected_features() -> Vec<&'static str> {
         ("pdfium-static", cfg!(feature = "pdfium-static")),
         ("pvec-convert", cfg!(feature = "pvec-convert")),
         ("pvec-raster", cfg!(feature = "pvec-raster")),
+        (
+            "pvec-raster-thumbnail",
+            cfg!(feature = "pvec-raster-thumbnail"),
+        ),
         ("s3", cfg!(feature = "s3")),
         ("svg", cfg!(feature = "svg")),
         ("tracing", cfg!(feature = "tracing")),

@@ -76,7 +76,8 @@ cargo install --path .
 | `dwg-acadrust` (default) | the default DWG reader behind `viprs vector views`, `build` and `report`: the pure Rust acadrust reader, no native library (see [`viprs vector`](#viprs-vector)) |
 | `dwg-acadsharp` | the experimental DWG reader, chosen with `viprs vector ... --provider acadsharp` (ACadSharp through `acadsharp-rs`, over a native library). In `full`, not in the default set |
 | `pvec-raster` (default) | the `.pvec` raster commands, `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters`, and the read side, `viprs pvec info`, `validate`, `text` and `calibrate` (see [`viprs pvec`](#viprs-pvec)) |
-| `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout (see [`viprs pvec`](#viprs-pvec)); turns `dwg-acadrust` on |
+| `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout, and `viprs pvec layouts` (see [`viprs pvec`](#viprs-pvec)); turns `dwg-acadrust` on |
+| `pvec-raster-thumbnail` | `viprs pvec thumbnail` and `viprs pvec convert --thumbnail`, a PNG of a sheet with strokes only (no text, no fills). In `full`, not in the default set; turns `pvec-convert` and `svg` on |
 | `object-store-sink` | the `object-store://` sink, which writes the object-store key layout into a directory and uploads nothing |
 | `s3` | the same sink under its old name (the core treats `s3` as a deprecated alias for `object-store-sink`); `s3://` still works and prints one deprecation line |
 | `packfile` | the `packfile://` tar/zip sink |
@@ -332,7 +333,24 @@ viprs pmtiles pack ./tiles plan.pmtiles --width 5000 --height 3000 --tile-size 2
 viprs pvec convert plan.dwg sheets/                    # every paper layout
 viprs pvec convert plan.dwg sheets/ --layout A-101     # only that one (repeatable)
 viprs pvec convert plan.dwg out/ --model --unit m      # model space, one plan.pvec
+viprs pvec convert plan.dwg sheets/ --annotations      # also text, hatches and solid fills
+viprs pvec convert plan.dwg out/ --model --unit m --regions \
+  --element-rule 'layer:A-WALL*=wall' --element-rule 'block:COLUMN*=column'
+viprs pvec layouts plan.dwg                            # the paper layouts, nothing converted
+viprs pvec layouts plan.dwg --json
 ```
+
+`viprs pvec layouts` lists the paper layouts in tab order (the number `convert` gives each file) and says whether each is a sheet or empty, without converting anything, so a caller learns how many pages a drawing has before it converts the first. A layout listed as a sheet can still come out empty when it is converted, if nothing of it survives the print profile (a layer that is off, say); only the conversion knows that. `--json` prints `{"v": 1, "layouts": [{"tab_order", "layout", "sheet", "skip"}]}`. It exits 0 with a drawing that has no paper layout (and says so on stderr), and 1 for a drawing that does not open.
+
+`--annotations` also carries TEXT, MTEXT, ATTDEF, a MULTILEADER's text and a TOLERANCE's frame text into PVec's text stream, and HATCH and SOLID into its hatch stream. They are off by default, and they need the line style stream, so the flag cannot be combined with `--geometry-only`.
+`--element-rule KIND:MATCH=CLASS` (repeatable, and only with `--regions`) says which lines are walls and columns for the regions step: `layer:` and `block:` take a glob (`*` and `?`, case ignored), `colour:` an AutoCAD colour index from 1 to 255 and `lineweight:` hundredths of a millimetre, and the class is `wall` or `column`. The rules replace the core's default profile (`A-WALL*`, `S-WALL*`, `A-COL*`, `S-COL*`, `COLUMN*`), so name every one you want; a drawing none of them match falls back to every straight line, and the report says which with `regions.wall_source` (`layers` or `geometry`).
+
+```bash
+viprs pvec convert plan.dwg sheets/ --thumbnail 512     # also a PNG beside each sheet
+viprs pvec thumbnail sheets/plan.01-A-101.pvec a101.png --width 800
+```
+
+`--thumbnail WIDTH` and `viprs pvec thumbnail FILE OUT.png [--width N]` draw the strokes of a sheet black on opaque white, one pixel wide: no text, no fills. The width is 1 to 4096 (512 for `pvec thumbnail` when you give none), and the height follows the sheet's bounds, so a long thin sheet is a long thin picture. `pvec thumbnail` refuses a derived height past 16384 (exit 1, naming `--width`). `convert --thumbnail` cannot check that before it draws, because the core derives the height from the paper it has just read, so it only takes sheets, whose paper bounds the shape: with `--model` it is a usage error (exit 2) that points at `viprs pvec thumbnail`, since one stray far entity would make model space a huge picture. A convert writes `<name>.png` beside each sheet's `.pvec`. Both need the `pvec-raster-thumbnail` feature, which is in `full` and not in the default build: without it they exit 1 and name it, and a zero or too wide width is exit 2 in every build.
 
 A sheet is `<stem>.<NN>-<slug>.pvec` with its `.report.json` beside it, `NN` its position among all the paper layouts and the slug its name made file-safe, and `<stem>.sheets.json` is written last and lists every layout with its file and status. The stem is the drawing's, or `--stem`. A layout with nothing to print is listed and gets no file. The command exits 1 when a sheet failed, when no sheet was written (no paper layout, or only empty ones; model space is `--model`, never a fallback) or when `--layout` names a layout the drawing does not have, 2 for a usage mistake and 130 on Ctrl-C. It needs the `pvec-convert` feature, on by default.
 
