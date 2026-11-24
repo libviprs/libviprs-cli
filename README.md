@@ -1,5 +1,5 @@
 <p align="center">
-undefined  <img src="https://raw.githubusercontent.com/libviprs/libviprs/main/images/libviprs-logo-claws.svg" alt="libviprs" width="200">
+  <img src="https://raw.githubusercontent.com/libviprs/libviprs/main/images/libviprs-logo-claws.svg" alt="libviprs" width="200">
 </p>
 
 <h1 align="center">libviprs-cli</h1>

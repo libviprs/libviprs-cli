@@ -29,7 +29,7 @@
 //! model space is `--model`, never a fallback), or the drawing did not convert; 2 for a usage
 //! mistake; 130 when Ctrl-C stopped it, with the sheets already published left in place and no index.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Args;
 
@@ -215,12 +215,6 @@ pub(crate) struct ConvertArgs {
     region_tuning: RegionArgs,
 }
 
-/// Whether `path` names a PDF, which is what sends a conversion down the PDF path.
-fn is_pdf(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-}
-
 impl ConvertArgs {
     /// The flags given that only a DWG takes.
     fn dwg_only(&self) -> Vec<&'static str> {
@@ -275,7 +269,11 @@ pub(crate) fn run(args: ConvertArgs) {
             "give a name with no path separator, such as `--stem plan`",
         );
     }
-    let a_pdf = is_pdf(&args.drawing);
+    // A name ending in .pdf, any case, is what sends a conversion down the PDF path.
+    let a_pdf = args
+        .drawing
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
     let misplaced = if a_pdf {
         args.dwg_only()
     } else {
@@ -443,15 +441,6 @@ mod imp {
         Calibration::new(Some(scale), None, None)
             .map(Some)
             .map_err(|e| format!("the scale was refused: {}", with_causes(&e)))
-    }
-
-    /// The calibration id of a retired georeference sidecar. A file that cannot be read, or has a
-    /// schema version this reader does not know, is an error before anything is converted.
-    #[allow(deprecated)]
-    fn sidecar_id(path: &Path) -> Result<Option<String>, String> {
-        let GeoreferenceHandoff::V1(v1) = GeoreferenceHandoff::read_from(path)
-            .map_err(|e| format!("{}: {}", path.display(), with_causes(&e)))?;
-        Ok(v1.calibration_id)
     }
 
     /// Brings the sidecar's id into the artifact at `artifact`: the calibration the flags state,
@@ -768,11 +757,15 @@ mod imp {
             Ok(c) => c,
             Err(e) => crate::usage_error(&e, "see `viprs pvec convert --help` for the scale flags"),
         };
-        let sidecar = args
-            .calibration
-            .georef_sidecar
-            .as_deref()
-            .and_then(|path| match sidecar_id(path) {
+        let sidecar = args.calibration.georef_sidecar.as_deref().and_then(|path| {
+            // A file that cannot be read, or has a schema version this reader does not know,
+            // stops the run before anything is converted.
+            #[allow(deprecated)]
+            let id = GeoreferenceHandoff::read_from(path).map(|h| {
+                let GeoreferenceHandoff::V1(v1) = h;
+                v1.calibration_id
+            });
+            match id {
                 Ok(Some(_)) => calibration.clone().map(|c| (path, c)),
                 Ok(None) => {
                     eprintln!(
@@ -781,8 +774,9 @@ mod imp {
                     );
                     None
                 }
-                Err(e) => operational_error(&e),
-            });
+                Err(e) => operational_error(&format!("{}: {}", path.display(), with_causes(&e))),
+            }
+        });
         // A directory this run made goes again when the run writes nothing into it.
         let created = !args.out_dir.exists();
         if let Err(e) = std::fs::create_dir_all(&args.out_dir) {

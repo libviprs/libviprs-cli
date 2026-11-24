@@ -79,7 +79,7 @@ pvec-raster-thumbnail = ["libviprs/pvec-raster-thumbnail", "pvec-convert", "svg"
 # 24 hours of its fuzz target run clean, and `full` is what gets shipped and tested as "everything". Without
 # it a page whose images are JBIG2 exits 1 and names this feature.
 jbig2 = ["libviprs/jbig2"]
-# Everything above except `pdfium-static`, `jbig2`, which trades the runtime-binding
+# Everything above except `pdfium-static` and `jbig2`. `pdfium-static` trades the runtime-binding
 # pdfium path for a link-time one and cannot be on for a build that has no
 # static libpdfium to link.
 full = [
