@@ -57,8 +57,8 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 | JPEG XL save (lossless) | `jxlsave` | covered |
 | JPEG XL load `page`, `n` (`decode_jxl_with`) | `jxlload --page --n` | covered (CV1.5) |
 | JPEG 2000 save lossless with tile size; load | `jp2ksave`, `jp2kload` | covered |
-| JPEG 2000 lossy (`Compression::Lossy { ratio }`) | `jp2ksave --ratio N`, a viprs extension because vips takes a `Q` | covered (CV1.5) |
-| Radiance save `exposure`, `aspect` | `radsave --exposure --aspect` (viprs extensions) | covered (CV1.5) |
+| JPEG 2000 lossy (`Compression::Lossy { ratio }`) | `jp2ksave --ratio N`, a hidden viprs extension because vips takes a `Q` | covered (CV1.5) |
+| Radiance save `exposure`, `aspect` | `radsave --exposure --aspect` (hidden viprs extensions) | covered (CV1.5) |
 | Radiance, FITS, CSV, matrix, PPM load and save; Ultra HDR load and save (`Q`, gain map shrink) | the vips-named loaders and savers | covered |
 | OpenEXR, NIfTI, Analyze, Matlab, AVIF, SVG (dpi, scale, unlimited) load | the vips-named loaders | covered |
 | `.v` read and write | every op OUT, `copy` | covered |
@@ -155,9 +155,13 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 
 | Capability | viprs | Status |
 |---|---|---|
-| `PvecReader::manifest`, `entity_count`, `streams` (layers, line styles, text, hatch, provenance, paint), skipped streams | `pvec info` | covered (CV1.1) |
-| `PvecReader::{calibration, georeference, effective_scale}` | `pvec info` | covered (CV1.1) |
-| Open-time checksum and digest checks, `entities`, `styles`, stream decode | `pvec validate` | covered (CV1.2) |
+| `PvecReader::manifest`, `entity_count`, the stream list (name, version, size) and skipped streams | `pvec info` | covered (CV1.1) |
+| Layer and text streams decoded | `pvec info` (layer names, text count), `pvec text`, `pvec validate` | covered (CV1.1, CV1.2, CV1.3) |
+| Line style, hatch and provenance streams decoded | `pvec validate` decodes them, no test writes one | partial |
+| Paint order, stroke and fill paint, clip, semantic class streams | `pvec info` lists them by name; nothing decodes them | partial |
+| `PvecReader::{calibration, georeference, effective_scale}` | `pvec info` (scale with its provenance, the georeference object) | covered (CV1.1) |
+| PVec's validation: container structure and limits, block checksums, artifact digest (`ContainerReader::{validate, verify_artifact_digest}`) | `pvec validate`, held to PVec's own validator in the tests | covered (CV1.2) |
+| Each raster's tiles (`validate_raster`) and the CAL-11 residual (`check_residual`), reported without failing the file | `pvec validate` | covered (CV1.2) |
 | `TextStream` records | `pvec text` | covered (CV1.3) |
 | `recalibrate_file` | `pvec calibrate` | covered (CV1.4) |
 | Raster placements and tiles | `pvec rasters` | covered |

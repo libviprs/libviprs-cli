@@ -58,7 +58,13 @@ dwg-acadsharp = ["libviprs/dwg-acadsharp"]
 # dependencies that fetch with no token. A `--no-default-features` build leaves them out; those
 # commands then exit 1 and name this feature, and every usage error they have is still reported
 # (exit 2).
-pvec-raster = ["libviprs/pvec-raster", "dep:pvec-facade", "dep:pvec-capabilities"]
+pvec-raster = [
+    "libviprs/pvec-raster",
+    "dep:pvec-facade",
+    "dep:pvec-capabilities",
+    "dep:pvec-container",
+    "dep:pvec-components",
+]
 # `viprs pvec convert`: a DWG to one `.pvec` per paper layout, one layout, or model space
 # (libviprs#1566). The core's `pvec-convert` brings its writer and the acadrust reader with it, so
 # this turns `dwg-acadrust` on too. On by default; without it the command exits 1 and names it.
@@ -102,6 +108,12 @@ libviprs = { git = "https://github.com/libviprs/libviprs", rev = "71cbbe0f505190
 # `pvec-raster` feature that enables them is a default one (libviprs-cli#134).
 pvec-facade = { package = "pvec", git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10", features = ["unstable-stream"], optional = true }
 pvec-capabilities = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10", optional = true }
+# `viprs pvec validate` (libviprs-cli#148) gives PVec's own verdict, which is the container's
+# validation (structure, limits, block checksums, the artifact digest, each raster's tiles) and the
+# calibration's CAL-11 residual check. The facade exposes neither, so these two name the crates
+# that do. Same revision as the facade, and both were already in the lock through it.
+pvec-container = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10", optional = true }
+pvec-components = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10", optional = true }
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
@@ -110,7 +122,9 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 # The tests build the drawings the raster joins; the facade does not re-export the curve
 # constructors. Same revision as the facade above.
 pvec-geometry = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }
-# The text records `viprs pvec text` reads back (libviprs-cli#147): the facade re-exports
-# `TextStream` but not `TextRecord`, so a test that writes one names the components crate.
-# Same revision as the facade, and already in the lock through it.
-pvec-components = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }
+# PVec's own validator, the oracle `pvec validate` is held to (libviprs-cli#148): the `pvec`
+# command line tool's library half, called from the tests and never from viprs, so the verdict
+# the tests compare against is PVec's code and not a copy of viprs's calls.
+pvec-conformance = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }
+# PVec's hostile raster corpus: a file whose only fault is a tile the reader refuses.
+pvec-testkit = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }

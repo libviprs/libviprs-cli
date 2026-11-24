@@ -235,7 +235,11 @@ mod with_facade {
 
     use pvec_capabilities::Registry;
     use pvec_components::{LayerStream, TextRecord, TextStream};
-    use pvec_facade::unstable::{Calibration, EffectiveScale, Provenance, ScaleClaim};
+    use pvec_facade::components::Stream;
+    use pvec_facade::unstable::{
+        Calibration, ControlPoint, CrsKind, EffectiveScale, FitMethod, Georeference, Provenance,
+        ScaleClaim,
+    };
     use pvec_facade::{Bounds2, Curve, EntityId, Manifest, PvecReader, PvecWriter};
     use pvec_geometry::{Point2, Polyline};
     use serde_json::Value;
@@ -258,6 +262,15 @@ mod with_facade {
 
     fn id(n: u32) -> EntityId {
         EntityId::new(n).unwrap()
+    }
+
+    fn manual_claim(metres: f64) -> ScaleClaim {
+        ScaleClaim {
+            metres_per_source_unit: metres,
+            provenance: Provenance::Manual,
+            uncertainty: None,
+            note: String::new(),
+        }
     }
 
     fn manual(metres: f64, note: &str) -> Calibration {
@@ -346,15 +359,85 @@ mod with_facade {
         PvecReader::open(std::fs::read(path).unwrap()).expect("PVec's reader must open the file")
     }
 
-    /// What the library itself makes of a file: everything `pvec validate` reads has to read.
-    fn library_accepts(bytes: &[u8]) -> bool {
-        let Ok(reader) = PvecReader::open(bytes.to_vec()) else {
-            return false;
+    /// PVec's own verdict: `pvec validate` from PVec's command line tool (the `pvec-conformance`
+    /// crate), called as a library. It is PVec's code and not the calls viprs makes, so it is an
+    /// oracle and not a mirror. Returns whether the file conforms, and PVec's JSON report.
+    fn pvec_says(bytes: &[u8]) -> (bool, Value) {
+        let outcome = pvec_conformance::commands::validate(bytes, "probe.pvec");
+        let report = serde_json::from_str(&outcome.report.render()).expect("PVec's report is JSON");
+        (outcome.exit == pvec_conformance::exit::CONFORMS, report)
+    }
+
+    /// A georeference to EPSG:2056 stated outright, with no control points.
+    fn declared() -> Georeference {
+        Georeference {
+            source_to_crs: [0.5, 0.0, 0.0, 0.5, 2_600_000.0, 1_200_000.0],
+            crs_kind: CrsKind::Projected,
+            method: FitMethod::Declared,
+            crs_id: "EPSG:2056".into(),
+            definition: None,
+            control_points: Vec::new(),
+            residual_max: 0.0,
+        }
+    }
+
+    /// A georeference fitted from three points the identity maps exactly, so its true residual
+    /// is 0, storing `residual_max` as given: anything but 0 is the CAL-11 mismatch.
+    fn fitted(residual_max: f64) -> Georeference {
+        let point = |x: f64, y: f64| ControlPoint {
+            source: [x, y],
+            world: [x, y],
         };
-        reader.entities().is_ok()
-            && reader.styles().is_ok()
-            && reader.streams().is_ok()
-            && reader.calibration().is_ok()
+        Georeference {
+            source_to_crs: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            crs_kind: CrsKind::Engineering,
+            method: FitMethod::Fitted,
+            crs_id: "LOCAL:site".into(),
+            definition: None,
+            control_points: vec![point(0.0, 0.0), point(10.0, 0.0), point(0.0, 10.0)],
+            residual_max,
+        }
+    }
+
+    fn georeferenced(scale: Option<ScaleClaim>, georeference: Georeference) -> Calibration {
+        Calibration {
+            scale,
+            georeference: Some(georeference),
+            external_id: "survey-17".into(),
+        }
+    }
+
+    /// A one-line drawing with a single text record holding `text`.
+    fn drawing_with_text(dir: &Path, text: &str) -> PathBuf {
+        let mut w = PvecWriter::new(Manifest {
+            metres_per_unit: 1.0,
+            bounds: Bounds2 {
+                min: [0.0, 0.0],
+                max: [10.0, 10.0],
+            },
+            capabilities: Vec::new(),
+            producer_id: "viprs-cli-148".into(),
+            producer_version: "1".into(),
+        })
+        .unwrap();
+        let line =
+            Polyline::new(vec![Point2 { x: 0.0, y: 0.0 }, Point2 { x: 4.0, y: 3.0 }]).unwrap();
+        w.push(id(0), &Curve::Polyline(line)).unwrap();
+        let record = TextStream {
+            records: vec![TextRecord {
+                entity: id(0),
+                x: 1.0,
+                y: 2.0,
+                height: 0.5,
+                rotation: 0.0,
+                text: text.into(),
+            }],
+        };
+        w.components(record.into_stream(&Registry::v1()).unwrap())
+            .unwrap();
+        let path = dir.join("text.pvec");
+        std::fs::write(&path, w.finish().unwrap()).unwrap();
+        path
     }
 
     // CV1.1: pvec info
@@ -422,14 +505,12 @@ mod with_facade {
                 "{line:?} not in:\n{text}"
             );
         }
-        assert!(
-            text.contains("layer"),
-            "the streams are listed by name:\n{text}"
-        );
-        assert!(
-            text.contains("text"),
-            "the streams are listed by name:\n{text}"
-        );
+        for stream in ["layer (14) v", "text (16) v"] {
+            assert!(
+                text.lines().any(|l| l.trim_start().starts_with(stream)),
+                "the stream line {stream:?} is not in:\n{text}"
+            );
+        }
     }
 
     #[test]
@@ -476,20 +557,36 @@ mod with_facade {
     // CV1.2: pvec validate
 
     #[test]
-    fn validate_accepts_a_good_file_and_counts_what_it_read() {
+    fn validate_accepts_a_good_file_and_counts_what_pvec_counts() {
         let dir = scratch("validate-ok");
         let f = drawing(&dir, "plan.pvec", true, Some(&manual(0.001, "")));
+        let (conforms, report) = pvec_says(&std::fs::read(&f).unwrap());
+        assert!(conforms, "{report}");
         let text = stdout(&ok(&["pvec", "validate", s(&f)]));
         assert!(text.contains("valid"), "{text}");
         assert!(text.contains("2 entities"), "{text}");
         let v = json(&ok(&["pvec", "validate", s(&f), "--json"]));
         assert_eq!(v["v"], 1);
+        assert_eq!(v["kind"], "pvec");
         assert_eq!(v["valid"], true);
         assert_eq!(v["entities"], 2);
+        assert_eq!(
+            v["blocks"], report["result"]["blocks"],
+            "PVec's block count"
+        );
+        assert_eq!(
+            v["entities"], report["result"]["entities"],
+            "PVec's entity count"
+        );
+        assert_eq!(
+            v["artifact_digest"], report["result"]["checks"]["artifact_digest"],
+            "PVec's digest status"
+        );
         assert_eq!(v["streams"], 2);
-        assert_eq!(v["skipped"], 0);
-        assert_eq!(v["rasters"], 0);
-        assert_eq!(v["calibrated"], true);
+        assert_eq!(v["skipped_streams"], 0);
+        assert_eq!(v["undecoded_streams"], serde_json::json!([]));
+        assert_eq!(v["rasters"], serde_json::json!([]));
+        assert_eq!(v["calibration"]["status"], "ok");
     }
 
     #[test]
@@ -499,6 +596,7 @@ mod with_facade {
         let mut bytes = std::fs::read(&f).unwrap();
         bytes.truncate(bytes.len() - 16);
         std::fs::write(&f, &bytes).unwrap();
+        assert!(!pvec_says(&bytes).0, "PVec refuses it too");
         let out = run(&["pvec", "validate", s(&f)]);
         assert_eq!(code(&out), 1, "{}", stderr(&out));
         assert!(
@@ -509,14 +607,159 @@ mod with_facade {
         let out = run(&["pvec", "validate", s(&f), "--json"]);
         assert_eq!(code(&out), 1);
         let v = json(&out);
+        assert_eq!(v["kind"], "pvec");
         assert_eq!(v["valid"], false);
+        assert!(v["rule"].as_str().is_some_and(|r| !r.is_empty()), "{v}");
         assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()), "{v}");
     }
 
     #[test]
+    fn validate_reports_a_cal11_residual_mismatch_and_the_file_still_conforms_as_pvec_says() {
+        // The stored residual is 5 where the points give 0: CAL-11, which only a validator
+        // recomputes. PVec reports the calibration refused and leaves the file conforming.
+        let dir = scratch("validate-cal11");
+        let f = drawing(
+            &dir,
+            "plan.pvec",
+            false,
+            Some(&georeferenced(None, fitted(5.0))),
+        );
+        let (conforms, report) = pvec_says(&std::fs::read(&f).unwrap());
+        assert!(conforms, "{report}");
+        assert_eq!(
+            report["result"]["calibration"]["status"], "refused",
+            "{report}"
+        );
+        assert_eq!(
+            report["result"]["calibration"]["rule"], "CAL-11",
+            "{report}"
+        );
+
+        let v = json(&ok(&["pvec", "validate", s(&f), "--json"]));
+        assert_eq!(v["valid"], true);
+        assert_eq!(v["calibration"]["status"], "refused");
+        assert_eq!(v["calibration"]["rule"], "CAL-11");
+        let text = stdout(&ok(&["pvec", "validate", s(&f)]));
+        assert!(text.contains("calibration refused (CAL-11)"), "{text}");
+
+        // The same georeference with the residual it really has passes the check.
+        let good = drawing(
+            &dir,
+            "good.pvec",
+            false,
+            Some(&georeferenced(None, fitted(0.0))),
+        );
+        let v = json(&ok(&["pvec", "validate", s(&good), "--json"]));
+        assert_eq!(v["calibration"]["status"], "ok");
+        assert_eq!(v["calibration"]["residual"], 0.0);
+    }
+
+    #[test]
+    fn validate_reports_a_refused_raster_with_its_rule_and_the_file_still_conforms_as_pvec_says() {
+        // PVec's own hostile tile: a PNG that is also a ZIP, refused by RASTER-03 on read. The
+        // geometry is sound, so PVec reports the raster skipped and the file conforms.
+        use pvec_testkit::raster_hostile::{file as raster_file, hostile};
+        let dir = scratch("validate-raster");
+        let tile = hostile()
+            .into_iter()
+            .find(|t| t.name == "polyglot-png-and-zip")
+            .expect("PVec's hostile corpus has the polyglot tile");
+        let bytes = raster_file(&tile);
+        let (conforms, report) = pvec_says(&bytes);
+        assert!(conforms, "{report}");
+        assert_eq!(report["result"]["rasters"][0]["status"], "skipped");
+        assert_eq!(report["result"]["rasters"][0]["rule"], "RASTER-03");
+        let f = dir.join("hostile.pvec");
+        std::fs::write(&f, &bytes).unwrap();
+
+        let v = json(&ok(&["pvec", "validate", s(&f), "--json"]));
+        assert_eq!(v["valid"], true);
+        let rasters = v["rasters"].as_array().expect("rasters is an array");
+        assert_eq!(rasters.len(), 1, "{v}");
+        assert_eq!(rasters[0]["raster"], 0);
+        assert_eq!(rasters[0]["status"], "skipped");
+        assert_eq!(rasters[0]["rule"], "RASTER-03");
+        assert!(
+            rasters[0]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("RASTER-03")),
+            "{v}"
+        );
+        let text = stdout(&ok(&["pvec", "validate", s(&f)]));
+        assert!(text.contains("raster 0 skipped (RASTER-03)"), "{text}");
+    }
+
+    #[test]
+    fn validate_gives_pvecs_verdict_on_a_checksum_valid_file_whose_text_stream_does_not_decode() {
+        // The writer stores a component payload as it is, unparsed, and seals the file, so the
+        // block checksums and the digest hold and only a decode of the payload can find this.
+        let dir = scratch("validate-undecodable");
+        let mut w = PvecWriter::new(Manifest {
+            metres_per_unit: 1.0,
+            bounds: Bounds2 {
+                min: [0.0, 0.0],
+                max: [10.0, 10.0],
+            },
+            capabilities: Vec::new(),
+            producer_id: "viprs-cli-148".into(),
+            producer_version: "1".into(),
+        })
+        .unwrap();
+        let line =
+            Polyline::new(vec![Point2 { x: 0.0, y: 0.0 }, Point2 { x: 4.0, y: 3.0 }]).unwrap();
+        w.push(id(0), &Curve::Polyline(line)).unwrap();
+        let payload = vec![0xff, 0xff, 0xff];
+        assert!(
+            TextStream::decode(&payload).is_err(),
+            "the payload must not decode"
+        );
+        let version = Registry::v1()
+            .get(TextStream::CAPABILITY)
+            .expect("the registry knows text")
+            .version;
+        w.components(Stream {
+            capability: TextStream::CAPABILITY,
+            version,
+            payload,
+        })
+        .expect("the writer stores a component payload unparsed");
+        let bytes = w.finish().expect("the writer seals it");
+        let f = dir.join("undecodable.pvec");
+        std::fs::write(&f, &bytes).unwrap();
+
+        let (conforms, report) = pvec_says(&bytes);
+        let out = run(&["pvec", "validate", s(&f), "--json"]);
+        assert_eq!(
+            code(&out) == 0,
+            conforms,
+            "PVec says conforming={conforms} ({report}), viprs exited {}:\n{}",
+            code(&out),
+            stderr(&out)
+        );
+        let v = json(&out);
+        if conforms {
+            // The verdict is PVec's; the stream PVec does not read is still reported.
+            let undecoded = v["undecoded_streams"]
+                .as_array()
+                .expect("undecoded_streams is an array");
+            assert_eq!(undecoded.len(), 1, "{v}");
+            assert_eq!(undecoded[0]["capability"], 16);
+            assert_eq!(undecoded[0]["name"], "text");
+            let text = stdout(&ok(&["pvec", "validate", s(&f)]));
+            assert!(text.contains("stream 16 (text) does not decode"), "{text}");
+        } else {
+            assert_eq!(v["valid"], false);
+        }
+        // Reading the text out of it is a different question, and that cannot be answered.
+        let out = run(&["pvec", "text", s(&f)]);
+        assert_eq!(code(&out), 1, "{}", stderr(&out));
+        assert!(stderr(&out).contains("text stream"), "{}", stderr(&out));
+    }
+
+    #[test]
     fn validate_agrees_with_the_library_on_every_flipped_byte() {
-        // A byte flipped anywhere: validate has to refuse exactly the files the library refuses,
-        // so it neither misses a corruption the reader catches nor invents one.
+        // A byte flipped anywhere: validate has to refuse exactly the files PVec's own validator
+        // refuses, so it neither misses a corruption PVec catches nor invents one.
         let dir = scratch("validate-flip");
         let f = drawing(&dir, "plan.pvec", true, Some(&manual(0.001, "")));
         let good = std::fs::read(&f).unwrap();
@@ -527,12 +770,12 @@ mod with_facade {
             bad[at] ^= 0x5a;
             let target = dir.join(format!("flip-{at}.pvec"));
             std::fs::write(&target, &bad).unwrap();
-            let expected = library_accepts(&bad);
+            let (expected, _) = pvec_says(&bad);
             let out = run(&["pvec", "validate", s(&target)]);
             assert_eq!(
                 code(&out) == 0,
                 expected,
-                "byte {at}: the library says {expected}, viprs exited {}:\n{}",
+                "byte {at}: PVec says conforming={expected}, viprs exited {}:\n{}",
                 code(&out),
                 stderr(&out)
             );
@@ -716,5 +959,72 @@ mod with_facade {
         assert_eq!(std::fs::read(&f).unwrap(), b"not a pvec at all");
         let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
         assert_eq!(left.len(), 1, "no temporary file is left beside it");
+    }
+    // Pins the PR promised without a test behind them (review of #149, item 5).
+
+    #[test]
+    fn info_json_reports_the_georeference_object() {
+        let dir = scratch("info-georef");
+        let f = drawing(
+            &dir,
+            "plan.pvec",
+            false,
+            Some(&georeferenced(Some(manual_claim(0.5)), declared())),
+        );
+        let v = json(&ok(&["pvec", "info", s(&f), "--json"]));
+        assert_eq!(
+            v["georeference"],
+            serde_json::json!({
+                "crs_id": "EPSG:2056",
+                "crs_kind": "projected",
+                "method": "declared",
+                "source_to_crs": [0.5, 0.0, 0.0, 0.5, 2_600_000.0, 1_200_000.0],
+                "control_points": 0,
+                "residual_max": 0.0,
+            })
+        );
+        let text = stdout(&ok(&["pvec", "info", s(&f)]));
+        assert!(
+            text.lines()
+                .any(|l| l.trim() == "Georeference: EPSG:2056 (projected, 0 control points)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn text_escapes_tab_newline_return_and_backslash_in_tsv_and_keeps_them_in_json() {
+        let dir = scratch("text-escape");
+        let raw = "a\tb\nc\rd\\e";
+        let f = drawing_with_text(&dir, raw);
+        let text = stdout(&ok(&["pvec", "text", s(&f)]));
+        assert_eq!(text, "0\t1\t2\t0.5\t0\ta\\tb\\nc\\rd\\\\e\n");
+        let v = json(&ok(&["pvec", "text", s(&f), "--json"]));
+        assert_eq!(v["text"][0]["text"], raw, "JSON carries the text as it is");
+    }
+
+    #[test]
+    fn calibrate_keeps_the_georeference_and_external_id_through_scale_and_remove() {
+        let dir = scratch("cal-georef");
+        let georeference = declared();
+        let f = drawing(
+            &dir,
+            "plan.pvec",
+            false,
+            Some(&georeferenced(
+                Some(manual_claim(0.5)),
+                georeference.clone(),
+            )),
+        );
+        ok(&["pvec", "calibrate", s(&f), "--scale", "0.25"]);
+        let c = calibration_of(&f).expect("a calibration");
+        assert_eq!(c.scale.map(|s| s.metres_per_source_unit), Some(0.25));
+        assert_eq!(c.georeference.as_ref(), Some(&georeference));
+        assert_eq!(c.external_id, "survey-17");
+
+        ok(&["pvec", "calibrate", s(&f), "--remove"]);
+        let c = calibration_of(&f).expect("the georeference keeps a calibration");
+        assert_eq!(c.scale, None);
+        assert_eq!(c.georeference.as_ref(), Some(&georeference));
+        assert_eq!(c.external_id, "survey-17");
     }
 }
