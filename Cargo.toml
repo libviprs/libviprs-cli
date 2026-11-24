@@ -142,7 +142,7 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 [dev-dependencies]
 # `tests/cli_plot_157.rs` writes its model-space drawing with acadrust, the same fork at the same revision
 # the core pins, and reads the plotted PDFs with lopdf and builds a CTB that inflates past the bound with
-# flate2: nothing private is committed, every file is made in the test (libviprs-cli#157).
+# flate2: no real drawing is committed, every file is made in the test (libviprs-cli#157).
 acadrust = { git = "https://github.com/libviprs/acadrust", rev = "5bf63c7b1653fbb5a51f2f8a5a5a3f01a567c094", version = "0.6.8" }
 flate2 = "1"
 lopdf = "0.36"
