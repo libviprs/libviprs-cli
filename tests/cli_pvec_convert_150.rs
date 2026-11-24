@@ -402,3 +402,31 @@ fn without_the_flag_no_png_is_written() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// `--thumbnail` with `--model` is a usage error in every build: one stray far entity gives model
+/// space an extreme aspect, and the core draws the picture before anything can cap its height.
+/// The message points at `viprs pvec thumbnail`, which caps both sides.
+#[test]
+fn a_model_space_thumbnail_is_a_usage_error_that_points_at_pvec_thumbnail() {
+    let dir = scratch("thumb-model-usage");
+    let out_dir = dir.join("out");
+    let out = run(&[
+        "pvec",
+        "convert",
+        s(&fixture("vc_layers.dwg")),
+        s(&out_dir),
+        "--model",
+        "--unit",
+        "m",
+        "--thumbnail",
+        "300",
+    ]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("viprs pvec thumbnail FILE OUT.png"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!out_dir.exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
