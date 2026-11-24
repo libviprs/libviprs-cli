@@ -131,7 +131,7 @@ enum Command {
     /// experimental ACadSharp (`dwg-acadsharp`, chosen with `--provider
     /// acadsharp`). `info` and `validate` read a PMTiles file and work in every
     /// build.
-    Vector(vector::VectorArgs),
+    Vector(Box<vector::VectorArgs>),
 
     /// Turn a DWG into `.pvec` files, one per paper layout, and look inside a
     /// `.pvec`: the rasters it places and their tiles.
@@ -988,7 +988,7 @@ fn main() {
                 Command::Pdf(args) => pdf_geo_plan::run_pdf(args),
                 Command::Geo(args) => pdf_geo_plan::run_geo(args),
                 Command::Verify(args) => verify::run(args),
-                Command::Vector(args) => vector::run(args),
+                Command::Vector(args) => vector::run(*args),
                 Command::Pvec(args) => pvec_raster::run(args),
             }
         }

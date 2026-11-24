@@ -37,12 +37,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use libviprs::CancelToken;
-use libviprs::cad::{CadDrawing, CadError, CadSource, ViewKind};
+use libviprs::cad::{CadDecoder, CadDrawing, CadError, CadSource, ViewKind};
 use libviprs::vector::convert::{
-    Conversion, ConvertError, ConvertOptions, ProviderKind, ViewSelector, check, convert,
-    decoder_for, default_decoder, inspect, list_views, report, view_json,
+    Conversion, ConvertError, ConvertOptions, ProviderKind, ViewSelector, check, convert, inspect,
+    list_views, report, view_json,
 };
-use libviprs::vector::tiler::{TilerConfig, TilerError};
+use libviprs::vector::tiler::{OversizePolicy, TilerConfig, TilerError};
 use serde_json::json;
 
 use crate::{operational_error, pipeline, usage_error};
@@ -133,6 +133,122 @@ struct DrawingArgs {
     /// Print one JSON object on stdout instead of text.
     #[arg(long)]
     json: bool,
+
+    /// Deepest INSERT nesting either reader follows. acadrust's default is 64; ACadSharp sets
+    /// none unless `--hardened` (64).
+    #[arg(
+        long,
+        value_name = "N",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    #[cfg_attr(
+        not(any(feature = "dwg-acadrust", feature = "dwg-acadsharp")),
+        allow(dead_code)
+    )]
+    max_block_depth: Option<u32>,
+
+    /// Most entities either reader looks at, nested expansion included. acadrust's default is
+    /// 20 million; ACadSharp sets none unless `--hardened` (10 million).
+    #[arg(
+        long,
+        value_name = "N",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    #[cfg_attr(
+        not(any(feature = "dwg-acadrust", feature = "dwg-acadsharp")),
+        allow(dead_code)
+    )]
+    max_entities: Option<u64>,
+
+    /// Most points in one polyline, for either reader. acadrust's default is 2^20; ACadSharp
+    /// sets none unless `--hardened` (a million).
+    #[arg(
+        long,
+        value_name = "N",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    #[cfg_attr(
+        not(any(feature = "dwg-acadrust", feature = "dwg-acadsharp")),
+        allow(dead_code)
+    )]
+    max_polyline_points: Option<u64>,
+
+    /// acadrust only: most control points in one spline. 2^20 by default.
+    #[arg(
+        long,
+        value_name = "N",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    max_spline_control_points: Option<usize>,
+
+    /// acadrust only: longest knot vector (and weight array) of one spline. 2^20 + 64 by
+    /// default.
+    #[arg(
+        long,
+        value_name = "N",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    max_spline_knots: Option<usize>,
+
+    /// acadrust only: most instances one INSERT may place (MINSERT rows times columns). A
+    /// million by default.
+    #[arg(
+        long,
+        value_name = "N",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    max_insert_grid: Option<u64>,
+
+    /// acadrust only: most block instances expanded in total, multiplied through nesting. Ten
+    /// million by default, which is slow to refuse for a block bomb, so tighten it for uploads.
+    #[arg(
+        long,
+        value_name = "N",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    max_expanded_instances: Option<u64>,
+
+    /// acadrust only: estimated bytes of entity data held or produced. 2 GiB by default.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    max_allocation_bytes: Option<u64>,
+
+    /// acadrust only: longest layer, block or class name, in bytes. 1020 by default.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    max_name_bytes: Option<usize>,
+
+    /// ACadSharp only: largest input, refused before it is read. None unless `--hardened`
+    /// (256 MiB). acadrust's one input cap is `--hardened`.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    max_input_bytes: Option<u64>,
+
+    /// ACadSharp only: longest string a text or warning record may carry. None unless
+    /// `--hardened` (1 MiB).
+    #[arg(
+        long,
+        value_name = "BYTES",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    max_string_bytes: Option<u64>,
+
+    /// ACadSharp only: total bytes the decode may emit. None unless `--hardened` (2 GiB).
+    #[arg(
+        long,
+        value_name = "BYTES",
+        help_heading = "Reader limits (layered over --hardened)"
+    )]
+    max_output_bytes: Option<u64>,
 }
 
 #[derive(clap::Args)]
@@ -168,6 +284,96 @@ struct RunArgs {
     /// first primitive after the deadline, which is soon but not instant. Exit 1.
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     timeout: Option<Duration>,
+
+    /// The MVT extent: tile coordinates run 0..N. 4096 by default. Larger is finer at every
+    /// zoom and costs bytes.
+    #[arg(long, value_name = "N", help_heading = "Tiler", value_parser = clap::value_parser!(u32).range(16..=1 << 24))]
+    extent: Option<u32>,
+
+    /// Tile units of overlap past each tile edge, so a stroke is drawn the same on both sides
+    /// of a boundary. 64 by default; has to be below the extent.
+    #[arg(long, value_name = "N", help_heading = "Tiler")]
+    buffer: Option<u32>,
+
+    /// Empty space around the drawing, as a fraction of its larger side, on each side. 0.02 by
+    /// default.
+    #[arg(long, value_name = "FRACTION", help_heading = "Tiler", value_parser = parse_tile_units)]
+    margin: Option<f64>,
+
+    /// Chord deviation allowed when a curve is cut into segments, in tile units. 0.25 by
+    /// default; has to be above zero.
+    #[arg(long, value_name = "UNITS", help_heading = "Tiler", value_parser = parse_tile_units)]
+    deviation: Option<f64>,
+
+    /// How far a dropped vertex may be from the line kept, in tile units. 0.5 by default; 0
+    /// keeps every vertex.
+    #[arg(long, value_name = "UNITS", help_heading = "Tiler", value_parser = parse_tile_units)]
+    simplify: Option<f64>,
+
+    /// A primitive smaller than this in both directions is not drawn at that zoom, in tile
+    /// units. 0.5 by default.
+    #[arg(long, value_name = "UNITS", help_heading = "Tiler", value_parser = parse_tile_units)]
+    cull: Option<f64>,
+
+    /// Text shorter than this is not drawn at that zoom, in tile units. 16 by default.
+    #[arg(long, value_name = "UNITS", help_heading = "Tiler", value_parser = parse_tile_units)]
+    min_text: Option<f64>,
+
+    /// The most points one tile carries; runs past it are dropped and counted. 400000 by
+    /// default.
+    #[arg(long, value_name = "N", help_heading = "Tiler", value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+    max_points_per_tile: Option<usize>,
+
+    /// The most text features one tile carries; text past it is dropped and counted. 4000 by
+    /// default.
+    #[arg(long, value_name = "N", help_heading = "Tiler", value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+    max_text_per_tile: Option<usize>,
+
+    /// The most points held while one zoom level is assembled. 2^26 by default. A run past it
+    /// stops with exit 1.
+    #[arg(long, value_name = "N", help_heading = "Tiler", value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+    max_level_points: Option<usize>,
+
+    /// The most memory one zoom level may take while it is assembled, as an estimate. 1 GiB by
+    /// default. A run past it stops with exit 1.
+    #[arg(long, value_name = "BYTES", help_heading = "Tiler")]
+    max_level_bytes: Option<usize>,
+
+    /// The most stored (gzipped) bytes one tile should take. 500 KiB by default. What happens
+    /// to a tile past it is `--oversize`.
+    #[arg(long, value_name = "BYTES", help_heading = "Tiler")]
+    max_tile_bytes: Option<usize>,
+
+    /// A tile past `--max-tile-bytes`: `report` keeps it and counts it, `error` stops the
+    /// run with exit 1 and writes nothing.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "POLICY",
+        help_heading = "Tiler",
+        default_value = "report"
+    )]
+    oversize: Oversize,
+
+    /// The most primitives held from one decode, the memory bound for a block inserted a
+    /// million times (about 150 bytes each). 5 million by default. Past it, exit 1.
+    #[arg(long, value_name = "N", help_heading = "Tiler")]
+    max_primitives: Option<usize>,
+
+    /// The longest label one text feature carries, in bytes; a longer one is cut at a
+    /// character boundary and counted. 16 KiB by default.
+    #[arg(long, value_name = "BYTES", help_heading = "Tiler")]
+    max_text_bytes: Option<usize>,
+}
+
+/// `--oversize`: clap needs its own enum to parse into, and this maps onto the library's
+/// [`OversizePolicy`] in [`tiler_config`].
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum Oversize {
+    /// Keep the tile and count it in the report.
+    Report,
+    /// Stop the run, exit 1, write nothing.
+    Error,
 }
 
 #[derive(clap::Args)]
@@ -232,6 +438,19 @@ fn parse_duration(text: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs_f64(seconds))
 }
 
+/// A tiler distance or fraction: finite and not negative. Whether zero is allowed is the
+/// tiler's call (`--deviation 0` is refused there, as a usage error).
+fn parse_tile_units(text: &str) -> Result<f64, String> {
+    let value: f64 = text
+        .trim()
+        .parse()
+        .map_err(|_| format!("{text:?} is not a number"))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("{text:?} has to be a finite number, zero or more"));
+    }
+    Ok(value)
+}
+
 /// Why a run stopped, as the command line sees it.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Failure {
@@ -278,8 +497,16 @@ pub(crate) fn classify(error: &ConvertError, timeout: Option<Duration>) -> Failu
         }
         ConvertError::Cad(CadError::NoSuchView { .. }) => Failure::Usage(error.to_string()),
         ConvertError::Tiler(TilerError::ViewNotEnabled { .. }) => Failure::Usage(error.to_string()),
+        // Values that parse one by one and that the tiler refuses together (`--buffer` not
+        // below `--extent`, `--deviation 0`): the command line alone decides them.
+        ConvertError::Tiler(TilerError::Config(_)) => Failure::Usage(error.to_string()),
         ConvertError::Tiler(TilerError::Decode(CadError::NoSuchView { .. })) => {
             Failure::Usage(error.to_string())
+        }
+        // The tiler keeps the decoder's error as a field rather than as its source, so the chain
+        // under it, which says which reader limit tripped, has to be read from there.
+        ConvertError::Tiler(TilerError::DecodeFailed { error, .. }) => {
+            Failure::Operational(format!("decoding failed: {}", with_causes(error)))
         }
         _ => Failure::Operational(with_causes(error)),
     }
@@ -330,20 +557,125 @@ pub(crate) fn run(args: VectorArgs) {
     }
 }
 
-/// Opens the drawing through the reader `--provider` names, or the library's own choice.
+/// Opens the drawing through the reader `--provider` names, or the library's own choice, held to
+/// `--hardened` with the per-limit flags written over it.
 fn with_drawing<T>(args: &DrawingArgs, then: impl FnOnce(&dyn CadDrawing) -> T) -> T {
+    // A plain run reads with acadrust when this build has it, as `default_decoder` chooses.
+    let kind = match args.provider {
+        Some(Provider::Acadrust) => ProviderKind::Acadrust,
+        Some(Provider::Acadsharp) => ProviderKind::AcadSharp,
+        None if cfg!(feature = "dwg-acadrust") => ProviderKind::Acadrust,
+        None => ProviderKind::AcadSharp,
+    };
+    // A limit the chosen reader has no field for would otherwise be dropped without a word.
+    let (foreign, owner, reader, hint) = if kind == ProviderKind::Acadrust {
+        (
+            vec![
+                ("--max-input-bytes", args.max_input_bytes.is_some()),
+                ("--max-string-bytes", args.max_string_bytes.is_some()),
+                ("--max-output-bytes", args.max_output_bytes.is_some()),
+            ],
+            "acadsharp",
+            "acadrust",
+            "pass `--provider acadsharp` to read with ACadSharp, or `--hardened` for acadrust's own \
+             256 MiB input cap",
+        )
+    } else {
+        (
+            vec![
+                (
+                    "--max-spline-control-points",
+                    args.max_spline_control_points.is_some(),
+                ),
+                ("--max-spline-knots", args.max_spline_knots.is_some()),
+                ("--max-insert-grid", args.max_insert_grid.is_some()),
+                (
+                    "--max-expanded-instances",
+                    args.max_expanded_instances.is_some(),
+                ),
+                (
+                    "--max-allocation-bytes",
+                    args.max_allocation_bytes.is_some(),
+                ),
+                ("--max-name-bytes", args.max_name_bytes.is_some()),
+            ],
+            "acadrust",
+            "acadsharp",
+            "drop it, or pass `--provider acadrust`",
+        )
+    };
+    if let Some((flag, _)) = foreign.iter().find(|(_, set)| *set) {
+        usage_error(
+            &format!("{flag} is a limit of the {owner} reader, and this run reads with {reader}"),
+            hint,
+        );
+    }
     if !args.input.exists() {
         operational_error(&format!("{} does not exist", args.input.display()));
     }
-    let decoder = match args.provider {
-        Some(p) => {
-            let kind = match p {
-                Provider::Acadrust => ProviderKind::Acadrust,
-                Provider::Acadsharp => ProviderKind::AcadSharp,
+    let decoder: Result<Box<dyn CadDecoder>, ConvertError> = match kind {
+        #[cfg(feature = "dwg-acadrust")]
+        ProviderKind::Acadrust => {
+            use libviprs::cad::acadrust::AcadrustDecoder;
+            // `SourceLimits` is non-exhaustive, so it is the defaults with the flags written over
+            // them. With no flag this is exactly what an unlimited decoder walks under.
+            let mut limits = libviprs::pvec::SourceLimits::default();
+            if let Some(v) = args.max_block_depth {
+                limits.max_block_depth = v;
+            }
+            if let Some(v) = args.max_entities {
+                limits.max_entities = v;
+            }
+            if let Some(v) = args.max_polyline_points {
+                limits.max_polyline_vertices = usize::try_from(v).unwrap_or(usize::MAX);
+            }
+            if let Some(v) = args.max_spline_control_points {
+                limits.max_spline_control_points = v;
+            }
+            if let Some(v) = args.max_spline_knots {
+                limits.max_spline_knots = v;
+            }
+            if let Some(v) = args.max_insert_grid {
+                limits.max_insert_grid = v;
+            }
+            if let Some(v) = args.max_expanded_instances {
+                limits.max_expanded_instances = v;
+            }
+            if let Some(v) = args.max_allocation_bytes {
+                limits.max_allocation_bytes = v;
+            }
+            if let Some(v) = args.max_name_bytes {
+                limits.max_name_bytes = v;
+            }
+            let base = if args.hardened {
+                AcadrustDecoder::hardened()
+            } else {
+                AcadrustDecoder::new()
             };
-            decoder_for(kind, args.hardened)
+            Ok(Box::new(base.with_limits(limits)))
         }
-        None => default_decoder(args.hardened),
+        #[cfg(feature = "dwg-acadsharp")]
+        ProviderKind::AcadSharp => {
+            use libviprs::cad::acadsharp::{AcadSharpDecoder, ProviderLimits};
+            let mut limits = if args.hardened {
+                ProviderLimits::hardened()
+            } else {
+                ProviderLimits::default()
+            };
+            limits.max_block_depth = args
+                .max_block_depth
+                .map(u64::from)
+                .or(limits.max_block_depth);
+            limits.max_entities = args.max_entities.or(limits.max_entities);
+            limits.max_polyline_points = args.max_polyline_points.or(limits.max_polyline_points);
+            limits.max_input_bytes = args.max_input_bytes.or(limits.max_input_bytes);
+            limits.max_string_bytes = args.max_string_bytes.or(limits.max_string_bytes);
+            limits.max_output_bytes = args.max_output_bytes.or(limits.max_output_bytes);
+            AcadSharpDecoder::new()
+                .map(|d| Box::new(d.with_limits(limits)) as Box<dyn CadDecoder>)
+                .map_err(ConvertError::from)
+        }
+        _ => Err(ConvertError::ProviderNotBuilt),
     };
     let decoder = match (decoder, args.provider) {
         (Ok(d), _) => d,
@@ -419,6 +751,53 @@ fn tiler_config(args: &RunArgs, cancel: Option<CancelToken>) -> TilerConfig {
     if let Some(c) = cancel {
         config = config.with_cancel(c);
     }
+    // A flag left out keeps the library's default, which `--help` quotes.
+    if let Some(v) = args.extent {
+        config.extent = v;
+    }
+    if let Some(v) = args.buffer {
+        config.buffer = v;
+    }
+    if let Some(v) = args.margin {
+        config.margin = v;
+    }
+    if let Some(v) = args.deviation {
+        config.deviation_units = v;
+    }
+    if let Some(v) = args.simplify {
+        config.simplify_units = v;
+    }
+    if let Some(v) = args.cull {
+        config.cull_units = v;
+    }
+    if let Some(v) = args.min_text {
+        config.min_text_units = v;
+    }
+    if let Some(v) = args.max_points_per_tile {
+        config.max_points_per_tile = v;
+    }
+    if let Some(v) = args.max_text_per_tile {
+        config.max_text_per_tile = v;
+    }
+    if let Some(v) = args.max_level_points {
+        config.max_level_points = v;
+    }
+    if let Some(v) = args.max_level_bytes {
+        config.max_level_bytes = v;
+    }
+    if let Some(v) = args.max_tile_bytes {
+        config.max_tile_bytes = v;
+    }
+    if let Some(v) = args.max_primitives {
+        config.max_primitives = v;
+    }
+    if let Some(v) = args.max_text_bytes {
+        config.max_text_bytes = v;
+    }
+    config.oversize = match args.oversize {
+        Oversize::Report => OversizePolicy::Report,
+        Oversize::Error => OversizePolicy::Error,
+    };
     config
 }
 
