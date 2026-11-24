@@ -162,7 +162,9 @@ fn flags(cmd: &Command) -> Vec<Value> {
             continue;
         }
         let id = a.get_id().as_str();
-        if id == "help" || id == "version" {
+        // A hidden flag is a viprs extension kept off the vips surface (CLI_CONTRACT.md
+        // §3-deviations), so it stays out of the dump the docs are generated from as well.
+        if id == "help" || id == "version" || a.is_hide_set() {
             continue;
         }
         let action = a.get_action();

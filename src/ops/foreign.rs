@@ -9,14 +9,14 @@
 //! | save | options | load | options |
 //! |---|---|---|---|
 //! | `jpegsave` | `--Q`, `--subsample-mode` | `jpegload` | `--shrink` |
-//! | `pngsave` | `--compression`, `--interlace`, `--palette`, `--bitdepth` | `pngload` | |
+//! | `pngsave` | `--compression`, `--interlace`, `--palette`, `--bitdepth` (1 without `--palette` is bilevel) | `pngload` | |
 //! | `tiffsave` | `--compression` | `tiffload` | `--page`, `--max-pages` |
 //! | `webpsave` | `--lossless` | `webpload` | `--page`, `--n` |
 //! | `gifsave` | `--dither`, `--bitdepth`, `--interlace` | `gifload` | `--page`, `--n`, `--max-pages` |
-//! | `jxlsave` | `--lossless` | `jxlload` | |
-//! | `jp2ksave` | `--lossless`, `--tile-width`, `--tile-height` | `jp2kload` | |
+//! | `jxlsave` | `--lossless` | `jxlload` | `--page`, `--n` |
+//! | `jp2ksave` | `--lossless` or `--ratio`, `--tile-width`, `--tile-height` | `jp2kload` | |
 //! | `fitssave` | | `fitsload` | |
-//! | `radsave` | | `radload` | |
+//! | `radsave` | `--exposure`, `--aspect` | `radload` | |
 //! | `uhdrsave` | `--Q`, `--gainmap-scale-factor` | `uhdrload` | |
 //! | `csvsave` | | `csvload` | |
 //! | `matrixsave` | | `matrixload` | |
@@ -44,8 +44,9 @@
 //!
 //! # Where this departs from vips
 //!
-//! `pngsave --bitdepth` only means something with `--palette` here (vips also
-//! reduces a plain PNG's depth), and `--compression` conflicts with
+//! `pngsave --bitdepth` 2 and 4 only mean something with `--palette` here (vips also
+//! reduces a plain PNG's depth); 1 without `--palette` is the core's bilevel encoder, 128 and up
+//! white, which is what vips writes for a one-band image. `--compression` conflicts with
 //! `--interlace` and `--palette`, because the core's interlaced and palette
 //! encoders take no deflate level. `jpegload --shrink` decodes the whole image
 //! and box-shrinks it afterwards, where vips shrinks inside libjpeg, so the
@@ -71,18 +72,21 @@
 //! Writing lossless when someone typed vips's default would be a silent
 //! change of meaning, so each of them makes `--lossless` a required argument:
 //! leaving it out is a usage error (exit 2, shown in the usage line) caught
-//! before any input is read. The extension route (`viprs copy in.png
+//! before any input is read. `jp2ksave` also takes `--ratio N` instead, the
+//! core's lossy rate (libviprs-cli#147). It is named for what it is so nobody
+//! passes it a `Q`, and it is a viprs extension, as are `radsave --exposure`
+//! and `--aspect`, which vips only takes from the image's fields. The extension route (`viprs copy in.png
 //! out.webp`) is the core's own `Raster::save` table and writes lossless, as
 //! it always has.
 
 use std::io::Read as _;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use libviprs::source::DecodeLimits;
-use libviprs::{Interpretation, JpegSubsample, Raster, TiffCompression};
+use libviprs::{Interpretation, JpegSubsample, PixelFormat, Raster, TiffCompression};
 
 use super::{CommandMeta, OracleClass, Shape, io};
 use crate::features::MissingEncoder;
@@ -163,10 +167,11 @@ fn output_path(s: &str) -> std::result::Result<String, String> {
     }
 }
 
-/// A finite number above zero, for `svgload --dpi` and `--scale`: the core
-/// rounds NaN, infinities and negatives to a zero-sized render, so they are
-/// refused while parsing instead (exit 2).
-fn positive_finite(s: &str) -> std::result::Result<f64, String> {
+/// A finite number above zero, refused while parsing otherwise (exit 2): for
+/// `svgload --dpi` and `--scale` (the core rounds NaN, infinities and
+/// negatives to a zero-sized render), `radsave --exposure` and `--aspect`, and
+/// the lengths and scale `viprs pvec calibrate` takes.
+pub(crate) fn positive_finite(s: &str) -> std::result::Result<f64, String> {
     match s.parse::<f64>() {
         Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
         Ok(_) => Err("must be a finite number above 0".to_owned()),
@@ -280,10 +285,13 @@ pub fn commands() -> Vec<Command> {
                     .long("bitdepth")
                     .value_name("1|2|4|8")
                     .value_parser(["1", "2", "4", "8"])
-                    .requires("palette")
+                    .requires_if("2", "palette")
+                    .requires_if("4", "palette")
+                    .requires_if("8", "palette")
+                    .conflicts_with_all(["interlace", "compression"])
                     .help(
-                        "With --palette, hold at most 2^N colours (default 8); unlike vips it \
-                         needs --palette",
+                        "With --palette, hold at most 2^N colours (default 8). Without it, only \
+                         1 is allowed: a bilevel PNG from a one-band image (128 and up is white)",
                     ),
             ),
         saver("tiffsave", "Save an image as a single-page TIFF.").arg(
@@ -319,9 +327,29 @@ pub fn commands() -> Vec<Command> {
         .arg(lossless()),
         saver(
             "jp2ksave",
-            "Save an image as lossless JPEG 2000 (needs the `jp2k` feature).",
+            "Save an image as JPEG 2000, lossless or at a compression ratio (needs the `jp2k` \
+             feature).",
         )
-        .arg(lossless())
+        .arg(
+            flag(
+                "lossless",
+                "Write lossless (vips defaults to lossy at a Q, which this encoder does not take)",
+            )
+            .required_unless_present("ratio"),
+        )
+        .arg(
+            Arg::new("ratio")
+                .long("ratio")
+                .value_name("N")
+                .value_parser(value_parser!(u16).range(1..))
+                .conflicts_with("lossless")
+                // A viprs extension, hidden like copy --orientation (CLI_CONTRACT.md §3-deviations).
+                .hide(true)
+                .help(
+                    "Write lossy at this target compression ratio (20 is about twenty times \
+                     smaller than the raw samples); a viprs extension, not vips's Q",
+                ),
+        )
         .arg(
             Arg::new("tile-width")
                 .long("tile-width")
@@ -342,6 +370,31 @@ pub fn commands() -> Vec<Command> {
         saver(
             "radsave",
             "Save a three-band float image as Radiance HDR (.hdr).",
+        )
+        .arg(
+            Arg::new("exposure")
+                .long("exposure")
+                // A viprs extension, hidden (CLI_CONTRACT.md §3-deviations).
+                .hide(true)
+                .value_name("X")
+                .allow_negative_numbers(true)
+                .value_parser(positive_finite)
+                .help(
+                    "The EXPOSURE= header value (default: the image's rad-expos field, else 1); \
+                     a viprs extension",
+                ),
+        )
+        .arg(
+            Arg::new("aspect")
+                .long("aspect")
+                .hide(true)
+                .value_name("X")
+                .allow_negative_numbers(true)
+                .value_parser(positive_finite)
+                .help(
+                    "The PIXASPECT= header value (default: the image's rad-aspect field, else \
+                     1); a viprs extension",
+                ),
         ),
         saver(
             "uhdrsave",
@@ -391,7 +444,11 @@ pub fn commands() -> Vec<Command> {
         ),
         page_args(loader("webpload", "Load WebP frames."), true, false),
         page_args(loader("gifload", "Load GIF frames."), true, true),
-        loader("jxlload", "Load a JPEG XL image (needs the `jxl` feature)."),
+        page_args(
+            loader("jxlload", "Load JPEG XL frames (needs the `jxl` feature)."),
+            true,
+            false,
+        ),
         loader(
             "jp2kload",
             "Load a JPEG 2000 image (needs the `jp2k` feature).",
@@ -514,6 +571,17 @@ fn encode(format: &str, raster: &Raster, m: &ArgMatches) -> Result<Vec<u8>> {
             } else if m.get_flag("palette") {
                 let bits: u32 = pos(m, "bitdepth").parse().unwrap_or(8);
                 r.encode_png_palette(1 << bits)?
+            } else if pos(m, "bitdepth") == "1" {
+                // vips writes a one-band image at depth 1 by keeping the top bit of each sample,
+                // so 128 and up is white: the core's bilevel encoder at threshold 128.
+                if r.format() != PixelFormat::Gray8 {
+                    bail!(
+                        "--bitdepth 1 without --palette writes a bilevel PNG, which needs one band \
+                         of 8-bit samples; this image is {:?} (make it one band of uchar first, or add --palette)",
+                        r.format()
+                    );
+                }
+                r.encode_png_bilevel(128)?
             } else {
                 r.encode_png(m.get_one::<u8>("compression").copied().unwrap_or(6))?
             }
@@ -538,13 +606,23 @@ fn encode(format: &str, raster: &Raster, m: &ArgMatches) -> Result<Vec<u8>> {
                 NonZeroU32::new(*m.get_one::<u32>(id).expect("defaulted"))
                     .ok_or_else(|| usage_err!("--{id} must be at least 1"))
             };
+            // --lossless or --ratio, never both and never neither: clap has seen to that.
+            let compression = match m.get_one::<u16>("ratio").copied().and_then(NonZeroU16::new) {
+                Some(ratio) => libviprs::jp2k::Compression::Lossy { ratio },
+                None => libviprs::jp2k::Compression::Lossless,
+            };
             let options = libviprs::jp2k::SaveOptions::default()
+                .with_compression(compression)
                 .with_tile_width(tile("tile-width")?)
                 .with_tile_height(tile("tile-height")?);
             integer()?.encode_jp2k(options)?
         }
         "fits" => raster.encode_fits()?,
-        "rad" => raster.encode_radiance(libviprs::radiance::SaveOptions::default())?,
+        "rad" => raster.encode_radiance(
+            libviprs::radiance::SaveOptions::default()
+                .with_exposure(m.get_one::<f64>("exposure").copied())
+                .with_aspect(m.get_one::<f64>("aspect").copied()),
+        )?,
         "uhdr" => {
             let options = libviprs::uhdr::SaveOptions::default()
                 .with_quality(*m.get_one::<u8>("Q").expect("defaulted"))
@@ -732,9 +810,13 @@ fn decode(name: &str, m: &ArgMatches) -> Result<Raster> {
         }
         "jxlload" => {
             require_decoder(cfg!(feature = "jxl"), "jxl", "JPEG XL")?;
-            source(libviprs::decode_jxl(
+            let options = libviprs::jxl::LoadOptions::default()
+                .with_page(page)
+                .with_n(n);
+            source(libviprs::decode_jxl_with(
                 &read_input(spec, &limits, None)?,
                 limits,
+                options,
             ))?
         }
         "jp2kload" => {

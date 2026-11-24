@@ -31,7 +31,7 @@ const ASSERTED_CRS: &str = "asserted-by-the-caller";
 
 /// `err` and every `source()` under it, joined: the facade and the core keep the reason in the
 /// chain and the top message names only the step.
-fn chain(err: &dyn std::error::Error) -> String {
+pub(crate) fn chain(err: &dyn std::error::Error) -> String {
     let mut text = err.to_string();
     let mut source = err.source();
     while let Some(next) = source {
@@ -42,12 +42,12 @@ fn chain(err: &dyn std::error::Error) -> String {
     text
 }
 
-fn read_file(path: &Path) -> Vec<u8> {
+pub(crate) fn read_file(path: &Path) -> Vec<u8> {
     std::fs::read(path)
         .unwrap_or_else(|e| operational_error(&format!("reading {}: {e}", path.display())))
 }
 
-fn open_pvec(path: &Path) -> PvecReader {
+pub(crate) fn open_pvec(path: &Path) -> PvecReader {
     PvecReader::open(read_file(path)).unwrap_or_else(|e| {
         operational_error(&format!(
             "{} is not a .pvec this build reads: {}",

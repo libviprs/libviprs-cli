@@ -54,6 +54,7 @@ mod pdf_geo_plan;
 mod pipeline;
 mod pvec_convert;
 mod pvec_raster;
+mod pvec_read;
 mod vector;
 mod verify;
 
@@ -540,6 +541,13 @@ struct InfoArgs {
     /// prints nothing on stdout and exits 1 as the text form does.
     #[arg(long)]
     json: bool,
+
+    /// List every header field of an image with its value, one `name: value`
+    /// a line, the way `vipsheader -a` does: the built-in fields first in
+    /// libvips order, then the ones the loader attached. With `--json` they
+    /// are a `"fields"` object in the same order. A PDF has no header fields.
+    #[arg(long)]
+    fields: bool,
 }
 
 #[derive(Parser)]
@@ -2464,6 +2472,13 @@ fn run_info(args: InfoArgs) {
         .unwrap_or("")
         .to_lowercase();
 
+    if ext == "pdf" && args.fields {
+        usage_error(
+            "--fields lists an image's header fields, and a PDF has none",
+            "use `viprs info FILE.pdf` without --fields, or `viprs pdf info`",
+        );
+    }
+
     if ext == "pdf" {
         match libviprs::pdf_info(path) {
             Ok(info) if args.json => {
@@ -2510,6 +2525,46 @@ fn run_info(args: InfoArgs) {
         }
     } else {
         match input::decode_path_default(path) {
+            Ok(raster) if args.fields => {
+                // Every field the raster reads back, in the order libvips lists them. A field
+                // the list names that has no value (an image with no `filename`) is left out.
+                let fields: serde_json::Map<String, serde_json::Value> = raster
+                    .get_fields()
+                    .into_iter()
+                    .filter_map(|name| {
+                        let value = match raster.get_field(&name)? {
+                            libviprs::MetadataValue::Int(v) => serde_json::json!(v),
+                            libviprs::MetadataValue::Double(v) => serde_json::json!(v),
+                            libviprs::MetadataValue::Str(v) => serde_json::json!(v),
+                            libviprs::MetadataValue::Blob(b) => {
+                                serde_json::json!(format!("{} bytes of binary data", b.len()))
+                            }
+                            libviprs::MetadataValue::IntArray(v) => serde_json::json!(v),
+                            libviprs::MetadataValue::DoubleArray(v) => serde_json::json!(v),
+                            _ => serde_json::Value::Null,
+                        };
+                        Some((name, value))
+                    })
+                    .collect();
+                if args.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "v": 1,
+                            "kind": "image",
+                            "path": path.display().to_string(),
+                            "fields": fields,
+                        })
+                    );
+                } else {
+                    for (name, value) in &fields {
+                        match value {
+                            serde_json::Value::String(text) => println!("{name}: {text}"),
+                            other => println!("{name}: {other}"),
+                        }
+                    }
+                }
+            }
             Ok(raster) if args.json => {
                 println!(
                     "{}",
