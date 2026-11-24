@@ -57,6 +57,9 @@ jobs:
       - run: cargo clippy --all-targets --features svg -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features jxl -- -D warnings -W clippy::incompatible_msrv -W deprecated
       - run: cargo clippy --all-targets --features jp2k -- -D warnings -W clippy::incompatible_msrv -W deprecated
+      # `jbig2` is the core's pure Rust JBIG2 decoder for PDF images (#151). It is in neither `default` nor
+      # `full`, so no other cell compiles the arm that refuses a page without it or the one that decodes it.
+      - run: cargo clippy --all-targets --features jbig2 -- -D warnings -W clippy::incompatible_msrv -W deprecated
       # `viprs vector views|build|report` read a drawing through the core's
       # `dwg-acadsharp` provider (libviprs#1035). Clippy never links, so the cell
       # needs no native archive; the native cells in tests/vector_cli.rs skip
@@ -147,6 +150,9 @@ jobs:
       # reaches. `pdfium-static` stays out because it needs a static
       # libpdfium.a to link.
       - run: cargo test --features full
+      # `jbig2` is in neither `default` nor `full` (the core's fuzz record is not clean yet), so the cell that
+      # decodes a JBIG2 stream in a PDF page only runs with it on.
+      - run: cargo test --features jbig2 --test cli_pvec_pdf_151
 
   # The `viprs vector` cells that read a real DWG need the NativeAOT archive
   # acadsharp-rs links, so in the `test` job they skip, and a skip is the same

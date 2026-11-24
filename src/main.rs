@@ -140,7 +140,7 @@ enum Command {
     /// `convert` needs the `pvec-convert` feature and `rasters` the `pvec-raster`
     /// one, both on by default; a `--no-default-features` build leaves them out,
     /// like `pyramid --storage pvec` and `pmtiles to-pvec`, which put a raster into one.
-    Pvec(pvec_raster::PvecArgs),
+    Pvec(Box<pvec_raster::PvecArgs>),
 }
 
 #[derive(Parser)]
@@ -1144,7 +1144,7 @@ fn main() {
                 Command::Geo(args) => pdf_geo_plan::run_geo(args),
                 Command::Verify(args) => verify::run(args),
                 Command::Vector(args) => vector::run(*args),
-                Command::Pvec(args) => pvec_raster::run(args),
+                Command::Pvec(args) => pvec_raster::run(*args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),

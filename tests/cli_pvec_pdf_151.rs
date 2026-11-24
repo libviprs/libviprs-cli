@@ -400,7 +400,7 @@ fn dwg_flags_are_usage_errors_on_a_pdf() {
         &["--max-entities", "3"],
         &["--leaf-capacity", "8"],
         &["--spill-dir", "x", "--spill-budget", "10"],
-        &["--region-gap", "1"],
+        &["--regions", "--region-gap", "1"],
         &["--max-insert-depth", "3"],
         &["--no-plot-layers", "draw"],
         &["--plan-scale", "1:2", "--paper-unit", "1"],

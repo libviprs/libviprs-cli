@@ -134,7 +134,6 @@ fn profile_reaches_the_conversion_and_the_report_names_it() {
     for (flag, profile, policy, exact_only) in [
         ("default", "Default", "RejectEntity", false),
         ("permissive", "Permissive", "Downgrade", false),
-        ("strict", "Strict", "RejectInput", true),
     ] {
         let report = model_ok("vc_layers.dwg", "profile", &["--profile", flag]);
         let caps = &report["capabilities"];
@@ -142,6 +141,22 @@ fn profile_reaches_the_conversion_and_the_report_names_it() {
         assert_eq!(caps["policy"], policy, "{flag}: {report}");
         assert_eq!(caps["exact_only"], exact_only, "{flag}: {report}");
     }
+}
+
+/// `strict` allows only exactly stored entities, and a line is stored as an equivalent trimmed curve,
+/// so it stops the run and names the capability: that is the profile, not a usage mistake.
+#[cfg(feature = "pvec-convert")]
+#[test]
+fn strict_stops_the_run_at_the_first_entity_that_is_not_exact() {
+    let dir = scratch("strict");
+    let (out, _) = model("vc_layers.dwg", &dir, &["--profile", "strict"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("needs the PVec capability") && stderr(&out).contains("not allowed"),
+        "{}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A profile that is not one of the three is a usage error.
@@ -529,7 +544,8 @@ fn the_view_profile_flags_decide_which_layers_are_drawn() {
         "view-both",
         &["--off-layers", "draw", "--frozen-layers", "draw"],
     ));
-    assert_eq!(both, 9, "every entity of the drawing");
+    // Nothing is excluded, so the block instances count too: 9 entities met, 13 leaves drawn.
+    assert_eq!(both, 13, "every leaf of the drawing");
 }
 
 /// A layer chosen by name wins over its flags, in both directions, with the case ignored.
@@ -537,12 +553,24 @@ fn the_view_profile_flags_decide_which_layers_are_drawn() {
 #[test]
 fn a_layer_can_be_forced_hidden_or_visible_by_name() {
     let base = included(&model_ok("vc_layers.dwg", "layer-base", &[]));
+    let drawn = ["--off-layers", "draw"];
+    let all = included(&model_ok("vc_layers.dwg", "layer-all", &drawn));
     let hidden = included(&model_ok(
         "vc_layers.dwg",
         "layer-hidden",
-        &["--layer-hidden", "vc_on"],
+        &["--off-layers", "draw", "--layer-hidden", "vc_off"],
     ));
-    assert!(hidden < base, "{hidden} against {base}");
+    assert!(hidden < all, "{hidden} against {all}");
+    // Everything the default view draws is on VC_ON, so hiding it leaves nothing to convert.
+    let dir = scratch("layer-none");
+    let (out, _) = model("vc_layers.dwg", &dir, &["--layer-hidden", "vc_on"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("no entity carries geometry"),
+        "{}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(dir);
     let shown = included(&model_ok(
         "vc_layers.dwg",
         "layer-visible",
@@ -561,7 +589,7 @@ fn the_other_view_knobs_take_their_words_and_nothing_else() {
         ["--frozen-text", "exclude"],
         ["--no-plot-text", "exclude"],
         ["--invisible-entities", "draw"],
-        ["--viewport-freezes", "apply"],
+        ["--viewport-freezes", "report"],
         ["--insert-layer", "own"],
         ["--insert-layer", "inherit"],
         ["--max-insert-depth", "64"],
@@ -576,6 +604,22 @@ fn the_other_view_knobs_take_their_words_and_nothing_else() {
     ] {
         usage(&[flag, bad], flag);
     }
+}
+
+/// `apply` for a layer frozen in a viewport is the print rule, which the core only enables for a
+/// sheet: on model space the run fails and the message names the field.
+#[cfg(feature = "pvec-convert")]
+#[test]
+fn the_print_freeze_rule_is_refused_on_model_space() {
+    let dir = scratch("freeze-apply");
+    let (out, _) = model("vc_layers.dwg", &dir, &["--viewport-freezes", "apply"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("frozen_in_viewport"),
+        "{}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A sheet starts from the print profile, not the model-space one: the view flags are written over it.

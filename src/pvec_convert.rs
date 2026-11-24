@@ -9,13 +9,18 @@
 //! viprs pvec convert <drawing.dwg> <out-dir> --annotations   also text, hatches and solid fills
 //! viprs pvec convert <drawing.dwg> <out-dir> --regions --element-rule layer:A-WALL*=wall
 //! viprs pvec convert <drawing.dwg> <out-dir> --thumbnail 512  also a PNG of each sheet
+//! viprs pvec convert <drawing.dwg> <out-dir> --profile strict --scale 0.05   a profile, and a scale
+//! viprs pvec convert <page.pdf> <out-dir> --page 2             one PDF page, as <stem>.pvec
 //! viprs pvec layouts <drawing.dwg>                           the paper layouts, nothing converted
 //! ```
 //!
 //! A thin call onto `libviprs::pvec_convert`: `PvecLayoutSet` for the sheets, `PvecConversion` for
 //! model space, and `paper_sheets` for `viprs pvec layouts` (libviprs-cli#150). A sheet is `<stem>.<NN>-<slug>.pvec` with its report beside it and the set index
-//! `<stem>.sheets.json` written last; model space is `<stem>.pvec` and its report. This file
-//! parses arguments, prints one line per sheet and picks the exit code.
+//! `<stem>.sheets.json` written last; model space is `<stem>.pvec` and its report. A PDF page goes through
+//! `PdfConversion` (`pvec_convert/pdf.rs`) into `<stem>.pvec` and its report too (libviprs-cli#151). Which
+//! input it is comes from the name: `.pdf`, any case, is a PDF and anything else a DWG, and a flag that belongs to
+//! the other kind (`pvec_convert/knobs.rs` has them, grouped) is a usage error. This file parses arguments, prints
+//! one line per sheet and picks the exit code.
 //!
 //! # Exit codes
 //!
@@ -24,11 +29,19 @@
 //! model space is `--model`, never a fallback), or the drawing did not convert; 2 for a usage
 //! mistake; 130 when Ctrl-C stopped it, with the sheets already published left in place and no index.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 
 use crate::usage_error;
+
+mod knobs;
+#[cfg(all(feature = "pvec-convert", feature = "pvec-raster"))]
+mod pdf;
+
+use knobs::{
+    CalibrationArgs, CapabilityArgs, PdfArgs, RegionArgs, SourceLimitArgs, ViewArgs, WriterArgs,
+};
 
 /// The widest picture `--thumbnail` and `viprs pvec thumbnail` draw, in pixels.
 pub(crate) const MAX_THUMBNAIL_WIDTH: u32 = 4096;
@@ -179,6 +192,59 @@ pub(crate) struct ConvertArgs {
         value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_THUMBNAIL_WIDTH))
     )]
     thumbnail: Option<u32>,
+
+    #[command(flatten)]
+    pdf: PdfArgs,
+
+    #[command(flatten)]
+    capability: CapabilityArgs,
+
+    #[command(flatten)]
+    calibration: CalibrationArgs,
+
+    #[command(flatten)]
+    view: ViewArgs,
+
+    #[command(flatten)]
+    limits: SourceLimitArgs,
+
+    #[command(flatten)]
+    writer: WriterArgs,
+
+    #[command(flatten)]
+    region_tuning: RegionArgs,
+}
+
+/// Whether `path` names a PDF, which is what sends a conversion down the PDF path.
+fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+}
+
+impl ConvertArgs {
+    /// The flags given that only a DWG takes.
+    fn dwg_only(&self) -> Vec<&'static str> {
+        let own = knobs::given(&[
+            (!self.layout.is_empty(), "--layout"),
+            (self.model, "--model"),
+            (self.unit.is_some(), "--unit"),
+            (self.geometry_only, "--geometry-only"),
+            (self.regions, "--regions"),
+            (self.annotations, "--annotations"),
+            (!self.element_rules.is_empty(), "--element-rule"),
+            (self.thumbnail.is_some(), "--thumbnail"),
+        ]);
+        [
+            own,
+            self.capability.given(),
+            self.calibration.given(),
+            self.view.given(),
+            self.limits.given(),
+            self.writer.given(),
+            self.region_tuning.given(),
+        ]
+        .concat()
+    }
 }
 
 pub(crate) fn run(args: ConvertArgs) {
@@ -209,15 +275,54 @@ pub(crate) fn run(args: ConvertArgs) {
             "give a name with no path separator, such as `--stem plan`",
         );
     }
+    let a_pdf = is_pdf(&args.drawing);
+    let misplaced = if a_pdf {
+        args.dwg_only()
+    } else {
+        args.pdf.given()
+    };
+    if !misplaced.is_empty() {
+        let (only, input) = if a_pdf {
+            ("DWG", "PDF")
+        } else {
+            ("PDF", "DWG")
+        };
+        usage_error(
+            &format!(
+                "{} only apply to a {only}, and {} is a {input}",
+                misplaced.join(", "),
+                args.drawing.display()
+            ),
+            "drop them, or give the other kind of input (a name ending in .pdf is a PDF)",
+        );
+    }
+    if let Some(dir) = &args.writer.spill_dir
+        && dir.exists()
+        && !dir.is_dir()
+    {
+        usage_error(
+            &format!("--spill-dir {} is not a directory", dir.display()),
+            "give a directory; it is created when it does not exist",
+        );
+    }
     #[cfg(feature = "pvec-convert")]
     {
-        #[cfg(not(feature = "pvec-raster-thumbnail"))]
-        if args.thumbnail.is_some() {
+        if a_pdf {
+            #[cfg(feature = "pvec-raster")]
+            pdf::run(&args);
+            #[cfg(not(feature = "pvec-raster"))]
             crate::operational_error(
-                "`--thumbnail` is not in this build; rebuild with `--features pvec-raster-thumbnail`",
+                "a PDF page needs the `pvec-raster` feature; rebuild with `--features pvec-raster`",
             );
+        } else {
+            #[cfg(not(feature = "pvec-raster-thumbnail"))]
+            if args.thumbnail.is_some() {
+                crate::operational_error(
+                    "`--thumbnail` is not in this build; rebuild with `--features pvec-raster-thumbnail`",
+                );
+            }
+            imp::run(&args);
         }
-        imp::run(&args);
     }
     #[cfg(not(feature = "pvec-convert"))]
     {
@@ -256,15 +361,22 @@ mod imp {
 
     use libviprs::cad::CadSource;
     use libviprs::pvec::DwgProvider;
+    use libviprs::pvec::SourceLimits;
     use libviprs::pvec::SourceUnit;
+    use libviprs::pvec::ViewProfile;
     use libviprs::pvec::classify::{ElementClass, ElementRules, RuleMatch};
     use libviprs::pvec::components::StreamSelection;
     use libviprs::pvec::dwg_acadrust::AcadrustProvider;
     use libviprs::pvec::provider::SourceColour;
     use libviprs::pvec::regions::RegionConfig;
-    use libviprs::pvec::writer::WriteError;
+    use libviprs::pvec::writer::{CapabilityId, LeafConfig, SpillConfig, WriteError};
+    use libviprs::pvec::{InsertLayerRule, LayerOverride, LayerStateRule, ViewportFreezeRule};
+    #[allow(deprecated)]
+    use libviprs::pvec_convert::GeoreferenceHandoff;
     use libviprs::pvec_convert::{
-        LayoutSetError, PvecConversion, PvecConvertError, PvecLayoutSet, SheetSkip, paper_sheets,
+        Calibration, CapabilityPolicy, ConversionProfile, LayoutSetError, PvecConversion,
+        PvecConvertError, PvecLayoutSet, ScaleClaim, ScaleProvenance, SheetSkip, import_sidecar,
+        paper_sheets,
     };
 
     use crate::operational_error;
@@ -285,14 +397,239 @@ mod imp {
         }
     }
 
-    /// The unit, the component streams, the regions step and the thumbnail, the same for model
-    /// space and a sheet.
+    /// The regions step's knobs: the lengths are in metres, scaled to the drawing's unit, and the
+    /// defaults are the ones the step shipped with.
+    pub(super) fn region_config(args: &ConvertArgs, per_metre: f64) -> RegionConfig {
+        let r = &args.region_tuning;
+        RegionConfig {
+            gap_tolerance: r.region_gap.unwrap_or(0.5) * per_metre,
+            corridor_max_width: r.region_corridor_width.unwrap_or(2.5) * per_metre,
+            corridor_min_aspect: r.region_corridor_aspect.unwrap_or(3.0),
+            max_faces: r.region_max_faces.unwrap_or(1000),
+            keep_unlabelled: r.region_keep_unlabelled,
+        }
+    }
+
+    /// The scale the flags state, as a calibration, or `None` when none was given.
+    fn calibration(args: &ConvertArgs) -> Result<Option<Calibration>, String> {
+        let c = &args.calibration;
+        let claim = |metres_per_source_unit, provenance| ScaleClaim {
+            metres_per_source_unit,
+            provenance,
+            uncertainty: c.scale_uncertainty,
+            note: c.scale_note.clone().unwrap_or_default(),
+        };
+        // clap's group makes at most one of these present, and each one's companion with it.
+        let scale = match (c.scale, c.plan_scale, c.paper_unit, c.measured, c.distance) {
+            (Some(metres), ..) => claim(metres, ScaleProvenance::Manual),
+            (None, Some((numerator, denominator)), Some(paper), ..) => claim(
+                paper * f64::from(denominator) / f64::from(numerator),
+                ScaleProvenance::PlanScale {
+                    numerator,
+                    denominator,
+                    paper_metres_per_unit: paper,
+                },
+            ),
+            (None, None, _, Some([x0, y0, x1, y1]), Some(metres)) => claim(
+                metres / (x1 - x0).hypot(y1 - y0),
+                ScaleProvenance::Measured {
+                    p0: [x0, y0],
+                    p1: [x1, y1],
+                    metres,
+                },
+            ),
+            _ => return Ok(None),
+        };
+        Calibration::new(Some(scale), None, None)
+            .map(Some)
+            .map_err(|e| format!("the scale was refused: {}", with_causes(&e)))
+    }
+
+    /// The calibration id of a retired georeference sidecar. A file that cannot be read, or has a
+    /// schema version this reader does not know, is an error before anything is converted.
+    #[allow(deprecated)]
+    fn sidecar_id(path: &Path) -> Result<Option<String>, String> {
+        let GeoreferenceHandoff::V1(v1) = GeoreferenceHandoff::read_from(path)
+            .map_err(|e| format!("{}: {}", path.display(), with_causes(&e)))?;
+        Ok(v1.calibration_id)
+    }
+
+    /// Brings the sidecar's id into the artifact at `artifact`: the calibration the flags state,
+    /// with the id as its external id.
+    fn import(artifact: &Path, sidecar: &Path, calibration: &Calibration) -> String {
+        match import_sidecar(artifact, sidecar, |_| Some(calibration.clone())) {
+            Ok(_) => format!("calibration imported from {}", name(sidecar)),
+            Err(e) => operational_error(&format!(
+                "importing {} into {}: {}",
+                sidecar.display(),
+                artifact.display(),
+                with_causes(&e)
+            )),
+        }
+    }
+
+    /// The reader limits the flags ask for, or `None` when none was given. `SourceLimits` is
+    /// non-exhaustive, so it is the library's defaults with each flag written over its field.
+    pub(super) fn source_limits(args: &ConvertArgs) -> Option<SourceLimits> {
+        let l = &args.limits;
+        if l.given().is_empty() {
+            return None;
+        }
+        let mut limits = SourceLimits::default();
+        if let Some(v) = l.max_block_depth {
+            limits.max_block_depth = v;
+        }
+        if let Some(v) = l.max_entities {
+            limits.max_entities = v;
+        }
+        if let Some(v) = l.max_polyline_points {
+            limits.max_polyline_vertices = usize::try_from(v).unwrap_or(usize::MAX);
+        }
+        if let Some(v) = l.max_spline_control_points {
+            limits.max_spline_control_points = v;
+        }
+        if let Some(v) = l.max_spline_knots {
+            limits.max_spline_knots = v;
+        }
+        if let Some(v) = l.max_insert_grid {
+            limits.max_insert_grid = v;
+        }
+        if let Some(v) = l.max_expanded_instances {
+            limits.max_expanded_instances = v;
+        }
+        if let Some(v) = l.max_alloc_bytes {
+            limits.max_allocation_bytes = v;
+        }
+        if let Some(v) = l.max_name_bytes {
+            limits.max_name_bytes = v;
+        }
+        Some(limits)
+    }
+
+    /// The view profile the flags ask for, or `None` when none was given. A sheet starts from the
+    /// print profile (its space is set by the core, so the layout name here is only a placeholder)
+    /// and model space from the default profile.
+    pub(super) fn view_profile(args: &ConvertArgs, sheet: bool) -> Option<ViewProfile> {
+        let v = &args.view;
+        if v.given().is_empty() {
+            return None;
+        }
+        let rule = |word: &str| {
+            if word == "draw" {
+                LayerStateRule::Ignore
+            } else {
+                LayerStateRule::Exclude
+            }
+        };
+        let mut p = if sheet {
+            ViewProfile::print_profile("")
+        } else {
+            ViewProfile::default_profile()
+        };
+        if let Some(w) = &v.off_layers {
+            p.layers.off = rule(w);
+        }
+        if let Some(w) = &v.frozen_layers {
+            p.layers.frozen = rule(w);
+        }
+        if let Some(w) = &v.no_plot_layers {
+            p.layers.no_plot = rule(w);
+        }
+        if let Some(w) = &v.frozen_text {
+            p.layers.frozen_text = rule(w);
+        }
+        if let Some(w) = &v.no_plot_text {
+            p.layers.no_plot_text = rule(w);
+        }
+        if let Some(w) = &v.invisible_entities {
+            p.entities.invisible = rule(w);
+        }
+        if let Some(w) = &v.viewport_freezes {
+            p.layers.frozen_in_viewport = if w == "apply" {
+                ViewportFreezeRule::Apply
+            } else {
+                ViewportFreezeRule::IgnoreAndReport
+            };
+        }
+        if let Some(w) = &v.insert_layer {
+            p.layers.insert_override = if w == "own" {
+                InsertLayerRule::OwnLayerOnly
+            } else {
+                InsertLayerRule::InheritOnLayerZero
+            };
+        }
+        if let Some(n) = v.max_insert_depth {
+            p.nested_inserts.max_depth = n;
+        }
+        p.layers.overrides.extend(
+            v.layer_hidden
+                .iter()
+                .map(|n| (n.clone(), LayerOverride::Hidden)),
+        );
+        p.layers.overrides.extend(
+            v.layer_visible
+                .iter()
+                .map(|n| (n.clone(), LayerOverride::Visible)),
+        );
+        Some(p)
+    }
+
+    /// The unit, the capabilities, the calibration, the view, the limits, the layout of the artifact,
+    /// the component streams, the regions step and the thumbnail, the same for model space and a sheet.
     fn configure<'a>(
         c: PvecConversion<'a>,
         args: &ConvertArgs,
         unit: Option<SourceUnit>,
         per_metre: f64,
+        calibration: Option<&Calibration>,
+        sheet: bool,
     ) -> PvecConversion<'a> {
+        // The profile replaces any earlier capability setting, so it goes first.
+        let mut c = c;
+        if let Some(p) = &args.capability.profile {
+            c = c.profile(match p.as_str() {
+                "strict" => ConversionProfile::Strict,
+                "permissive" => ConversionProfile::Permissive,
+                _ => ConversionProfile::Default,
+            });
+        }
+        if !args.capability.allow_capability.is_empty() {
+            c = c.allowed_capabilities(
+                args.capability
+                    .allow_capability
+                    .iter()
+                    .map(|&id| CapabilityId::new(id)),
+            );
+        }
+        if let Some(p) = &args.capability.capability_policy {
+            c = c.capability_policy(match p.as_str() {
+                "reject-input" => CapabilityPolicy::RejectInput,
+                "downgrade" => CapabilityPolicy::Downgrade,
+                _ => CapabilityPolicy::RejectEntity,
+            });
+        }
+        if let Some(cal) = calibration {
+            c = c.calibration(cal.clone());
+        }
+        // The limits ride on the view profile, so a profile goes before them.
+        if let Some(p) = view_profile(args, sheet) {
+            c = c.view_profile(p);
+        }
+        if let Some(l) = source_limits(args) {
+            c = c.limits(l);
+        }
+        if let Some(cell_capacity) = args.writer.leaf_capacity {
+            c = c.leaves(LeafConfig {
+                cell_capacity,
+                tier0_max_error: args.writer.tier0_max_error,
+            });
+        }
+        if let (Some(root), Some(budget)) = (&args.writer.spill_dir, args.writer.spill_budget) {
+            c = c.spill(SpillConfig {
+                root: root.clone(),
+                budget,
+            });
+        }
         let c = c
             .components(if args.geometry_only {
                 StreamSelection::NONE
@@ -300,14 +637,7 @@ mod imp {
                 StreamSelection::ALL
             })
             .annotations(args.annotations)
-            .regions(args.regions.then_some(RegionConfig {
-                // 0.5 m and 2.5 m, in the drawing's own unit.
-                gap_tolerance: 0.5 * per_metre,
-                corridor_max_width: 2.5 * per_metre,
-                corridor_min_aspect: 3.0,
-                max_faces: 1000,
-                keep_unlabelled: false,
-            }));
+            .regions(args.regions.then(|| region_config(args, per_metre)));
         let c = if args.element_rules.is_empty() {
             c
         } else {
@@ -433,6 +763,26 @@ mod imp {
         } else {
             1.0
         };
+        // What the calibration flags state, and a sidecar's id, are settled before anything is written.
+        let calibration = match calibration(args) {
+            Ok(c) => c,
+            Err(e) => crate::usage_error(&e, "see `viprs pvec convert --help` for the scale flags"),
+        };
+        let sidecar = args
+            .calibration
+            .georef_sidecar
+            .as_deref()
+            .and_then(|path| match sidecar_id(path) {
+                Ok(Some(_)) => calibration.clone().map(|c| (path, c)),
+                Ok(None) => {
+                    eprintln!(
+                        "note: {} names no calibration id, so nothing is imported from it",
+                        path.display()
+                    );
+                    None
+                }
+                Err(e) => operational_error(&e),
+            });
         // A directory this run made goes again when the run writes nothing into it.
         let created = !args.out_dir.exists();
         if let Err(e) = std::fs::create_dir_all(&args.out_dir) {
@@ -444,6 +794,11 @@ mod imp {
             }
             operational_error(message)
         };
+        if let Some(dir) = &args.writer.spill_dir
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            fail(&format!("cannot create {}: {e}", dir.display()));
+        }
         let cancel = install_sigint();
         let stem = args.stem.clone().unwrap_or_else(|| {
             args.drawing
@@ -455,9 +810,12 @@ mod imp {
         if args.model {
             let dest: PathBuf = args.out_dir.join(format!("{stem}.pvec"));
             let c = PvecConversion::new(CadSource::Path(&args.drawing), &dest).cancel(cancel);
-            match configure(c, args, unit, per_metre).convert() {
+            match configure(c, args, unit, per_metre, calibration.as_ref(), false).convert() {
                 Ok(out) => {
                     eprintln!("model  written  {} ({} entities)", name(&dest), out.written);
+                    if let Some((path, cal)) = &sidecar {
+                        eprintln!("model  {}", import(&dest, path, cal));
+                    }
                     #[cfg(feature = "pvec-raster-thumbnail")]
                     if let Err(e) = save_thumbnail(&dest, out.thumbnail.as_deref()) {
                         fail(&e);
@@ -471,7 +829,16 @@ mod imp {
 
         let mut set = PvecLayoutSet::new(CadSource::Path(&args.drawing), &args.out_dir)
             .stem(stem)
-            .sheets(move |c| configure(c.cancel(cancel.clone()), args, unit, per_metre));
+            .sheets(move |c| {
+                configure(
+                    c.cancel(cancel.clone()),
+                    args,
+                    unit,
+                    per_metre,
+                    calibration.as_ref(),
+                    true,
+                )
+            });
         if !args.layout.is_empty() {
             set = set.layouts(args.layout.iter().cloned());
         }
@@ -503,6 +870,9 @@ mod imp {
             {
                 fail(&e);
             }
+            if let (Ok(_), Some((path, cal))) = (&s.outcome, &sidecar) {
+                eprintln!("{:>3} {}", s.tab_order, import(&s.file, path, cal));
+            }
         }
         if let Some(index) = &out.index {
             eprintln!("index  {}", name(index));
@@ -533,8 +903,26 @@ mod imp {
 
 #[cfg(all(test, feature = "pvec-convert"))]
 mod tests {
-    use super::imp::units_per_metre;
-    use libviprs::pvec::SourceUnit;
+    use super::ConvertArgs;
+    use super::imp::{region_config, source_limits, units_per_metre, view_profile};
+    use clap::Parser;
+    use libviprs::pvec::{
+        InsertLayerRule, LayerOverride, LayerStateRule, SourceLimits, SourceUnit, ViewProfile,
+        ViewportFreezeRule,
+    };
+
+    /// `ConvertArgs` is an `Args`, so the cells parse it the way the binary does, behind a parser.
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: ConvertArgs,
+    }
+
+    fn parse(extra: &[&str]) -> ConvertArgs {
+        let mut argv = vec!["viprs", "a.dwg", "out"];
+        argv.extend_from_slice(extra);
+        Cli::try_parse_from(argv).expect("the flags parse").args
+    }
 
     /// libviprs#1608: the 0.5 m gap and 2.5 m corridor become 500 and 2500 in a millimetre drawing.
     #[test]
@@ -546,5 +934,160 @@ mod tests {
         assert!((units_per_metre(SourceUnit::Feet) - 3.280_839_9).abs() < 1e-6);
         assert!((units_per_metre(SourceUnit::Inches) - 39.370_078_7).abs() < 1e-6);
         assert_eq!(units_per_metre(SourceUnit::Unitless), 1.0);
+    }
+
+    /// The region knobs are metres: the defaults are the ones the step shipped with, and each flag
+    /// lands in its own field, the lengths scaled to the drawing's unit and the others not.
+    #[test]
+    fn region_flags_land_in_their_own_fields() {
+        let r = region_config(&parse(&["--regions"]), 1000.0);
+        assert_eq!((r.gap_tolerance, r.corridor_max_width), (500.0, 2500.0));
+        assert_eq!(
+            (r.corridor_min_aspect, r.max_faces, r.keep_unlabelled),
+            (3.0, 1000, false)
+        );
+        let r = region_config(
+            &parse(&[
+                "--regions",
+                "--region-gap",
+                "0.25",
+                "--region-corridor-width",
+                "1.5",
+                "--region-corridor-aspect",
+                "4",
+                "--region-max-faces",
+                "7",
+                "--region-keep-unlabelled",
+            ]),
+            100.0,
+        );
+        assert_eq!((r.gap_tolerance, r.corridor_max_width), (25.0, 150.0));
+        assert_eq!(
+            (r.corridor_min_aspect, r.max_faces, r.keep_unlabelled),
+            (4.0, 7, true)
+        );
+    }
+
+    /// Every reader limit lands in its own `SourceLimits` field, and none given leaves the core's
+    /// defaults alone (`None`, so the view profile's own limits stand). `--max-insert-grid` has no
+    /// drawing that trips it (none holds a MINSERT), so this is where it is held.
+    #[test]
+    fn each_limit_flag_lands_in_its_own_field() {
+        assert_eq!(source_limits(&parse(&[])), None);
+        let l = source_limits(&parse(&[
+            "--max-block-depth",
+            "1",
+            "--max-entities",
+            "2",
+            "--max-polyline-points",
+            "3",
+            "--max-spline-control-points",
+            "4",
+            "--max-spline-knots",
+            "5",
+            "--max-insert-grid",
+            "6",
+            "--max-expanded-instances",
+            "7",
+            "--max-alloc-bytes",
+            "8",
+            "--max-name-bytes",
+            "9",
+        ]))
+        .expect("limits were given");
+        assert_eq!(
+            (
+                l.max_block_depth,
+                l.max_entities,
+                l.max_polyline_vertices,
+                l.max_spline_control_points,
+                l.max_spline_knots,
+                l.max_insert_grid,
+                l.max_expanded_instances,
+                l.max_allocation_bytes,
+                l.max_name_bytes,
+            ),
+            (1, 2, 3, 4, 5, 6, 7, 8, 9)
+        );
+        // Only the one asked for moves.
+        let mut want = SourceLimits::default();
+        want.max_insert_grid = 6;
+        assert_eq!(
+            source_limits(&parse(&["--max-insert-grid", "6"])),
+            Some(want)
+        );
+    }
+
+    /// The view flags replace one rule each over the profile they start from: the default profile for
+    /// model space and the print profile for a sheet. None given is `None`.
+    #[test]
+    fn view_flags_replace_one_rule_each_over_their_base() {
+        assert_eq!(view_profile(&parse(&[]), false), None);
+        assert_eq!(view_profile(&parse(&[]), true), None);
+        let args = parse(&[
+            "--off-layers",
+            "draw",
+            "--frozen-layers",
+            "draw",
+            "--no-plot-layers",
+            "draw",
+            "--frozen-text",
+            "exclude",
+            "--no-plot-text",
+            "exclude",
+            "--invisible-entities",
+            "draw",
+            "--viewport-freezes",
+            "apply",
+            "--insert-layer",
+            "own",
+            "--max-insert-depth",
+            "5",
+            "--layer-hidden",
+            "A",
+            "--layer-visible",
+            "B",
+        ]);
+        for sheet in [false, true] {
+            let p = view_profile(&args, sheet).expect("flags were given");
+            let l = &p.layers;
+            assert_eq!(
+                (l.off, l.frozen, l.no_plot, l.frozen_text, l.no_plot_text),
+                (
+                    LayerStateRule::Ignore,
+                    LayerStateRule::Ignore,
+                    LayerStateRule::Ignore,
+                    LayerStateRule::Exclude,
+                    LayerStateRule::Exclude
+                )
+            );
+            assert_eq!(p.entities.invisible, LayerStateRule::Ignore);
+            assert_eq!(l.frozen_in_viewport, ViewportFreezeRule::Apply);
+            assert_eq!(l.insert_override, InsertLayerRule::OwnLayerOnly);
+            assert_eq!(p.nested_inserts.max_depth, 5);
+            assert_eq!(
+                l.overrides,
+                [
+                    ("A".to_owned(), LayerOverride::Hidden),
+                    ("B".to_owned(), LayerOverride::Visible)
+                ]
+            );
+        }
+        // A rule not written stays the base's own: no-plot layers are drawn in model space and
+        // left out of a sheet, and a viewport freeze is only applied on a sheet.
+        let args = parse(&["--off-layers", "draw"]);
+        let model = view_profile(&args, false).unwrap();
+        let sheet = view_profile(&args, true).unwrap();
+        assert_eq!(model.layers.no_plot, LayerStateRule::Ignore);
+        assert_eq!(sheet.layers.no_plot, LayerStateRule::Exclude);
+        assert_eq!(
+            model.layers.frozen_in_viewport,
+            ViewportFreezeRule::IgnoreAndReport
+        );
+        assert_eq!(sheet.layers.frozen_in_viewport, ViewportFreezeRule::Apply);
+        assert_eq!(
+            model.viewport_clipping,
+            ViewProfile::default_profile().viewport_clipping
+        );
     }
 }
