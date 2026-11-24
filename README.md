@@ -77,8 +77,8 @@ cargo install --path .
 | `dwg-acadsharp` | the experimental DWG reader, chosen with `viprs vector ... --provider acadsharp` (ACadSharp through `acadsharp-rs`, over a native library). In `full`, not in the default set |
 | `pvec-raster` (default) | the `.pvec` raster commands, `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters`, and the read side, `viprs pvec info`, `validate`, `text` and `calibrate` (see [`viprs pvec`](#viprs-pvec)) |
 | `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout (see [`viprs pvec`](#viprs-pvec)); turns `dwg-acadrust` on |
-| `object-store-sink` | the core's injected-backend object-store sink |
-| `s3` | the `s3://` sink arm (the core treats `s3` as a deprecated alias for `object-store-sink`) |
+| `object-store-sink` | the `object-store://` sink, which writes the object-store key layout into a directory and uploads nothing |
+| `s3` | the same sink under its old name (the core treats `s3` as a deprecated alias for `object-store-sink`); `s3://` still works and prints one deprecation line |
 | `packfile` | the `packfile://` tar/zip sink |
 | `tracing` | `--trace-level` span output |
 | `full` | all of the above except `pdfium-static` |
@@ -167,7 +167,8 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | [`--storage`](https://libviprs.org/cli/#flag-storage) | pmtiles | `pmtiles` (one archive) or `directory` (a loose tile tree) |
 | [`--tile-size`](https://libviprs.org/cli/#flag-tile-size) | 256 | Tile size in pixels |
 | [`--overlap`](https://libviprs.org/cli/#flag-overlap) | 0 | Tile overlap in pixels |
-| [`--layout`](https://libviprs.org/cli/#flag-layout) | storage-dependent | `deep-zoom`, `xyz` or `google` |
+| [`--layout`](https://libviprs.org/cli/#flag-layout) | storage-dependent | `deep-zoom`, `xyz` or `google`; `zoomify` and `iiif` into a directory or an object store only |
+| `--iiif-id URL` | | The id the IIIF `info.json` carries (`--layout iiif` only); without it the core writes its placeholder |
 | [`--format`](https://libviprs.org/cli/#flag-format) | png | `png`, `jpeg`, `webp` (lossless), or `raw` (`raw` needs `--storage directory`) |
 | [`--quality`](https://libviprs.org/cli/#flag-quality) | 85 | JPEG quality (1-100); `webp` is lossless and ignores it |
 | [`--dpi`](https://libviprs.org/cli/#flag-dpi) | 150 | PDF rasterization DPI |
@@ -177,6 +178,10 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | [`--geo-origin`](https://libviprs.org/cli/#flag-geo-origin) | | Geo origin as `"lon,lat"` |
 | [`--geo-scale`](https://libviprs.org/cli/#flag-geo-scale) | | Pixel scale as `"sx,sy"` (degrees/pixel) |
 | [`--render`](https://libviprs.org/cli/#flag-render) | off | Use PDFium for vector PDF rendering |
+| `--render-stream` | off | With `--render` and a non-zero `--memory-budget`, into a tile tree: render the page through PDFium a strip at a time, so it is never held whole |
+| `--min-dpi DPI` | | Same conditions: lower the DPI down to this floor until the render fits the budget (one strip, or the whole page without `--render-stream`); the run says what it settled on |
+| `--engine KIND` | picked from the budget flags | `auto`, `monolithic`, `streaming`, `map-reduce` or `map-reduce-hot-cache`. The streaming ones take `--memory-budget` wherever the pyramid goes; `monolithic` with a budget, and `--engine` with `--region`, are refused |
+| `--background R,G,B` | 255,255,255 | Fills what the image doesn't cover: the `--centre` border, the padding of a partial edge tile, and a JPEG tile's alpha |
 
 #### Pipeline controls
 
@@ -189,6 +194,10 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 | `--dedupe-memory-bytes N` | archive | Writer's duplicate-tile window, about 65 bytes a tile; below 520 is refused, and above a slot for every planned tile it is lowered to that (the run says so) |
 | `--resume` / `--checkpoint-every N` / `--checkpoint-root DIR` | tree | Pick up an interrupted run; checkpoint every 1000 tiles by default |
 | `--retries N` / `--retry-backoff-ms MS` | all | Retry a failed write up to N times, then fail the run |
+| `--retry-multiplier F` / `--no-retry-jitter` | all | Grow each delay by F (at least 1, default 2), and sleep exactly that rather than adding up to half again at random. Both need a retrying policy (`--retries` or `--on-failure retry=...`) |
+| `--pmtiles-name` / `--pmtiles-description` / `--pmtiles-attribution` | archive | The TileJSON fields of the archive's metadata, beside the core's own `vnd.libviprs` |
+| `--pmtiles-internal-compression gzip\|none` | archive | How the directories and metadata are compressed. The tiles are stored as encoded, so there is no tile compression to pick |
+| `--pmtiles-bounds W,S,E,N` / `--pmtiles-center LON,LAT[,ZOOM]` | archive | The header's advisory bounds and centre, in degrees |
 | `--skip-failed` | all | Skip a tile that still fails and carry on; the run then exits 1 at the end, since the output has holes |
 | `--fail-fast` | all | Abort on the first failure (the default) |
 | `--checksum` / `--manifest-source-hash` | tree | Per-tile checksums (re-hashed before the run succeeds) and the BLAKE3 of the source file's bytes, in `manifest.json` |
@@ -198,9 +207,13 @@ viprs pyramid large_photo.tiff --format png --concurrency 4
 
 `--memory-limit MB` prices the run from the input's header before anything is decoded, so a run that won't fit is refused (exit 1) without spending the decode. A PNG, JPEG, TIFF, `.v`, Netpbm or SVG file is read that way; stdin, a PDF, a GIF and the formats libviprs parses itself are decoded first and checked after, as before.
 
-`--memory-budget` streams a fresh run into a tile tree. Into an archive or an object store, or with `--resume` or `--verify`, the run uses the monolithic engine and says so on stderr. `--trace-level` output goes to stderr too, so stdout carries nothing but `--events`.
+`--memory-budget` streams a fresh run into a tile tree. Into an archive or an object store, or with `--resume` or `--verify`, the run uses the monolithic engine and says so on stderr, unless `--engine` names one of the streaming engines, which then take the budget wherever the pyramid goes. `--trace-level` output goes to stderr too, so stdout carries nothing but `--events`.
 
 Ctrl-C stops any pyramid run at the next tile and exits 130. A tile tree it leaves behind finishes with the same command plus `--resume`, to exactly the bytes an uninterrupted run writes. The resume checks the input file's BLAKE3 against the one the job started from, so a different image (even one the same size) is refused with exit 1 instead of finishing the tree with tiles from both.
+
+#### Object store
+
+`--sink object-store://bucket/prefix --object-store-root DIR` writes the object-store key layout into `DIR`: object `KEY` in bucket `B` is the file `DIR/B/KEY`, exactly the tiles a `--storage directory` run of the same plan writes. Nothing is uploaded. viprs has no network client, and that's the core's decision rather than a gap (libviprs#1119), so the next step is your own tool, for example `aws s3 sync DIR/B s3://B` or `rclone copy DIR/B remote:B`. `s3://bucket/prefix` is the old spelling; it still works and prints one deprecation line on stderr, never on stdout.
 
 See the [pyramid command page](https://libviprs.org/cli/#pyramid) for the complete flag list (including `--memory-budget` and other tuning knobs) and an interactive Rust program generator.
 
@@ -256,7 +269,7 @@ viprs plan 5000 --height 3000 --tile-path 13,3,2 --tile-ext jpg  # where one til
 viprs plan 5000 --height 3000 --overlap 4 --tile-rect 13,3,2     # x,y,width,height that tile reads from
 ```
 
-`plan --layout` takes `zoomify` and `iiif` as well as the three `pyramid` writes, so those sidecar and tile-path questions can be asked. `pyramid --layout` stays `deep-zoom`, `xyz` or `google`.
+`plan --layout` takes the same five layouts as `pyramid --layout`, so the Zoomify and IIIF sidecar and tile-path questions can be asked before a run. `pyramid` writes `zoomify` and `iiif` into a directory or an object store, never into an archive.
 
 ### [`viprs test-image`](https://libviprs.org/cli/#test-image)
 
@@ -395,7 +408,7 @@ Every codec libviprs ships has a `*save` and a `*load` command, spelled the way 
 | `jpegsave` | `--Q`, `--subsample-mode auto\|on\|off` | `jpegload` | `--shrink 1\|2\|4\|8` |
 | `pngsave` | `--compression 0-9`, `--interlace`, `--palette`, `--bitdepth` (2 and 4 with `--palette`; 1 without it writes a bilevel PNG from a one-band image) | `pngload` | |
 | `tiffsave` | `--compression none\|lzw\|deflate` | `tiffload` | `--page`, `--max-pages` |
-| `webpsave` | `--lossless` (required) | `webpload` | `--page`, `--n` |
+| `webpsave` | `--lossless` (required), `--keep none\|all` | `webpload` | `--page`, `--n` |
 | `gifsave` | `--dither`, `--bitdepth`, `--interlace` | `gifload` | `--page`, `--n`, `--max-pages` |
 | `jxlsave` | `--lossless` (required) | `jxlload` | `--page`, `--n` |
 | `jp2ksave` | `--lossless` or `--ratio N`, `--tile-width`, `--tile-height` | `jp2kload` | |
@@ -408,7 +421,7 @@ Every codec libviprs ships has a `*save` and a `*load` command, spelled the way 
 
 Plus `heifload` (AVIF only), `svgload` (`--dpi`, `--scale`, `--unlimited`), `openexrload`, `niftiload`, `analyzeload` and `matload`. JPEG XL, JPEG 2000, AVIF and SVG need their cargo feature; without it the command refuses and names the feature to rebuild with.
 
-Every loader takes the five `--max-*` decode limits, and `-` reads the image from stdin (except `analyzeload`, whose image is a file pair). `csvload` and `matrixload` hand the limits to the core, which sizes the grid from the text and checks it before building anything, so a ragged CSV is priced at its padded width and refused with exit 1 when it doesn't fit. `webpsave`, `jxlsave` and `jp2ksave` only write lossless, while vips defaults to lossy for all three, so they insist on `--lossless` rather than quietly writing something other than what the vips spelling asks for. `jp2ksave` can write lossy too, with `--ratio N` in place of `--lossless`: that is the core encoder's target compression ratio (20 is about twenty times smaller than the raw samples), and it is not vips's `Q`, which is why it has its own name. `--ratio`, and `radsave --exposure` and `--aspect` (vips only takes those from the image's fields), are viprs extensions.
+Every loader takes the five `--max-*` decode limits, and `-` reads the image from stdin (except `analyzeload`, whose image is a file pair). `csvload` and `matrixload` hand the limits to the core, which sizes the grid from the text and checks it before building anything, so a ragged CSV is priced at its padded width and refused with exit 1 when it doesn't fit. `webpsave`, `jxlsave` and `jp2ksave` only write lossless, while vips defaults to lossy for all three, so they insist on `--lossless` rather than quietly writing something other than what the vips spelling asks for. `jp2ksave` can write lossy too, with `--ratio N` in place of `--lossless`: that is the core encoder's target compression ratio (20 is about twenty times smaller than the raw samples), and it is not vips's `Q`, which is why it has its own name. `--ratio`, and `radsave --exposure` and `--aspect` (vips only takes those from the image's fields), are viprs extensions. `webpsave --keep all` carries the source's ICC profile, EXIF and XMP into the file; the default `none` strips them, which is what viprs has always written (vips defaults to `all`). The core writes all three or none, so vips's per-chunk `--keep` values are refused.
 
 The op commands also pick the encoder from the output extension, so `viprs copy in.png out.webp` works for `.webp`, `.gif`, `.jxl`, `.jp2`, `.fits`, `.hdr`, `.csv` and `.mat` as well as `.png`, `.tif`, `.ppm` and `.v`. `.jpg` is the exception: it stays banned there, because those commands are the ones the vips differential suite compares, and `jpegsave` is the way to write one.
 

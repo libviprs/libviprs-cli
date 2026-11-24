@@ -191,9 +191,20 @@ struct PyramidArgs {
     /// picks where the tile bytes sit inside an archive, and is a different
     /// setting altogether.
     ///
+    /// `zoomify` and `iiif` write a Zoomify tree (`TileGroupN/` tiles and
+    /// `ImageProperties.xml`) or an IIIF level 0 tree (with `info.json`), into
+    /// a directory or an object store. Neither names its tiles by z/x/y, so
+    /// both are refused into an archive, like `deep-zoom`.
+    ///
     /// See also: [interactive example](https://libviprs.org/cli/#flag-layout).
     #[arg(long)]
-    layout: Option<LayoutArg>,
+    layout: Option<pdf_geo_plan::PlanLayoutArg>,
+
+    /// The base URL the IIIF `info.json` names as the image's id
+    /// (`--layout iiif` only). Without it the core writes its placeholder,
+    /// `https://example.com/iiif`, for you to rewrite once the tree is served.
+    #[arg(long, value_name = "URL")]
+    iiif_id: Option<String>,
 
     /// Where the pyramid is written: one PMTiles v3 archive, or a loose tree.
     ///
@@ -270,6 +281,31 @@ struct PyramidArgs {
     #[arg(long)]
     render: bool,
 
+    /// Render the page through PDFium a strip at a time instead of whole.
+    ///
+    /// With `--render` and a non-zero `--memory-budget`, into a tile tree
+    /// (`--storage directory`): the page is never held in memory at once, so a
+    /// page too big to render in one go still pyramids. Needs the `pdfium`
+    /// feature.
+    #[arg(long, requires = "render", requires = "memory_budget")]
+    render_stream: bool,
+
+    /// The lowest DPI PDFium may drop to so the render fits `--memory-budget`.
+    ///
+    /// With `--render` and a non-zero `--memory-budget`, into a tile tree: when
+    /// the page at `--dpi` does not fit (one strip under `--render-stream`, the
+    /// whole page without it), the DPI is lowered until it does, down to this
+    /// floor, and the run says what it settled on. Without it a page over the
+    /// budget is an error.
+    #[arg(
+        long,
+        value_name = "DPI",
+        requires = "render",
+        requires = "memory_budget",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    min_dpi: Option<u32>,
+
     /// After extracting a raster from a PDF, resize it to match the PDF page
     /// dimensions at the specified --dpi. This produces output consistent with
     /// libvips' default PDF handling. Has no effect with --render.
@@ -326,12 +362,41 @@ struct PyramidArgs {
     #[arg(long)]
     parallel: bool,
 
+    /// Name the engine instead of letting the budget flags pick it: `auto`,
+    /// `monolithic`, `streaming`, `map-reduce` or `map-reduce-hot-cache`.
+    ///
+    /// Every engine writes the same tiles; they differ in memory and speed.
+    /// `streaming`, `map-reduce` and `map-reduce-hot-cache` size their strips
+    /// from `--memory-budget` wherever the pyramid goes, archives included
+    /// (without `--engine`, an archive run notes the budget and stays
+    /// monolithic). `map-reduce-hot-cache` keeps every tile in memory and hands
+    /// the sink the whole pyramid at the end. `monolithic` takes no budget, so
+    /// the two are refused together, and a `--region` run is always
+    /// monolithic. `--parallel` is the older way to ask for `map-reduce`.
+    #[arg(long, value_name = "KIND", conflicts_with = "parallel")]
+    engine: Option<EngineArg>,
+
+    /// Background colour as "r,g,b", 0 to 255 each (default 255,255,255).
+    ///
+    /// It fills what the image does not cover: the border `--centre` leaves,
+    /// the padding of a partial edge tile, and what a JPEG tile's alpha is
+    /// flattened onto.
+    #[arg(long, value_name = "R,G,B", value_parser = parse_background)]
+    background: Option<[u8; 3]>,
+
     // -------------------------------------------------------------------------
     // Phase 3 hardening flags
     // -------------------------------------------------------------------------
-    /// Sink URI: pmtiles://path.pmtiles, fs://path, or
-    /// packfile://path.tar[.gz]/.zip.
+    /// Sink URI: pmtiles://path.pmtiles, fs://path,
+    /// packfile://path.tar[.gz]/.zip, or object-store://bucket/prefix.
     /// Defaults to the positional output as a PMTiles archive.
+    ///
+    /// `object-store://bucket/prefix` writes the object-store key layout into
+    /// the directory `--object-store-root` names (object KEY in bucket B is the
+    /// file DIR/B/KEY) and uploads nothing: sync that directory to a bucket
+    /// with `aws s3 sync` or `rclone`. `s3://` is a deprecated spelling of it
+    /// that still works and says so on stderr. Both spellings need the
+    /// `object-store-sink` feature or the older `s3` feature.
     ///
     /// See also: [interactive example](https://libviprs.org/cli/#flag-sink).
     #[arg(long, value_name = "URI", help_heading = "Output")]
@@ -425,6 +490,27 @@ struct PyramidArgs {
         help_heading = "Reliability",
     )]
     on_failure: FailurePolicy,
+
+    /// Grow each retry delay by this factor, at least 1 (default 2).
+    ///
+    /// Needs a retrying policy: `--retries`, or `--on-failure retry=...` or
+    /// `retry-skip=...`. The core caps every delay at 5 s, or at the first
+    /// delay when that is longer.
+    #[arg(
+        long,
+        value_name = "F",
+        value_parser = parse_retry_multiplier,
+        help_heading = "Reliability"
+    )]
+    retry_multiplier: Option<f32>,
+
+    /// Sleep exactly the computed delay between retries.
+    ///
+    /// By default a random slice of up to half the delay is added to each
+    /// sleep, so workers retrying one flaky store do not retry in step. Needs
+    /// a retrying policy.
+    #[arg(long, help_heading = "Reliability")]
+    no_retry_jitter: bool,
 
     /// If set, initialise tracing-subscriber at this log level.
     /// Requires a build with `--features tracing`; otherwise the command
@@ -630,6 +716,74 @@ fn check_overlap(tile_size: u32, overlap: u32) {
             &format!("--overlap {overlap} must be less than --tile-size {tile_size}"),
             "an overlap as wide as the tile leaves no tile; lower --overlap or raise --tile-size",
         );
+    }
+}
+
+/// `viprs pyramid --engine`.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum EngineArg {
+    /// Let the core pick from the source and the budget.
+    Auto,
+    /// The whole image in memory.
+    Monolithic,
+    /// Horizontal strips, one at a time.
+    Streaming,
+    /// Strips rendered in parallel.
+    MapReduce,
+    /// MapReduce, holding every tile until one flush at the end.
+    MapReduceHotCache,
+}
+
+impl From<EngineArg> for EngineKind {
+    fn from(arg: EngineArg) -> Self {
+        match arg {
+            EngineArg::Auto => EngineKind::Auto,
+            EngineArg::Monolithic => EngineKind::Monolithic,
+            EngineArg::Streaming => EngineKind::Streaming,
+            EngineArg::MapReduce => EngineKind::MapReduce,
+            EngineArg::MapReduceHotCache => EngineKind::MapReduceHotCache,
+        }
+    }
+}
+
+/// `--background r,g,b`.
+fn parse_background(text: &str) -> Result<[u8; 3], String> {
+    let channels: Vec<&str> = text.split(',').map(str::trim).collect();
+    let [r, g, b] = channels.as_slice() else {
+        return Err(format!(
+            "expected three comma-separated channels `r,g,b`, got {text:?}"
+        ));
+    };
+    let channel = |name: &str, v: &str| {
+        v.parse::<u8>().map_err(|_| {
+            format!("{name} {v:?} in --background is not a whole number from 0 to 255")
+        })
+    };
+    Ok([
+        channel("red", r)?,
+        channel("green", g)?,
+        channel("blue", b)?,
+    ])
+}
+
+/// `--retry-multiplier F`: finite and at least 1, so a delay never shrinks.
+fn parse_retry_multiplier(text: &str) -> Result<f32, String> {
+    match text.trim().parse::<f32>() {
+        Ok(m) if m.is_finite() && m >= 1.0 => Ok(m),
+        Ok(m) => Err(format!(
+            "{m} is not a usable multiplier: give a finite number of at least 1"
+        )),
+        Err(e) => Err(format!("{text:?} is not a number: {e}")),
+    }
+}
+
+/// The streaming engines' budget in bytes from `--memory-budget MB`, where `0`
+/// means a quarter of the monolithic engine's estimated peak.
+fn budget_bytes(mb: u64, plan: &libviprs::PyramidPlan, format: libviprs::PixelFormat) -> u64 {
+    if mb == 0 {
+        plan.estimate_peak_memory_for_format(format) / 4
+    } else {
+        mb_to_bytes(mb)
     }
 }
 
@@ -1162,8 +1316,28 @@ fn resolve_archive_path(args: &PyramidArgs) -> PathBuf {
 /// because they stay inside `col < 2^level`, so nothing downstream notices.
 /// The archive would be readable, addressable, and wrong in every viewer.
 fn resolve_layout(args: &PyramidArgs, to_archive: bool) -> Layout {
-    match (args.layout.clone(), to_archive) {
-        (Some(LayoutArg::DeepZoom), true) => usage_error(
+    use pdf_geo_plan::PlanLayoutArg;
+    if args.iiif_id.is_some() && !matches!(args.layout, Some(PlanLayoutArg::Iiif)) {
+        usage_error(
+            "--iiif-id only applies to --layout iiif",
+            "it is the id the IIIF info.json carries; add `--layout iiif`, or drop --iiif-id",
+        );
+    }
+    match (args.layout, to_archive) {
+        (Some(PlanLayoutArg::Zoomify), true) | (Some(PlanLayoutArg::Iiif), true) => {
+            let name = if matches!(args.layout, Some(PlanLayoutArg::Zoomify)) {
+                "zoomify"
+            } else {
+                "iiif"
+            };
+            usage_error(
+                &format!("--layout {name} cannot be addressed inside a PMTiles archive"),
+                "PMTiles v3 addresses tiles as slippy z/x/y, and Zoomify and IIIF name theirs by \
+                 tile group or region. Use `--storage directory` (or an object-store:// sink) \
+                 for that tree, or drop `--layout` to get the xyz addressing the archive wants",
+            )
+        }
+        (Some(PlanLayoutArg::DeepZoom), true) => usage_error(
             "--layout deep-zoom cannot be addressed inside a PMTiles archive",
             "PMTiles v3 addresses tiles as slippy z/x/y, and a Deep Zoom tier is not a slippy \
              zoom. Use `--storage directory` for a Deep Zoom tree, or drop `--layout` to get \
@@ -1285,6 +1459,9 @@ fn run_pyramid(args: PyramidArgs) {
     // stops at a tile boundary on it and the run exits 130.
     let cancel = pipeline::install_sigint();
     check_overlap(args.tile_size, args.overlap);
+    if let Err(refusal) = pipeline::check_knobs(&args) {
+        refusal.exit();
+    }
     if args.storage == StorageArg::Pvec {
         return pvec_raster::run_pyramid(args, cancel);
     }
@@ -1301,6 +1478,10 @@ fn run_pyramid(args: PyramidArgs) {
     let sink_uri = resolve_sink_uri(&args);
     let layout = resolve_layout(&args, false);
     let tile_format = resolve_tile_format(&args, false);
+
+    if args.render_stream || args.min_dpi.is_some() {
+        return run_pdfium_strips(&args, &sink_uri, layout, tile_format, start, cancel);
+    }
 
     let pipeline::Prepared { raster, plan } = pipeline::prepare(&args, layout);
     let engine_config = pipeline::engine_config(&args);
@@ -1346,15 +1527,16 @@ fn run_generate(
 
     // Pick the engine kind + memory budget up-front so the diagnostic logging
     // and the builder share a single decision point.
-    let (engine_kind, memory_budget) = match args.memory_budget {
-        None => (EngineKind::Monolithic, None),
-        Some(budget_mb) => {
-            let budget_bytes = if budget_mb == 0 {
-                let mono_est = plan.estimate_peak_memory_for_format(raster.format());
-                mono_est / 4
-            } else {
-                mb_to_bytes(budget_mb)
-            };
+    let (engine_kind, memory_budget) = match (args.engine, args.memory_budget) {
+        // A named engine is taken as named; the diagnostics below explain the
+        // choice the budget flags make on their own.
+        (Some(kind), budget) => (
+            EngineKind::from(kind),
+            budget.map(|mb| budget_bytes(mb, plan, raster.format())),
+        ),
+        (None, None) => (EngineKind::Monolithic, None),
+        (None, Some(budget_mb)) => {
+            let budget_bytes = budget_bytes(budget_mb, plan, raster.format());
             let mono_est = plan.estimate_peak_memory_for_format(raster.format());
 
             if args.parallel {
@@ -1460,6 +1642,110 @@ fn run_generate(
     let result = builder.run();
     // @doc-snippet:end slot=engine-builder
     result
+}
+
+/// `--render-stream` and `--min-dpi`: a PDF page through PDFium's strip
+/// source into the streaming engines, so the page is never decoded into one
+/// raster first. [`pipeline::check_knobs`] has already settled that this is a
+/// fresh run into a tile tree with a non-zero budget.
+#[cfg(feature = "pdfium")]
+fn run_pdfium_strips(
+    args: &PyramidArgs,
+    sink_uri: &str,
+    layout: Layout,
+    tile_format: TileFormat,
+    start: Instant,
+    cancel: libviprs::CancelToken,
+) {
+    use libviprs::{PdfError, PdfiumRenderMode, PdfiumStripSource, StripSource as _};
+
+    maybe_init_tracing(&args.trace_level);
+    let budget_mb = args.memory_budget.unwrap_or_default();
+    let budget = mb_to_bytes(budget_mb);
+    let (mode, mode_name) = if args.render_stream {
+        (PdfiumRenderMode::Streaming, "streaming strips")
+    } else {
+        (PdfiumRenderMode::CachedFullPage, "the whole page, cached")
+    };
+    let policy = args
+        .min_dpi
+        .map_or(BudgetPolicy::Error, |min_dpi| BudgetPolicy::AutoAdjustDpi {
+            min_dpi,
+        });
+    // The engine's smallest strip is two tile rows, so that is the allocation
+    // the source has to fit under the budget.
+    let source = PdfiumStripSource::builder(&args.input, args.page, args.dpi)
+        .mode(mode)
+        .sizing(args.page_sizing.into())
+        .budget(args.tile_size.saturating_mul(2), budget, policy)
+        .build()
+        .unwrap_or_else(|e| {
+            let hint = if matches!(e, PdfError::BudgetExceeded { .. }) {
+                "lower --dpi, raise --memory-budget, or let --min-dpi lower the DPI for you"
+            } else {
+                "ensure libpdfium is installed, or run without --render to extract embedded \
+                 images instead"
+            };
+            operational_error(&format!(
+                "rendering PDF page {} with pdfium: {e}\nHint: {hint}",
+                args.page
+            ))
+        });
+    if source.dpi() != args.dpi {
+        eprintln!(
+            "Note: --dpi {} lowered to {} so the render fits --memory-budget {budget_mb} MB.",
+            args.dpi,
+            source.dpi()
+        );
+    }
+    eprintln!(
+        "Rendering PDF page {} at {} DPI (pdfium, {mode_name})...",
+        args.page,
+        source.dpi()
+    );
+    let (width, height) = (source.width(), source.height());
+    eprintln!("Source: {width}x{height}, rendered strip by strip");
+    let planner = PyramidPlanner::new(width, height, args.tile_size, args.overlap, layout)
+        .unwrap_or_else(|e| operational_error(&format!("creating pyramid plan: {e}")))
+        .with_centre(args.centre);
+    let planner = match args.iiif_id.clone() {
+        Some(id) => planner.with_iiif_id(id),
+        None => planner,
+    };
+    let plan = planner.plan();
+    let dir = pipeline::tree_dir(args, sink_uri);
+    let sink = pipeline::tree_sink(args, &dir, &plan, tile_format);
+    let kind = match args.engine {
+        Some(engine) => engine.into(),
+        None if args.parallel => EngineKind::MapReduce,
+        None => EngineKind::Streaming,
+    };
+    let result = EngineBuilder::new(source, plan.clone(), &sink)
+        .with_engine(kind)
+        .with_config(pipeline::engine_config(args))
+        .with_memory_budget(budget)
+        .with_cancel(cancel)
+        .run();
+    let events = pipeline::EventPrinter::new(pipeline::EventsArg::None);
+    pipeline::conclude(result, &dir, start, pipeline::Resumable::Yes, &events);
+}
+
+/// A build without PDFium has no strip source to stream; like `--render`, that
+/// is an operational failure (README, "Exit codes").
+#[cfg(not(feature = "pdfium"))]
+fn run_pdfium_strips(
+    _args: &PyramidArgs,
+    _sink_uri: &str,
+    _layout: Layout,
+    _tile_format: TileFormat,
+    _start: Instant,
+    _cancel: libviprs::CancelToken,
+) {
+    operational_error(
+        "--render-stream and --min-dpi render through pdfium, and this viprs was built \
+         without the `pdfium` feature; rebuild with `--features pdfium`, and run \
+         `viprs features` to see what this build has",
+    );
 }
 
 /// Print the post-run summary line.

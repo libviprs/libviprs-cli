@@ -52,7 +52,7 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 | TIFF save: none, LZW, deflate; load: page, max-pages | `tiffsave`, `tiffload` | covered |
 | TIFF JPEG, CCITT and JPEG 2000 compression, tiled, pyramid, sub-IFD, BigTIFF | none | not-CLI: refusal stubs in the core (`save_tiff_tiled`, `save_bigtiff`, `unsupported_compression`) |
 | WebP save (lossless) and load (page, n) | `webpsave`, `webpload` | covered |
-| WebP save `keep` (metadata chunks) | always `Keep::None` | partial, CV2.3 (`webpsave --keep`) |
+| WebP save `keep` (metadata chunks) | `webpsave --keep` (`none`, the default, or `all`) | covered (CV2.3) |
 | GIF save (dither, bitdepth, interlace) and load (page, n, max-pages) | `gifsave`, `gifload` | covered |
 | JPEG XL save (lossless) | `jxlsave` | covered |
 | JPEG XL load `page`, `n` (`decode_jxl_with`) | `jxlload --page --n` | covered (CV1.5) |
@@ -76,21 +76,21 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 | `pdf_info` (with password), `page_rotate` | `info`, `pdf info`, `pdf rotation` | covered |
 | Embedded image extract (dpi, sizing, background, password) | `pdf extract`, `pyramid` | covered |
 | PDFium render (budgeted) | `pyramid --render`, `pdf extract --dpi --render-budget` | covered |
-| `PdfiumStripSource` streaming render and `BudgetPolicy::AutoAdjustDpi` | none | missing, CV2.3 |
+| `PdfiumStripSource` streaming render and `BudgetPolicy::AutoAdjustDpi` | `pyramid --render --render-stream`, `--min-dpi`, into a tile tree under `--memory-budget` | covered (CV2.3) |
 
 ## Pyramid engine
 
 | Capability | viprs `pyramid` | Status |
 |---|---|---|
 | Planner: tile size, overlap, centre, deep-zoom/xyz/google | flags | covered |
-| Zoomify and IIIF layouts, `with_iiif_id` | `plan` only | partial, CV2.3 (`pyramid --layout zoomify|iiif --iiif-id`) |
+| Zoomify and IIIF layouts, `with_iiif_id` | `plan`, and `pyramid --layout zoomify` or `iiif` with `--iiif-id` into a directory or an object store | covered (CV2.3) |
 | Plan queries (peak memory, DZI manifest, sidecars, tile path, tile rect) | `plan` | covered |
 | Concurrency, buffer size, memory budget, parallel, region | flags | covered |
-| Explicit `EngineKind` (monolithic, streaming, MapReduce, MapReduce hot cache) | picked from the budget flags | partial, CV2.3 (`--engine`) |
-| Background colour (`with_background_rgb`) | white always | partial, CV2.3 |
+| Explicit `EngineKind` (monolithic, streaming, MapReduce, MapReduce hot cache) | `--engine` | covered (CV2.3) |
+| Background colour (`with_background_rgb`) | `--background R,G,B` | covered (CV2.3) |
 | Blank tiles (emit, placeholder, tolerance, drop) | flags | covered |
 | Failure policy and retry (count, initial backoff) | `--on-failure`, `--retries` | covered |
-| Retry multiplier and jitter | none | partial, CV2.3 |
+| Retry multiplier and jitter | `--retry-multiplier`, `--no-retry-jitter` | covered (CV2.3) |
 | Resume, overwrite, verify, checkpoint every/root | flags | covered |
 | Dedupe (blanks, all), checksums (emit, verify, blake3, sha256), manifest source hash | flags | covered |
 | Observers and events | `--events text|json` | covered |
@@ -104,9 +104,11 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 |---|---|---|
 | Filesystem tree (manifest, checksums, dedupe, resume) | `--storage directory` | covered |
 | PMTiles sink (layout, ordered emission, dedupe window, geo transform) | `--storage pmtiles` | covered |
-| PMTiles writer metadata (name, description, attribution), tile and internal compression, bounds, centre | none | partial, CV2.3 |
+| PMTiles writer metadata (name, description, attribution), internal compression, bounds, centre | `--pmtiles-name`, `--pmtiles-description`, `--pmtiles-attribution`, `--pmtiles-internal-compression`, `--pmtiles-bounds`, `--pmtiles-center` | covered (CV2.3) |
+| PMTiles tile compression | set from `--format` | not-CLI: the field describes the stored blobs, and PNG, JPEG and WebP tiles are compressed already, so a flag could only mislabel them |
 | Packfile (tar, tar.gz, zip) | `--packfile`, `packfile://` | covered |
-| Object store sink (key prefix, image name) | `s3://bucket/prefix` over a `DirectoryObjectStore` | partial: the core ships no network object store, so there is no real S3 upload to expose (owner question) |
+| Object store sink (key prefix, image name) | the object-store key layout written into a directory; `object-store://`, with `s3://` as a deprecated alias | covered (CV2.3) |
+| Network object store (S3, HTTP) | none | not-CLI: the core ships no network transport by design (libviprs#1119); upload the directory with `aws s3 sync` or `rclone` |
 | PVec raster sink | `--storage pvec` | covered |
 
 ## PMTiles
@@ -118,7 +120,7 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 | Directory to archive (`migrate_to_pmtiles`) | `pack` | covered |
 | Archive to tree | `extract` | covered |
 | Archive into a `.pvec` | `to-pvec` | covered |
-| `ObjectStoreRangeReader` | none | not-CLI until a network object store exists |
+| `ObjectStoreRangeReader` | none | not-CLI: the core ships no network object store (libviprs#1119) |
 
 ## Geo
 

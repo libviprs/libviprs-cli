@@ -691,11 +691,11 @@ pub fn run_geo(args: GeoArgs) {
 // viprs plan: query flags
 // ===========================================================================
 
-/// `viprs plan --layout`. It takes the three layouts `pyramid --layout`
-/// writes, plus `zoomify` and `iiif`, which only `plan` offers: it can answer
-/// their sidecar and tile-path questions, while `pyramid` has no cells for
-/// writing them and an archive cannot hold them. Kept apart from the
-/// pyramid's own enum so adding a plan layout never widens `pyramid --layout`.
+/// `viprs plan --layout` and `viprs pyramid --layout`: the five layouts the
+/// planner has. `pyramid` writes `zoomify` and `iiif` into a directory or an
+/// object store and refuses them (and `deep-zoom`) into an archive, which
+/// addresses tiles by z/x/y only (#152). `pmtiles pack` keeps its own
+/// three-layout enum, since it only packs trees an archive can address.
 #[derive(Clone, Copy, ValueEnum)]
 pub enum PlanLayoutArg {
     DeepZoom,

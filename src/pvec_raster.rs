@@ -294,7 +294,12 @@ pub(crate) fn check_pyramid(args: &PyramidArgs) -> Checked {
             "a raster in a .pvec has no overlap between tiles (RASTER-02); drop --overlap",
         );
     }
-    if args.layout.is_some() && !matches!(args.layout, Some(crate::LayoutArg::Google)) {
+    if args.layout.is_some()
+        && !matches!(
+            args.layout,
+            Some(crate::pdf_geo_plan::PlanLayoutArg::Google)
+        )
+    {
         usage_error(
             "--layout is fixed to google under --storage pvec",
             "a .pvec stores the un-centred Google grid and nothing else; drop --layout (or \
