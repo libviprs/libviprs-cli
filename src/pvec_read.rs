@@ -106,7 +106,7 @@ pub(crate) struct CalibrateArgs {
     uncertainty: Option<f64>,
 }
 
-fn non_negative(text: &str) -> Result<f64, String> {
+pub(crate) fn non_negative(text: &str) -> Result<f64, String> {
     match text.parse::<f64>() {
         Ok(v) if v.is_finite() && v >= 0.0 => Ok(v),
         _ => Err("expected a finite number, 0 or more".into()),

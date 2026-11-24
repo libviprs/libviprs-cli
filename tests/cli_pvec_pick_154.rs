@@ -257,7 +257,8 @@ mod with_facade {
             ("0,0,500,500", "intersects", vec![0u32]),
             ("0,0,1000,1000", "intersects", vec![0, 1]),
             ("0,0,1000,1000", "contains", vec![0]),
-            ("0,0,3200,3200", "contains", vec![0, 1]),
+            ("0,0,3200,3200", "contains", vec![0, 1, 3]),
+            ("0,1900,1600,2700", "contains", vec![3]),
             ("0,0,4000,4000", "contains", vec![0, 1, 2, 3]),
             ("3600,0,4000,100", "intersects", vec![]),
         ] {

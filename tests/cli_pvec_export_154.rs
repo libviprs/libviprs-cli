@@ -280,7 +280,9 @@ mod with_export {
         .map(|k| by_fidelity(report, k))
         .sum();
         assert_eq!(sum, entities, "{report}");
-        assert_eq!(report["source_digest"].as_str().unwrap().len(), 64);
+        let digest = report["source_digest"].as_str().unwrap();
+        let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+        assert_eq!(hex.len(), 64, "{digest}");
     }
 
     // ---- GML ------------------------------------------------------------------------------
