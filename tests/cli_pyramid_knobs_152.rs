@@ -513,27 +513,136 @@ fn tree_run(dir: &Path, input: &Path, name: &str, extra: &[&str]) -> (Output, Pa
     (run(&args), out_dir)
 }
 
+/// The `event` names of the `--events json` lines on stdout.
+fn event_names(out: &Output) -> Vec<String> {
+    stdout(out)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v["event"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Every engine writes the same tiles, and the engine asked for is the one
+/// that ran: only the strip engines report strips (`strip_*` events), so a run
+/// whose --engine never reached the builder fails here.
 #[test]
 fn every_engine_writes_the_same_tiles() {
     let dir = unique_dir("engines");
     let input = off_grid(&dir);
-    let (out, reference) = tree_run(&dir, &input, "default", &[]);
+    let (out, reference) = tree_run(&dir, &input, "default", &["--events", "json"]);
     ok(&out, "the default run");
+    let names = event_names(&out);
+    assert!(
+        !names.iter().any(|e| e.starts_with("strip_")),
+        "the default engine on a decoded image is monolithic and has no strips: {names:?}"
+    );
     let expected = tiles(&reference, "png");
     assert!(!expected.is_empty());
-    for engine in [
-        "monolithic",
-        "streaming",
-        "map-reduce",
-        "map-reduce-hot-cache",
+    for (engine, strips) in [
+        ("monolithic", false),
+        ("streaming", true),
+        ("map-reduce", true),
+        ("map-reduce-hot-cache", true),
     ] {
-        let (out, got) = tree_run(&dir, &input, engine, &["--engine", engine]);
+        let (out, got) = tree_run(
+            &dir,
+            &input,
+            engine,
+            &["--engine", engine, "--events", "json"],
+        );
         ok(&out, engine);
         assert_eq!(
             tiles(&got, "png"),
             expected,
             "--engine {engine} must write the tiles the default engine writes"
         );
+        let names = event_names(&out);
+        assert_eq!(
+            names.iter().any(|e| e.starts_with("strip_")),
+            strips,
+            "--engine {engine} has to be the engine that ran, events: {names:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The strip engines cannot emit tiles in tile id order (the core's
+/// `UnsupportedEmissionOrder`), and the command line alone says so, so the
+/// refusal comes before the input is read: a missing input is never reported.
+#[test]
+fn a_strip_engine_with_ordered_emission_is_refused_before_the_input_is_read() {
+    let dir = unique_dir("engine-ordered");
+    let missing = dir.join("no-such-input.ppm");
+    for engine in ["streaming", "map-reduce", "map-reduce-hot-cache"] {
+        let out = run(&[
+            "pyramid",
+            s(&missing),
+            s(&dir.join("o.pmtiles")),
+            "--engine",
+            engine,
+            "--ordered-emission",
+        ]);
+        refused(&out, &format!("--engine {engine} --ordered-emission"));
+        assert!(
+            stderr(&out).contains("--ordered-emission"),
+            "{engine}: {}",
+            stderr(&out)
+        );
+    }
+    let input = off_grid(&dir);
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        s(&dir.join("m.pmtiles")),
+        "--tile-size",
+        "64",
+        "--engine",
+        "monolithic",
+        "--ordered-emission",
+    ]);
+    ok(&out, "the monolithic engine emits in tile id order");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--storage pvec` builds its raster on its own path, so the knobs that path
+/// would drop are refused up front instead of accepted and ignored.
+#[test]
+fn pvec_storage_refuses_the_knobs_it_would_drop() {
+    let dir = unique_dir("pvec-knobs");
+    let input = off_grid(&dir);
+    let drawing = dir.join("drawing.pvec");
+    let cases: [(&str, &[&str]); 4] = [
+        ("--engine", &["--engine", "streaming"]),
+        ("--iiif-id", &["--iiif-id", "https://example.org/iiif/x"]),
+        (
+            "--render-stream",
+            &["--render", "--memory-budget", "8", "--render-stream"],
+        ),
+        (
+            "--min-dpi",
+            &["--render", "--memory-budget", "8", "--min-dpi", "36"],
+        ),
+    ];
+    for (flag, extra) in cases {
+        let out_path = dir.join("out.pvec");
+        let mut args = vec![
+            "pyramid",
+            s(&input),
+            s(&out_path),
+            "--storage",
+            "pvec",
+            "--pvec-into",
+            s(&drawing),
+        ];
+        args.extend_from_slice(extra);
+        let out = run(&args);
+        refused(&out, &format!("--storage pvec {extra:?}"));
+        assert!(
+            stderr(&out).contains(&format!("{flag} does not apply to --storage pvec")),
+            "{flag}: {}",
+            stderr(&out)
+        );
+        assert!(!out_path.exists(), "a refused run must write nothing");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -814,8 +923,10 @@ fn pmtiles_internal_compression_none_writes_a_readable_archive() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The CLI spells it `--centre` everywhere else, so the flag is
+/// `--pmtiles-centre`; `--pmtiles-center` stays as a hidden alias.
 #[test]
-fn pmtiles_bounds_and_center_land_in_the_header() {
+fn pmtiles_bounds_and_centre_land_in_the_header() {
     let dir = unique_dir("pm-bounds");
     let (out, archive) = archive_run(
         &dir,
@@ -823,7 +934,7 @@ fn pmtiles_bounds_and_center_land_in_the_header() {
         &[
             "--pmtiles-bounds",
             "-10,-5,10,5",
-            "--pmtiles-center",
+            "--pmtiles-centre",
             "1.5,2.5,3",
         ],
     );
@@ -834,6 +945,15 @@ fn pmtiles_bounds_and_center_land_in_the_header() {
         "{text}"
     );
     assert!(text.contains("Center: 1.500000,2.500000 zoom 3"), "{text}");
+    let (out, alias) = archive_run(&dir, "a.pmtiles", &["--pmtiles-center", "4,5"]);
+    ok(&out, "the --pmtiles-center alias");
+    assert!(info(&alias).contains("Center: 4.000000,5.000000"));
+    let help = run(&["pyramid", "--help"]);
+    assert!(stdout(&help).contains("--pmtiles-centre"));
+    assert!(
+        !stdout(&help).contains("--pmtiles-center "),
+        "the alias stays out of the help"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -843,8 +963,11 @@ fn pmtiles_flags_are_refused_where_they_mean_nothing() {
     let input = off_grid(&dir);
     for flags in [
         vec!["--pmtiles-name", "x"],
+        vec!["--pmtiles-description", "x"],
+        vec!["--pmtiles-attribution", "x"],
         vec!["--pmtiles-internal-compression", "none"],
         vec!["--pmtiles-bounds", "-10,-5,10,5"],
+        vec!["--pmtiles-centre", "1,2"],
     ] {
         let (out, _) = tree_run(&dir, &input, "t", &flags);
         refused(&out, &format!("{flags:?} into a tree"));
@@ -854,9 +977,9 @@ fn pmtiles_flags_are_refused_where_they_mean_nothing() {
         vec!["--pmtiles-bounds", "-10,5,10,-5"],
         vec!["--pmtiles-bounds", "-190,-5,10,5"],
         vec!["--pmtiles-bounds", "1,2,3"],
-        vec!["--pmtiles-center", "200,0"],
-        vec!["--pmtiles-center", "0,95"],
-        vec!["--pmtiles-center", "0,0,40"],
+        vec!["--pmtiles-centre", "200,0"],
+        vec!["--pmtiles-centre", "0,95"],
+        vec!["--pmtiles-centre", "0,0,40"],
         vec!["--pmtiles-internal-compression", "brotli"],
     ] {
         let (out, _) = archive_run(&dir, "bad.pmtiles", &bad);
@@ -1048,6 +1171,71 @@ fn pdfium_streaming_flags_refuse_what_they_cannot_mean() {
             "{extra:?}: a refused run must write nothing"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The strip path never decodes the page into one raster, so the decoded-size
+/// check behind --memory-limit has nothing to price; rather than ignore the
+/// flag, the run refuses it, and --memory-budget is what bounds this path.
+#[test]
+fn memory_limit_is_refused_beside_the_pdfium_strip_flags() {
+    let dir = unique_dir("pdf-memory-limit");
+    for flag in [&["--render-stream"][..], &["--min-dpi", "36"][..]] {
+        let mut args = vec![
+            "--storage",
+            "directory",
+            "--render",
+            "--memory-budget",
+            "64",
+            "--memory-limit",
+            "1",
+        ];
+        args.extend_from_slice(flag);
+        let (out, out_dir) = pdf_run(&dir, "t", &args);
+        refused(&out, &format!("{flag:?} with --memory-limit"));
+        assert!(stderr(&out).contains("--memory-limit"), "{}", stderr(&out));
+        assert!(!out_dir.exists(), "a refused run must write nothing");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn render_stream_needs_a_pdf_and_a_fresh_run() {
+    let dir = unique_dir("pdf-fresh");
+    let input = off_grid(&dir);
+    let out = run(&[
+        "pyramid",
+        s(&input),
+        s(&dir.join("tree")),
+        "--storage",
+        "directory",
+        "--render",
+        "--memory-budget",
+        "8",
+        "--render-stream",
+    ]);
+    refused(&out, "--render-stream on a PPM");
+    assert!(
+        stderr(&out).contains("needs a PDF input"),
+        "{}",
+        stderr(&out)
+    );
+    let (out, out_dir) = pdf_run(
+        &dir,
+        "resumed",
+        &[
+            "--storage",
+            "directory",
+            "--render",
+            "--memory-budget",
+            "8",
+            "--render-stream",
+            "--resume",
+        ],
+    );
+    refused(&out, "--render-stream with --resume");
+    assert!(stderr(&out).contains("fresh"), "{}", stderr(&out));
+    assert!(!out_dir.exists(), "a refused run must write nothing");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
