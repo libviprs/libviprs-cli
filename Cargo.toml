@@ -74,7 +74,12 @@ pvec-convert = ["libviprs/pvec-convert", "dwg-acadrust"]
 # in through `svg`, so it is in `full` and not in the default build; without it both exit 1 and name
 # this feature, and a usage mistake is still exit 2 (libviprs-cli#150).
 pvec-raster-thumbnail = ["libviprs/pvec-raster-thumbnail", "pvec-convert", "svg"]
-# Everything above except `pdfium-static`, which trades the runtime-binding
+# JBIG2 image streams in a PDF page for `viprs pvec convert PAGE.pdf` (libviprs-cli#151): the core's pure
+# Rust decoder. Not in `default`, and not in `full` either: the core keeps it out of its own default until
+# 24 hours of its fuzz target run clean, and `full` is what gets shipped and tested as "everything". Without
+# it a page whose images are JBIG2 exits 1 and names this feature.
+jbig2 = ["libviprs/jbig2"]
+# Everything above except `pdfium-static`, `jbig2`, which trades the runtime-binding
 # pdfium path for a link-time one and cannot be on for a build that has no
 # static libpdfium to link.
 full = [
