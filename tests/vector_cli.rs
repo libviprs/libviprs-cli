@@ -576,3 +576,134 @@ fn without_hardened_the_input_cap_is_not_applied() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------------------
+// Per-limit flags reach ProviderLimits (CV2.4, libviprs-cli#153)
+// ---------------------------------------------------------------------------
+
+/// Each ACadSharp limit flag reaches the decoder: the sample (about a megabyte, a few thousand
+/// entities) is refused by a ceiling below it, and the refusal is the provider's own.
+#[cfg(feature = "dwg-acadsharp")]
+#[test]
+fn each_acadsharp_limit_flag_reaches_the_decoder() {
+    if !native_lane() {
+        return;
+    }
+    let sample = fixture("sample_AC1018.dwg");
+    for (flag, value) in [
+        ("--max-input-bytes", "1000"),
+        ("--max-entities", "1"),
+        ("--max-output-bytes", "1"),
+        ("--max-string-bytes", "1"),
+        ("--max-polyline-points", "1"),
+    ] {
+        let out = run_native(&["vector", "report", s(&sample), flag, value]);
+        assert_eq!(code(&out), 1, "{flag}: stderr:\n{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("bound set in Limits"),
+            "{flag} {value} should be refused by that limit: {}",
+            stderr(&out)
+        );
+    }
+    // The input cap is checked when the drawing is opened, so `views` honours it too.
+    let out = run_native(&["vector", "views", s(&sample), "--max-input-bytes", "1000"]);
+    assert_eq!(code(&out), 1, "views: stderr:\n{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("bound set in Limits"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// A flag over `--hardened` tightens the hardened profile rather than replacing it, and a
+/// ceiling above the drawing changes nothing.
+#[cfg(feature = "dwg-acadsharp")]
+#[test]
+fn acadsharp_limit_flags_layer_over_hardened() {
+    if !native_lane() {
+        return;
+    }
+    let sample = fixture("sample_AC1018.dwg");
+    let out = run_native(&[
+        "vector",
+        "report",
+        s(&sample),
+        "--hardened",
+        "--max-input-bytes",
+        "1000",
+    ]);
+    assert_eq!(code(&out), 1, "stderr:\n{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("bound set in Limits"),
+        "{}",
+        stderr(&out)
+    );
+    let out = run_native(&[
+        "vector",
+        "report",
+        s(&sample),
+        "--hardened",
+        "--max-entities",
+        "100000000",
+        "--max-input-bytes",
+        "100000000",
+    ]);
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+}
+
+/// ACadSharp reads a limit of 0 as "no limit", so `--hardened --max-block-depth 0` used to read the
+/// drawing with that hardened ceiling switched off, exit 0. A 0 is a usage error now, for every
+/// ACadSharp limit, before the drawing is opened.
+#[cfg(feature = "dwg-acadsharp")]
+#[test]
+fn a_zero_cannot_lift_a_hardened_acadsharp_ceiling() {
+    if !native_lane() {
+        return;
+    }
+    let sample = fixture("sample_AC1018.dwg");
+    for flag in [
+        "--max-block-depth",
+        "--max-entities",
+        "--max-polyline-points",
+        "--max-input-bytes",
+        "--max-string-bytes",
+        "--max-output-bytes",
+    ] {
+        let out = run_native(&["vector", "report", s(&sample), "--hardened", flag, "0"]);
+        assert_eq!(
+            code(&out),
+            2,
+            "{flag} 0: stdout:\n{}\nstderr:\n{}",
+            stdout(&out),
+            stderr(&out)
+        );
+        assert!(stderr(&out).contains(flag), "{flag}: {}", stderr(&out));
+    }
+}
+
+/// `--max-block-depth` on plain nested INSERTs means the same for both readers:
+/// `g13_deep_blocks.dwg` nests six deep, and both refuse it at 5 and read it at 6. (They do not
+/// count every drawing alike; the help says how, and this pins the case they share.)
+#[cfg(feature = "dwg-acadsharp")]
+#[test]
+fn both_readers_refuse_nested_blocks_at_the_same_depth() {
+    if !native_lane() {
+        return;
+    }
+    let deep = fixture("g13_deep_blocks.dwg");
+    for provider in ["acadrust", "acadsharp"] {
+        let args = [
+            "vector",
+            "report",
+            s(&deep),
+            "--max-zoom",
+            "0",
+            "--provider",
+            provider,
+        ];
+        let out = run(&[&args[..], &["--max-block-depth", "5"]].concat());
+        assert_eq!(code(&out), 1, "{provider} at 5: stderr:\n{}", stderr(&out));
+        let out = run(&[&args[..], &["--max-block-depth", "6"]].concat());
+        assert_eq!(code(&out), 0, "{provider} at 6: stderr:\n{}", stderr(&out));
+    }
+}

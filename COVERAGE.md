@@ -130,8 +130,8 @@ Phase 1 needs no bump. CV2.1 needs the libviprs pin moved to main; the pvec pin 
 |---|---|---|
 | `list_views`, `convert`, `report`, `inspect`, `check` | `views`, `build`, `report`, `info`, `validate` | covered |
 | Provider choice and hardened limits | `--provider`, `--hardened` | covered |
-| `TilerConfig` knobs past max zoom and deadline (extent, buffer, simplify, cull, per-tile caps, oversize policy) | none | partial, CV2.4 |
-| `AcadrustDecoder::with_limits`, `AcadSharpDecoder::with_limits` | `--hardened` only | partial, CV2.4 |
+| `TilerConfig` knobs past max zoom and deadline (extent, buffer, margin, deviation, simplify, cull, min text, per-tile and per-level caps, max primitives, max tile bytes, oversize policy, max text bytes) | `build`, `report`: one flag each (`--extent` ... `--oversize`) | covered (CV2.4) |
+| `AcadrustDecoder::with_limits` (`SourceLimits`), `AcadSharpDecoder::with_limits` (`ProviderLimits`) | `views`, `build`, `report`: one flag per limit, layered over `--hardened` | covered (CV2.4) |
 | `display_text` (MTEXT escapes) | none | not-CLI: a helper the tiler already applies |
 
 ## PVec inside libviprs
