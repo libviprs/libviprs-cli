@@ -17,6 +17,8 @@ use std::path::PathBuf;
 
 use clap::{ArgGroup, Args};
 
+use crate::ops::foreign::positive_finite;
+
 #[cfg(feature = "pvec-raster")]
 pub(crate) mod imp;
 
@@ -46,7 +48,7 @@ pub(crate) struct CalibrateArgs {
     file: PathBuf,
 
     /// What one drawing unit is in the world, in metres, stated by hand (provenance `manual`).
-    #[arg(long, value_name = "METRES", allow_negative_numbers = true, value_parser = positive)]
+    #[arg(long, value_name = "METRES", allow_negative_numbers = true, value_parser = positive_finite)]
     scale: Option<f64>,
 
     /// The plan's printed scale as two whole numbers, `1:100`; needs `--paper-unit`. One
@@ -60,7 +62,7 @@ pub(crate) struct CalibrateArgs {
         value_name = "METRES",
         requires = "plan_scale",
         allow_negative_numbers = true,
-        value_parser = positive
+        value_parser = positive_finite
     )]
     paper_unit: Option<f64>,
 
@@ -81,7 +83,7 @@ pub(crate) struct CalibrateArgs {
         value_name = "METRES",
         requires = "measured",
         allow_negative_numbers = true,
-        value_parser = positive
+        value_parser = positive_finite
     )]
     distance: Option<f64>,
 
@@ -102,14 +104,6 @@ pub(crate) struct CalibrateArgs {
         value_parser = non_negative
     )]
     uncertainty: Option<f64>,
-}
-
-/// A finite number above 0, for every length and scale flag.
-fn positive(text: &str) -> Result<f64, String> {
-    match text.parse::<f64>() {
-        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
-        _ => Err("expected a finite number above 0".into()),
-    }
 }
 
 fn non_negative(text: &str) -> Result<f64, String> {
@@ -150,9 +144,9 @@ mod tests {
 
     #[test]
     fn the_parsers_take_what_the_help_promises_and_nothing_else() {
-        assert_eq!(positive("0.001"), Ok(0.001));
+        assert_eq!(positive_finite("0.001"), Ok(0.001));
         for bad in ["0", "-1", "nan", "inf", "", "metre"] {
-            assert!(positive(bad).is_err(), "{bad:?}");
+            assert!(positive_finite(bad).is_err(), "{bad:?}");
         }
         assert_eq!(non_negative("0"), Ok(0.0));
         assert!(non_negative("-0.5").is_err());

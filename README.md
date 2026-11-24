@@ -221,7 +221,7 @@ Format: Rgb8
 Size: 36.0 MB
 ```
 
-`--fields` lists every header field with its value instead, the way `vipsheader -a` does: the built-in fields first in libvips order, then whatever the loader attached. With `--json` they come back as a `fields` object in the same order. A PDF has none, so `--fields` on one is a usage error.
+`--fields` lists every header field with its value instead, one `name: value` a line like `vipsheader -a`: the built-in fields first in libvips order, then whatever the loader attached. A binary field shows as `N bytes of binary data`, and a float prints at full precision rather than vips's `%g`. With `--json` they come back as a `fields` object in the same order. A PDF has none, so `--fields` on one is a usage error.
 
 ```bash
 $ viprs info --fields photo.png
@@ -350,8 +350,8 @@ Look inside a `.pvec`, check it, read its text, and give it a scale. These read 
 viprs pvec info plan.pvec
 viprs pvec info plan.pvec --json
 
-# Checksums and digest on open, then every entity, style, known stream and the calibration decoded;
-# exit 1 naming what failed
+# PVec's own verdict: structure, limits, every block checksum and the digest; exit 1 naming the rule
+# when one fails. A refused raster or calibration (CAL-11 included) is reported and the file passes
 viprs pvec validate plan.pvec
 
 # Every text record: entity, x, y, height, rotation, text (tab-separated, or --json)
@@ -363,6 +363,8 @@ viprs pvec calibrate plan.pvec --plan-scale 1:100 --paper-unit 0.001
 viprs pvec calibrate plan.pvec --measured 0,0,3000,0 --distance 3.0 --uncertainty 0.01
 viprs pvec calibrate plan.pvec --remove
 ```
+
+`validate` gives the verdict PVec's own `pvec validate` gives, and the tests hold it to that tool's library. A raster whose tiles the reader refuses, a calibration it refuses (the CAL-11 residual check included) and a component stream that does not decode are reported with what refused them, and none of them fails the file, because the geometry does not depend on them; PVec's validator does not read the streams at all. With `--json` it prints its report either way, `"valid": false` with the `rule` and `error` when the file fails, and still exits 1 then.
 
 `calibrate` takes exactly one of `--scale`, `--plan-scale`, `--measured` or `--remove`. A plan scale of `1:100` on a sheet drawn in millimetres (`--paper-unit 0.001`) is 0.1 m per drawing unit, and a measured pair is the distance over the points' length. A georeference the file already carries stays, and `--remove` drops only the scale record. A value that is not a positive finite number, or two `--measured` points that are one point, is a usage error and nothing is touched.
 
@@ -398,9 +400,9 @@ Every codec libviprs ships has a `*save` and a `*load` command, spelled the way 
 | `webpsave` | `--lossless` (required) | `webpload` | `--page`, `--n` |
 | `gifsave` | `--dither`, `--bitdepth`, `--interlace` | `gifload` | `--page`, `--n`, `--max-pages` |
 | `jxlsave` | `--lossless` (required) | `jxlload` | `--page`, `--n` |
-| `jp2ksave` | `--lossless` or `--ratio N`, `--tile-width`, `--tile-height` | `jp2kload` | |
+| `jp2ksave` | `--lossless` (or the hidden `--ratio N`), `--tile-width`, `--tile-height` | `jp2kload` | |
 | `fitssave` | | `fitsload` | |
-| `radsave` | `--exposure`, `--aspect` | `radload` | |
+| `radsave` | (the hidden `--exposure`, `--aspect`) | `radload` | |
 | `uhdrsave` | `--Q`, `--gainmap-scale-factor` | `uhdrload` | |
 | `csvsave` | | `csvload` | |
 | `matrixsave` | | `matrixload` | |
@@ -408,7 +410,7 @@ Every codec libviprs ships has a `*save` and a `*load` command, spelled the way 
 
 Plus `heifload` (AVIF only), `svgload` (`--dpi`, `--scale`, `--unlimited`), `openexrload`, `niftiload`, `analyzeload` and `matload`. JPEG XL, JPEG 2000, AVIF and SVG need their cargo feature; without it the command refuses and names the feature to rebuild with.
 
-Every loader takes the five `--max-*` decode limits, and `-` reads the image from stdin (except `analyzeload`, whose image is a file pair). `csvload` and `matrixload` hand the limits to the core, which sizes the grid from the text and checks it before building anything, so a ragged CSV is priced at its padded width and refused with exit 1 when it doesn't fit. `webpsave`, `jxlsave` and `jp2ksave` only write lossless, while vips defaults to lossy for all three, so they insist on `--lossless` rather than quietly writing something other than what the vips spelling asks for. `jp2ksave` can write lossy too, with `--ratio N` in place of `--lossless`: that is the core encoder's target compression ratio (20 is about twenty times smaller than the raw samples), and it is not vips's `Q`, which is why it has its own name. `--ratio`, and `radsave --exposure` and `--aspect` (vips only takes those from the image's fields), are viprs extensions.
+Every loader takes the five `--max-*` decode limits, and `-` reads the image from stdin (except `analyzeload`, whose image is a file pair). `csvload` and `matrixload` hand the limits to the core, which sizes the grid from the text and checks it before building anything, so a ragged CSV is priced at its padded width and refused with exit 1 when it doesn't fit. vips defaults to lossy for `webpsave`, `jxlsave` and `jp2ksave`, and the core has no encoder for vips's lossy modes, so all three insist on `--lossless` rather than quietly writing something other than what the vips spelling asks for. `webpsave` and `jxlsave` only ever write lossless. `jp2ksave` can also write lossy with `--ratio N` in place of `--lossless`: the core encoder's target compression ratio (20 is about twenty times smaller than the raw samples), which is not vips's `Q` and so has its own name. `--ratio`, and `radsave --exposure` and `--aspect` (vips only takes those from the image's fields), are viprs extensions: they work, and like `copy --orientation` they are hidden from `--help` and `__dump-commands`, because CLI_CONTRACT.md keeps flags vips does not have off that surface. `OP_MAP.md` records each one.
 
 The op commands also pick the encoder from the output extension, so `viprs copy in.png out.webp` works for `.webp`, `.gif`, `.jxl`, `.jp2`, `.fits`, `.hdr`, `.csv` and `.mat` as well as `.png`, `.tif`, `.ppm` and `.v`. `.jpg` is the exception: it stays banned there, because those commands are the ones the vips differential suite compares, and `jpegsave` is the way to write one.
 

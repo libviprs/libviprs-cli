@@ -1464,6 +1464,7 @@ dependencies = [
  "pvec-capabilities",
  "pvec-components",
  "pvec-conformance",
+ "pvec-container",
  "pvec-geometry",
  "pvec-testkit",
  "serde_json",

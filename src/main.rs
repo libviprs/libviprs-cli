@@ -2537,7 +2537,7 @@ fn run_info(args: InfoArgs) {
                             libviprs::MetadataValue::Double(v) => serde_json::json!(v),
                             libviprs::MetadataValue::Str(v) => serde_json::json!(v),
                             libviprs::MetadataValue::Blob(b) => {
-                                serde_json::json!(format!("<{} bytes>", b.len()))
+                                serde_json::json!(format!("{} bytes of binary data", b.len()))
                             }
                             libviprs::MetadataValue::IntArray(v) => serde_json::json!(v),
                             libviprs::MetadataValue::DoubleArray(v) => serde_json::json!(v),

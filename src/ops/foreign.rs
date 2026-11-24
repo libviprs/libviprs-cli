@@ -167,10 +167,11 @@ fn output_path(s: &str) -> std::result::Result<String, String> {
     }
 }
 
-/// A finite number above zero, for `svgload --dpi` and `--scale`: the core
-/// rounds NaN, infinities and negatives to a zero-sized render, so they are
-/// refused while parsing instead (exit 2).
-fn positive_finite(s: &str) -> std::result::Result<f64, String> {
+/// A finite number above zero, refused while parsing otherwise (exit 2): for
+/// `svgload --dpi` and `--scale` (the core rounds NaN, infinities and
+/// negatives to a zero-sized render), `radsave --exposure` and `--aspect`, and
+/// the lengths and scale `viprs pvec calibrate` takes.
+pub(crate) fn positive_finite(s: &str) -> std::result::Result<f64, String> {
     match s.parse::<f64>() {
         Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
         Ok(_) => Err("must be a finite number above 0".to_owned()),
@@ -286,11 +287,11 @@ pub fn commands() -> Vec<Command> {
                     .value_parser(["1", "2", "4", "8"])
                     .requires_if("2", "palette")
                     .requires_if("4", "palette")
+                    .requires_if("8", "palette")
                     .conflicts_with_all(["interlace", "compression"])
                     .help(
-                        "With --palette, hold at most 2^N colours (default 8). Without it, 1 \
-                         writes a bilevel PNG from a one-band image (128 and up is white); 2 \
-                         and 4 need --palette",
+                        "With --palette, hold at most 2^N colours (default 8). Without it, only \
+                         1 is allowed: a bilevel PNG from a one-band image (128 and up is white)",
                     ),
             ),
         saver("tiffsave", "Save an image as a single-page TIFF.").arg(
@@ -329,13 +330,21 @@ pub fn commands() -> Vec<Command> {
             "Save an image as JPEG 2000, lossless or at a compression ratio (needs the `jp2k` \
              feature).",
         )
-        .arg(lossless().required(false).required_unless_present("ratio"))
+        .arg(
+            flag(
+                "lossless",
+                "Write lossless (vips defaults to lossy at a Q, which this encoder does not take)",
+            )
+            .required_unless_present("ratio"),
+        )
         .arg(
             Arg::new("ratio")
                 .long("ratio")
                 .value_name("N")
                 .value_parser(value_parser!(u16).range(1..))
                 .conflicts_with("lossless")
+                // A viprs extension, hidden like copy --orientation (CLI_CONTRACT.md §3-deviations).
+                .hide(true)
                 .help(
                     "Write lossy at this target compression ratio (20 is about twenty times \
                      smaller than the raw samples); a viprs extension, not vips's Q",
@@ -365,6 +374,8 @@ pub fn commands() -> Vec<Command> {
         .arg(
             Arg::new("exposure")
                 .long("exposure")
+                // A viprs extension, hidden (CLI_CONTRACT.md §3-deviations).
+                .hide(true)
                 .value_name("X")
                 .allow_negative_numbers(true)
                 .value_parser(positive_finite)
@@ -376,6 +387,7 @@ pub fn commands() -> Vec<Command> {
         .arg(
             Arg::new("aspect")
                 .long("aspect")
+                .hide(true)
                 .value_name("X")
                 .allow_negative_numbers(true)
                 .value_parser(positive_finite)
@@ -565,7 +577,7 @@ fn encode(format: &str, raster: &Raster, m: &ArgMatches) -> Result<Vec<u8>> {
                 if r.format() != PixelFormat::Gray8 {
                     bail!(
                         "--bitdepth 1 without --palette writes a bilevel PNG, which needs one band \
-                         of 8-bit samples; this image is {:?} (add --palette for a colour image)",
+                         of 8-bit samples; this image is {:?} (make it one band of uchar first, or add --palette)",
                         r.format()
                     );
                 }
