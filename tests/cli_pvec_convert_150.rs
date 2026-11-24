@@ -381,8 +381,9 @@ fn model_space_gets_a_png_named_after_the_stem() {
         ]
     );
     let raster = libviprs::decode_file(&dir.join("vc_layers.png")).unwrap();
-    // The bounds are 21 by 1 metres.
-    assert_eq!((raster.width(), raster.height()), (300, 14));
+    // The bounds are 21 by 1 metres, and model space (no paper) leaves 2 percent of the longer
+    // side empty all round: 21.84 by 1.84 metres, so 300 by 25 pixels.
+    assert_eq!((raster.width(), raster.height()), (300, 25));
     assert!(raster.data().iter().any(|&v| v != 255));
     let _ = std::fs::remove_dir_all(dir);
 }

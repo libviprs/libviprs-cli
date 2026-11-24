@@ -55,6 +55,7 @@ mod pipeline;
 mod pvec_convert;
 mod pvec_raster;
 mod pvec_read;
+mod pvec_thumbnail;
 mod vector;
 mod verify;
 

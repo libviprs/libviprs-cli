@@ -30,7 +30,7 @@ The pin is its own commit (the first of CV2.1), gated on its own, so a regressio
 | `object-store-sink`, `s3` | same names | covered (see the object store row) |
 | `pvec-raster`, `pvec-convert` | same names (default) | covered |
 | `pvec-write`, `pvec-normalized`, `pvec-spline` | through `pvec-convert` and `dwg-acadrust` | covered |
-| `pvec-raster-thumbnail` | none | missing, CV2.1 |
+| `pvec-raster-thumbnail` | `pvec-raster-thumbnail` (in `full`, not in `default`) | covered (CV2.1) |
 | `jbig2` | none | missing, CV2.2 (JBIG2 image streams in a PDF page) |
 | `serde` | none | not-CLI: it only widens the Rust API; every viprs `--json` output is its own schema |
 | `test-util` | none | not-CLI: a sink that sleeps on purpose, for stress tests |
@@ -142,15 +142,15 @@ The pin is its own commit (the first of CV2.1), gated on its own, so a regressio
 | Capability | viprs `pvec` | Status |
 |---|---|---|
 | DWG to `.pvec` per paper layout, one layout, or model space; stem; unit; geometry only; regions | `convert` | covered |
-| `PvecConversion::annotations` (TEXT, MTEXT and the rest into the text stream, HATCH and SOLID into the hatch stream) | none | missing, CV2.1 (`texts` and `fills` on their own: missing, later) |
-| `PvecConversion::element_rules` (layer, block, colour and lineweight rules for the regions step) | none | missing, CV2.1 |
-| `PvecConversion::thumbnail`, `pvec::thumbnail` (a PNG of a sheet, strokes only) | none | missing, CV2.1 (feature `pvec-raster-thumbnail`, not in `default`) |
+| `PvecConversion::annotations` (TEXT, MTEXT and the rest into the text stream, HATCH and SOLID into the hatch stream) | `convert --annotations` | covered (CV2.1); `texts` and `fills` on their own are missing, later |
+| `PvecConversion::element_rules` (layer, block, colour and lineweight rules for the regions step) | `convert --regions --element-rule` | covered (CV2.1) |
+| `PvecConversion::thumbnail`, `pvec::thumbnail` (a PNG of a sheet, strokes only) | `convert --thumbnail`, `pvec thumbnail` (feature `pvec-raster-thumbnail`) | covered (CV2.1) |
 | `recalibrate` (set, replace or remove the scale record) | `pvec calibrate`, through the facade's `recalibrate_file` | covered (CV1.4) |
 | `PdfConversion` (a PDF page to `.pvec`, image limits) | none | missing, CV2.2 |
 | `ConversionProfile`, `CapabilityPolicy`, `allowed_capabilities` | none | missing, CV2.2 |
 | Calibration at convert time (`Calibration`, `ScaleClaim`, georeference sidecar import) | none | missing, CV2.2 |
 | `ViewProfile` knobs, `SourceLimits`, `LeafConfig`, `SpillConfig`, `RegionConfig` tuning | none | missing, CV2.2 |
-| `paper_sheets` (list paper layouts without converting) | none | missing, CV2.1 |
+| `paper_sheets` (list paper layouts without converting) | `pvec layouts` | covered (CV2.1) |
 | `PdfPlot` (DWG layouts to a PDF), `PlotSettings`, PC3 and plot style files (`load_pc3`, `load_plot_style`) | none | missing, #157 (`viprs plot`) |
 | `cad_manifest`, `CadChoices`, `apply_choices`, `check_layer_state`, `resolve_visibility` (layer states and visibility choices, `LayerStateNotFound`) | none | missing, later (the plot work in #157 reads it first) |
 | `PdfConversion` layer choices (`pdf_manifest`, `apply_pdf_layers`, `PdfLayerChoices`) | none | missing, CV2.2 |

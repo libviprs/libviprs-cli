@@ -46,6 +46,12 @@ enum PvecCommand {
     /// `--layout`, or model space with `--model`. Exits 1 when a sheet failed or
     /// no sheet was written.
     Convert(crate::pvec_convert::ConvertArgs),
+    /// List the paper layouts of a DWG in tab order, and whether each is a sheet
+    /// that `convert` would write, without converting anything.
+    Layouts(crate::pvec_convert::LayoutsArgs),
+    /// Draw a `.pvec` as a PNG: strokes only, no text, no fills. Needs the
+    /// `pvec-raster-thumbnail` feature, which is not in the default build.
+    Thumbnail(crate::pvec_thumbnail::ThumbnailArgs),
     /// List the rasters a `.pvec` places, or write one tile out.
     Rasters(RastersArgs),
     /// What a `.pvec` holds: manifest, component streams, layers, text and
@@ -482,6 +488,8 @@ pub(crate) fn run_to_pvec(args: ToPvecArgs) {
 pub fn run(args: PvecArgs) {
     match args.command {
         PvecCommand::Convert(a) => crate::pvec_convert::run(a),
+        PvecCommand::Layouts(a) => crate::pvec_convert::run_layouts(a),
+        PvecCommand::Thumbnail(a) => crate::pvec_thumbnail::run(a),
         PvecCommand::Rasters(a) => {
             let tile = a.tile.as_ref().map(|t| {
                 let n = |i: usize, name: &str| -> u32 {
