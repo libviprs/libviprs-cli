@@ -576,3 +576,75 @@ fn without_hardened_the_input_cap_is_not_applied() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------------------
+// Per-limit flags reach ProviderLimits (CV2.4, libviprs-cli#153)
+// ---------------------------------------------------------------------------
+
+/// Each ACadSharp limit flag reaches the decoder: the sample (about a megabyte, a few thousand
+/// entities) is refused by a ceiling below it, and the refusal is the provider's own.
+#[cfg(feature = "dwg-acadsharp")]
+#[test]
+fn each_acadsharp_limit_flag_reaches_the_decoder() {
+    if !native_lane() {
+        return;
+    }
+    let sample = fixture("sample_AC1018.dwg");
+    for (flag, value) in [
+        ("--max-input-bytes", "1000"),
+        ("--max-entities", "1"),
+        ("--max-output-bytes", "1"),
+    ] {
+        let out = run_native(&["vector", "report", s(&sample), flag, value]);
+        assert_eq!(code(&out), 1, "{flag}: stderr:\n{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("bound set in Limits"),
+            "{flag} {value} should be refused by that limit: {}",
+            stderr(&out)
+        );
+    }
+    // The input cap is checked when the drawing is opened, so `views` honours it too.
+    let out = run_native(&["vector", "views", s(&sample), "--max-input-bytes", "1000"]);
+    assert_eq!(code(&out), 1, "views: stderr:\n{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("bound set in Limits"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// A flag over `--hardened` tightens the hardened profile rather than replacing it, and a
+/// ceiling above the drawing changes nothing.
+#[cfg(feature = "dwg-acadsharp")]
+#[test]
+fn acadsharp_limit_flags_layer_over_hardened() {
+    if !native_lane() {
+        return;
+    }
+    let sample = fixture("sample_AC1018.dwg");
+    let out = run_native(&[
+        "vector",
+        "report",
+        s(&sample),
+        "--hardened",
+        "--max-input-bytes",
+        "1000",
+    ]);
+    assert_eq!(code(&out), 1, "stderr:\n{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("bound set in Limits"),
+        "{}",
+        stderr(&out)
+    );
+    let out = run_native(&[
+        "vector",
+        "report",
+        s(&sample),
+        "--hardened",
+        "--max-entities",
+        "100000000",
+        "--max-input-bytes",
+        "100000000",
+    ]);
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+}
