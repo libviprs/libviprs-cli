@@ -53,6 +53,8 @@ mod pdf_geo_plan;
 /// (libviprs-cli#66).
 mod pipeline;
 mod pvec_convert;
+mod pvec_export;
+mod pvec_query;
 mod pvec_raster;
 mod pvec_read;
 mod pvec_thumbnail;

@@ -64,6 +64,14 @@ enum PvecCommand {
     Text(crate::pvec_read::ReadArgs),
     /// Set, replace or drop the scale record of a `.pvec`, in place.
     Calibrate(crate::pvec_read::CalibrateArgs),
+    /// The entity under a point, the entities a rectangle selects, or the nearest entity, through
+    /// PVec's pick index.
+    Pick(crate::pvec_query::PickArgs),
+    /// Every curve as a polyline inside an error budget, through PVec's tessellator.
+    Tessellate(crate::pvec_query::TessellateArgs),
+    /// Write a `.pvec` as GML, GeoPackage, a vector tile, a PMTiles archive or STEP, with the
+    /// fidelity report. Needs the `pvec-export` feature, which is not in the default build.
+    Export(crate::pvec_export::ExportArgs),
 }
 
 /// `viprs pvec rasters`.
@@ -524,6 +532,15 @@ pub fn run(args: PvecArgs) {
         PvecCommand::Text(a) => crate::pvec_read::imp::text(&a.file, a.json),
         #[cfg(feature = "pvec-raster")]
         PvecCommand::Calibrate(a) => crate::pvec_read::imp::calibrate(&a),
+        #[cfg(feature = "pvec-raster")]
+        PvecCommand::Pick(a) => crate::pvec_query::imp::pick(&a),
+        #[cfg(feature = "pvec-raster")]
+        PvecCommand::Tessellate(a) => crate::pvec_query::imp::tessellate(&a),
+        PvecCommand::Export(a) => crate::pvec_export::run(a),
+        #[cfg(not(feature = "pvec-raster"))]
+        PvecCommand::Pick(_) => missing_feature("`viprs pvec pick`"),
+        #[cfg(not(feature = "pvec-raster"))]
+        PvecCommand::Tessellate(_) => missing_feature("`viprs pvec tessellate`"),
         #[cfg(not(feature = "pvec-raster"))]
         PvecCommand::Info(_) => missing_feature("`viprs pvec info`"),
         #[cfg(not(feature = "pvec-raster"))]

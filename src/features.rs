@@ -29,6 +29,7 @@ const FEATURES: &[(&str, bool)] = &[
     ("pdfium", cfg!(feature = "pdfium")),
     ("pdfium-static", cfg!(feature = "pdfium-static")),
     ("pvec-convert", cfg!(feature = "pvec-convert")),
+    ("pvec-export", cfg!(feature = "pvec-export")),
     ("pvec-raster", cfg!(feature = "pvec-raster")),
     (
         "pvec-raster-thumbnail",
