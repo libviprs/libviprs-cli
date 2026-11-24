@@ -21,11 +21,6 @@ use crate::pvec_convert::MAX_THUMBNAIL_WIDTH;
 /// The width when `--width` is not given.
 const DEFAULT_WIDTH: u32 = 512;
 
-/// The tallest picture, in pixels. A long thin sheet at the widest width would otherwise ask for
-/// a pixmap of gigabytes.
-#[cfg_attr(not(feature = "pvec-raster-thumbnail"), allow(dead_code))]
-const MAX_HEIGHT: u32 = 16384;
-
 /// `viprs pvec thumbnail`.
 #[derive(Args)]
 pub(crate) struct ThumbnailArgs {
@@ -75,6 +70,9 @@ mod imp {
     use crate::vector::with_causes;
 
     pub(super) fn run(args: &ThumbnailArgs) {
+        // The tallest picture, in pixels. A long thin sheet at the widest width would otherwise ask
+        // for a pixmap of gigabytes.
+        const MAX_HEIGHT: u32 = 16384;
         let bounds = match open_published(&args.file) {
             Ok(reader) => reader.manifest().bounds,
             Err(e) => operational_error(&format!(

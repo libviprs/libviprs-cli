@@ -171,7 +171,8 @@ pub(crate) struct ConvertArgs {
 
     /// Also draw each converted sheet as a PNG WIDTH pixels wide, written beside its `.pvec` with
     /// the extension `.png`. It draws strokes only, no text, no fills; the height follows the sheet. Needs
-    /// the `pvec-raster-thumbnail` feature (in `full`, not in the default build).
+    /// the `pvec-raster-thumbnail` feature (in `full`, not in the default build). Not with --model: draw
+    /// a model-space file with `viprs pvec thumbnail`, which caps the height.
     #[arg(
         long,
         value_name = "WIDTH",
@@ -181,6 +182,12 @@ pub(crate) struct ConvertArgs {
 }
 
 pub(crate) fn run(args: ConvertArgs) {
+    if args.model && args.thumbnail.is_some() {
+        usage_error(
+            "--thumbnail cannot be used with --model",
+            "model space has no paper to bound its shape, so one stray far entity would make a huge picture; draw it with `viprs pvec thumbnail FILE OUT.png`, which caps the width and the height",
+        );
+    }
     if args.out_dir.exists() && !args.out_dir.is_dir() {
         usage_error(
             &format!("{} is not a directory", args.out_dir.display()),

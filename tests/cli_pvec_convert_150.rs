@@ -366,28 +366,6 @@ fn every_sheet_gets_a_png_the_width_asked_and_the_height_of_its_paper() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[cfg(all(feature = "pvec-convert", feature = "pvec-raster-thumbnail"))]
-#[test]
-fn model_space_gets_a_png_named_after_the_stem() {
-    let dir = scratch("thumb-model");
-    let (out, _) = model("vc_layers.dwg", &dir, &["--thumbnail", "300"]);
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
-    assert_eq!(
-        listing(&dir),
-        [
-            "vc_layers.png",
-            "vc_layers.pvec",
-            "vc_layers.pvec.report.json"
-        ]
-    );
-    let raster = libviprs::decode_file(&dir.join("vc_layers.png")).unwrap();
-    // The bounds are 21 by 1 metres, and model space (no paper) leaves 2 percent of the longer
-    // side empty all round: 21.84 by 1.84 metres, so 300 by 25 pixels.
-    assert_eq!((raster.width(), raster.height()), (300, 25));
-    assert!(raster.data().iter().any(|&v| v != 255));
-    let _ = std::fs::remove_dir_all(dir);
-}
-
 /// No flag, no picture.
 #[cfg(feature = "pvec-convert")]
 #[test]

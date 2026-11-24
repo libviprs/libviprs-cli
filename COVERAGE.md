@@ -144,7 +144,7 @@ The pin is its own commit (the first of CV2.1), gated on its own, so a regressio
 | DWG to `.pvec` per paper layout, one layout, or model space; stem; unit; geometry only; regions | `convert` | covered |
 | `PvecConversion::annotations` (TEXT, MTEXT and the rest into the text stream, HATCH and SOLID into the hatch stream) | `convert --annotations` | covered (CV2.1); `texts` and `fills` on their own are missing, later |
 | `PvecConversion::element_rules` (layer, block, colour and lineweight rules for the regions step) | `convert --regions --element-rule` | covered (CV2.1) |
-| `PvecConversion::thumbnail`, `pvec::thumbnail` (a PNG of a sheet, strokes only) | `convert --thumbnail`, `pvec thumbnail` (feature `pvec-raster-thumbnail`) | covered (CV2.1) |
+| `PvecConversion::thumbnail`, `pvec::thumbnail` (a PNG of a sheet, strokes only) | `convert --thumbnail` (sheets only, a usage error with `--model` because the core does not cap the height), `pvec thumbnail` (caps width and height; feature `pvec-raster-thumbnail`) | covered (CV2.1) |
 | `recalibrate` (set, replace or remove the scale record) | `pvec calibrate`, through the facade's `recalibrate_file` | covered (CV1.4) |
 | `PdfConversion` (a PDF page to `.pvec`, image limits) | none | missing, CV2.2 |
 | `ConversionProfile`, `CapabilityPolicy`, `allowed_capabilities` | none | missing, CV2.2 |
