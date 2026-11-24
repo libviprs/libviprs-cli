@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use clap::{Args, ValueEnum};
 use libviprs::observe::{EngineEvent, EngineObserver};
 use libviprs::pmtiles::writer::{DEDUPE_BYTES_PER_PAYLOAD, DEDUPE_WINDOW_WAYS};
-use libviprs::pmtiles::{Layout as PmTilesLayout, WriterOptions};
+use libviprs::pmtiles::{Compression, Layout as PmTilesLayout, WriterOptions};
 use libviprs::resume::DEFAULT_RESUME_CHECKPOINT_EVERY;
 use libviprs::{
     CancelToken, ChecksumAlgo, ChecksumMode, EngineBuilder, EngineConfig, EngineError,
@@ -107,6 +107,53 @@ pub(crate) struct PipelineArgs {
     /// allocates the whole window up front. Archives only.
     #[arg(long, value_name = "BYTES", help_heading = "PMTiles")]
     pub(crate) dedupe_memory_bytes: Option<usize>,
+
+    /// The archive's `name` in its TileJSON metadata. Archives only.
+    #[arg(long, value_name = "TEXT", help_heading = "PMTiles")]
+    pub(crate) pmtiles_name: Option<String>,
+
+    /// The archive's `description` in its TileJSON metadata. Archives only.
+    #[arg(long, value_name = "TEXT", help_heading = "PMTiles")]
+    pub(crate) pmtiles_description: Option<String>,
+
+    /// The archive's `attribution`, which a viewer shows its user and may
+    /// treat as HTML or as plain text. Archives only.
+    #[arg(long, value_name = "TEXT", help_heading = "PMTiles")]
+    pub(crate) pmtiles_attribution: Option<String>,
+
+    /// How the archive's directories and metadata are compressed: `gzip` (the
+    /// default, and what every reader expects) or `none`.
+    ///
+    /// The tiles are stored exactly as encoded, and PNG, JPEG and WebP are
+    /// compressed already, so there is no tile compression to choose: the
+    /// header's tile compression only describes them. Archives only.
+    #[arg(long, value_name = "KIND", help_heading = "PMTiles")]
+    pub(crate) pmtiles_internal_compression: Option<InternalCompressionArg>,
+
+    /// The header's bounds as "west,south,east,north" in degrees (default the
+    /// whole Web Mercator extent). Advisory: viewers frame the map with it.
+    /// Archives only.
+    #[arg(
+        long,
+        value_name = "W,S,E,N",
+        value_parser = parse_bounds,
+        allow_hyphen_values = true,
+        help_heading = "PMTiles"
+    )]
+    pub(crate) pmtiles_bounds: Option<[f64; 4]>,
+
+    /// The header's centre as "lon,lat" or "lon,lat,zoom" in degrees (default
+    /// 0,0 at the middle of the zoom range the tiles cover). Advisory.
+    /// Archives only. Spelled like `--centre`; `--pmtiles-center` also works.
+    #[arg(
+        long = "pmtiles-centre",
+        alias = "pmtiles-center",
+        value_name = "LON,LAT[,ZOOM]",
+        value_parser = parse_center,
+        allow_hyphen_values = true,
+        help_heading = "PMTiles"
+    )]
+    pub(crate) pmtiles_centre: Option<Center>,
 
     /// Write the resume checkpoint every N tiles.
     ///
@@ -200,14 +247,106 @@ pub(crate) struct PipelineArgs {
     #[arg(long, value_name = "FORMAT", default_value = "none")]
     pub(crate) events: EventsArg,
 
-    /// Directory the `s3://bucket/prefix` sink writes into (needs the `s3` feature).
+    /// The directory an `object-store://bucket/prefix` sink writes into
+    /// (needs the `object-store-sink` or `s3` feature).
     ///
-    /// Hidden: this build carries no network transport, so the object-store
-    /// sink writes through a local stub store (object `KEY` in bucket `B`
-    /// lands at `DIR/B/KEY`). That is a test seam, not something to point a
-    /// job at, and it stays out of the help until a real transport exists.
-    #[arg(long, value_name = "DIR", hide = true)]
+    /// viprs has no network transport, by the core's design (libviprs#1119),
+    /// so the sink writes the bucket's key layout here and uploads nothing:
+    /// object KEY in bucket B is the file DIR/B/KEY. Sync DIR/B to the bucket
+    /// with `aws s3 sync` or `rclone` afterwards.
+    #[arg(long, value_name = "DIR", help_heading = "Output")]
     pub(crate) object_store_root: Option<PathBuf>,
+}
+
+/// `--pmtiles-internal-compression`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum InternalCompressionArg {
+    /// gzip, the default.
+    Gzip,
+    /// Stored uncompressed.
+    #[value(name = "none")]
+    Uncompressed,
+}
+
+impl From<InternalCompressionArg> for Compression {
+    fn from(arg: InternalCompressionArg) -> Self {
+        match arg {
+            InternalCompressionArg::Gzip => Compression::Gzip,
+            InternalCompressionArg::Uncompressed => Compression::None,
+        }
+    }
+}
+
+/// `--pmtiles-centre lon,lat[,zoom]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Center {
+    lon: f64,
+    lat: f64,
+    zoom: Option<u8>,
+}
+
+/// Comma-separated finite numbers, for the PMTiles header flags.
+fn parse_degrees(text: &str, flag: &str) -> Result<Vec<f64>, String> {
+    text.split(',')
+        .map(|part| match part.trim().parse::<f64>() {
+            Ok(v) if v.is_finite() => Ok(v),
+            _ => Err(format!("{part:?} in {flag} is not a finite number")),
+        })
+        .collect()
+}
+
+fn parse_bounds(text: &str) -> Result<[f64; 4], String> {
+    let values = parse_degrees(text, "--pmtiles-bounds")?;
+    let [west, south, east, north] = values.as_slice() else {
+        return Err(format!(
+            "expected four numbers `west,south,east,north`, got {text:?}"
+        ));
+    };
+    let (west, south, east, north) = (*west, *south, *east, *north);
+    if !(-180.0..=180.0).contains(&west) || !(-180.0..=180.0).contains(&east) {
+        return Err("a longitude has to be within -180 to 180".to_string());
+    }
+    if !(-90.0..=90.0).contains(&south) || !(-90.0..=90.0).contains(&north) {
+        return Err("a latitude has to be within -90 to 90".to_string());
+    }
+    if west >= east || south >= north {
+        return Err(format!(
+            "west {west} has to be below east {east} and south {south} below north {north}"
+        ));
+    }
+    Ok([west, south, east, north])
+}
+
+fn parse_center(text: &str) -> Result<Center, String> {
+    let parts: Vec<&str> = text.split(',').collect();
+    let (coords, zoom) = match parts.as_slice() {
+        [lon, lat] => ([*lon, *lat], None),
+        [lon, lat, zoom] => ([*lon, *lat], Some(*zoom)),
+        _ => {
+            return Err(format!(
+                "expected `lon,lat` or `lon,lat,zoom`, got {text:?}"
+            ));
+        }
+    };
+    let values = parse_degrees(&coords.join(","), "--pmtiles-centre")?;
+    let [lon, lat] = values.as_slice() else {
+        return Err(format!("expected `lon,lat`, got {text:?}"));
+    };
+    if !(-180.0..=180.0).contains(lon) || !(-90.0..=90.0).contains(lat) {
+        return Err("the centre has to be within -180..180 longitude and -90..90 latitude".into());
+    }
+    let zoom = match zoom {
+        None => None,
+        Some(z) => match z.trim().parse::<u8>() {
+            Ok(z) if z <= 30 => Some(z),
+            _ => return Err(format!("zoom {z:?} has to be a whole number from 0 to 30")),
+        },
+    };
+    Ok(Center {
+        lon: *lon,
+        lat: *lat,
+        zoom,
+    })
 }
 
 /// `--pmtiles-layout`.
@@ -281,6 +420,9 @@ impl PipelineArgs {
         push(self.pmtiles_layout.is_some(), "--pmtiles-layout");
         push(self.ordered_emission, "--ordered-emission");
         push(self.dedupe_memory_bytes.is_some(), "--dedupe-memory-bytes");
+        if let Some(flag) = self.pmtiles_metadata_flag() {
+            push(true, flag);
+        }
         push(self.checkpoint_every.is_some(), "--checkpoint-every");
         push(self.checkpoint_root.is_some(), "--checkpoint-root");
         push(self.retries.is_some(), "--retries");
@@ -303,8 +445,25 @@ impl PipelineArgs {
         } else if self.dedupe_memory_bytes.is_some() {
             Some("--dedupe-memory-bytes")
         } else {
-            None
+            self.pmtiles_metadata_flag()
         }
+    }
+
+    /// The first of the PMTiles header and metadata flags that was given.
+    fn pmtiles_metadata_flag(&self) -> Option<&'static str> {
+        [
+            (self.pmtiles_name.is_some(), "--pmtiles-name"),
+            (self.pmtiles_description.is_some(), "--pmtiles-description"),
+            (self.pmtiles_attribution.is_some(), "--pmtiles-attribution"),
+            (
+                self.pmtiles_internal_compression.is_some(),
+                "--pmtiles-internal-compression",
+            ),
+            (self.pmtiles_bounds.is_some(), "--pmtiles-bounds"),
+            (self.pmtiles_centre.is_some(), "--pmtiles-centre"),
+        ]
+        .into_iter()
+        .find_map(|(given, flag)| given.then_some(flag))
     }
 
     pub(crate) fn tree_only(&self) -> Option<&'static str> {
@@ -366,7 +525,7 @@ impl Refusal {
     }
 
     /// Report it as a usage error (exit 2).
-    fn exit(self) -> ! {
+    pub(crate) fn exit(self) -> ! {
         usage_error(&self.message, &self.hint)
     }
 }
@@ -404,6 +563,128 @@ pub(crate) fn takes_over(args: &PyramidArgs) -> bool {
     false
 }
 
+/// The refusals for the engine, retry and PDFium flags (#152), which reach
+/// both drivers and the pvec path, so `run_pyramid` checks them before it picks
+/// one. Nothing has been read yet.
+pub(crate) fn check_knobs(args: &PyramidArgs) -> Result<(), Refusal> {
+    use crate::{EngineArg, StorageArg};
+    if args.storage == StorageArg::Pvec {
+        for (given, flag) in [
+            (args.engine.is_some(), "--engine"),
+            (args.render_stream, "--render-stream"),
+            (args.min_dpi.is_some(), "--min-dpi"),
+            (args.iiif_id.is_some(), "--iiif-id"),
+        ] {
+            if given {
+                return Err(Refusal::new(
+                    format!("{flag} does not apply to --storage pvec"),
+                    "a pvec raster is built on its own engine path; drop the flag",
+                ));
+            }
+        }
+    }
+    if args.engine == Some(EngineArg::Monolithic) && args.memory_budget.is_some() {
+        return Err(Refusal::new(
+            "--engine monolithic takes no --memory-budget",
+            "the budget sizes the streaming engines' strips, and the monolithic engine holds \
+             the whole image; drop one of the two",
+        ));
+    }
+    // The strip engines emit tiles as their strips finish, so tile id order is
+    // the core's `UnsupportedEmissionOrder` after the input is decoded; the
+    // command line alone already says so.
+    if args.pipeline.ordered_emission
+        && let Some(engine) = args.engine.filter(|e| {
+            matches!(
+                e,
+                EngineArg::Streaming | EngineArg::MapReduce | EngineArg::MapReduceHotCache
+            )
+        })
+    {
+        let name = engine
+            .to_possible_value()
+            .map(|v| v.get_name().to_string())
+            .unwrap_or_default();
+        return Err(Refusal::new(
+            format!(
+                "--engine {name} cannot emit tiles in tile id order, which --ordered-emission asks for"
+            ),
+            "the strip engines hand tiles over as their strips finish; drop --ordered-emission \
+             (an `--pmtiles-layout arrival` archive is then written in arrival order), or use \
+             --engine monolithic",
+        ));
+    }
+    if args.engine.is_some() && args.pipeline.region.is_some() {
+        return Err(Refusal::new(
+            "--engine cannot be combined with --region",
+            "a --region run crops first and always runs on the monolithic engine; drop --engine",
+        ));
+    }
+    if args.retry_multiplier.is_some() || args.no_retry_jitter {
+        let retrying = args.pipeline.retries.is_some()
+            || matches!(
+                args.on_failure,
+                FailurePolicy::RetryThenFail(_) | FailurePolicy::RetryThenSkip(_)
+            );
+        if !retrying {
+            let flag = if args.retry_multiplier.is_some() {
+                "--retry-multiplier"
+            } else {
+                "--no-retry-jitter"
+            };
+            return Err(Refusal::new(
+                format!("{flag} needs a retrying policy"),
+                "add `--retries N` or `--on-failure retry=N,DURATION`; with no retries there \
+                 is no delay to shape",
+            ));
+        }
+    }
+    if args.render_stream || args.min_dpi.is_some() {
+        let flag = if args.render_stream {
+            "--render-stream"
+        } else {
+            "--min-dpi"
+        };
+        if args.memory_limit > 0 {
+            return Err(Refusal::new(
+                format!("--memory-limit cannot be checked on a {flag} run"),
+                "--memory-limit prices the decoded page, and this path never decodes it into one \
+                 raster; --memory-budget is what bounds it, so drop --memory-limit",
+            ));
+        }
+        if args.memory_budget == Some(0) {
+            return Err(Refusal::new(
+                format!("{flag} needs a non-zero --memory-budget"),
+                "`--memory-budget 0` picks a budget from the decoded image, and a PDFium render \
+                 has to be fitted before there is one; give the budget in MB",
+            ));
+        }
+        if let Some(min) = args.min_dpi
+            && min > args.dpi
+        {
+            return Err(Refusal::new(
+                format!("--min-dpi {min} is above --dpi {}", args.dpi),
+                "the floor is the lowest DPI the render may drop to; give one at or below --dpi",
+            ));
+        }
+        if !args.input.to_ascii_lowercase().ends_with(".pdf") {
+            return Err(Refusal::new(
+                format!("{flag} needs a PDF input"),
+                "it renders a PDF page through PDFium; name the .pdf file (stdin cannot be \
+                 rendered a strip at a time)",
+            ));
+        }
+        if !budget_streams(args) {
+            return Err(Refusal::new(
+                format!("{flag} only applies to a fresh --memory-budget run into a tile tree"),
+                "the PDFium strip source feeds the streaming engines, which write a tile tree: \
+                 add `--storage directory` and an output directory, and drop --resume or --verify",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Whether `--memory-budget` reaches the streaming engines on this run.
 fn budget_streams(args: &PyramidArgs) -> bool {
     args.memory_budget.is_some()
@@ -427,12 +708,15 @@ fn target_of(args: &PyramidArgs) -> Result<Target, Refusal> {
 fn resolve_target(args: &PyramidArgs, uri: &str) -> Result<Target, Refusal> {
     if let Some(path) = uri.strip_prefix("pmtiles://") {
         Ok(Target::Archive(PathBuf::from(path)))
-    } else if let Some(rest) = uri.strip_prefix("s3://") {
+    } else if let Some(rest) = uri
+        .strip_prefix("object-store://")
+        .or_else(|| uri.strip_prefix("s3://"))
+    {
         let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
         if bucket.is_empty() {
             return Err(Refusal::new(
                 format!("{uri} names no bucket"),
-                "spell it s3://bucket/prefix",
+                "spell it object-store://bucket/prefix",
             ));
         }
         // The stub store puts a bucket at ROOT/bucket, so a bucket of `..`
@@ -444,7 +728,7 @@ fn resolve_target(args: &PyramidArgs, uri: &str) -> Result<Target, Refusal> {
         ) {
             return Err(Refusal::new(
                 format!("{bucket:?} in {uri} is not a bucket name"),
-                "a bucket is one plain name, such as s3://tiles/run-1",
+                "a bucket is one plain name, such as object-store://tiles/run-1",
             ));
         }
         Ok(Target::ObjectStore {
@@ -501,8 +785,8 @@ fn check_combinations(args: &PyramidArgs, target: &Target) -> Result<(), Refusal
     }
     if p.object_store_root.is_some() && !matches!(target, Target::ObjectStore { .. }) {
         return Err(Refusal::new(
-            "--object-store-root only applies to an s3:// sink",
-            "pass --sink s3://bucket/prefix as well, or drop it",
+            "--object-store-root only applies to an object-store:// or s3:// sink",
+            "pass --sink object-store://bucket/prefix as well, or drop it",
         ));
     }
     if p.manifest_source_hash && args.input == "-" {
@@ -588,6 +872,10 @@ pub(crate) fn prepare(args: &PyramidArgs, layout: Layout) -> Prepared {
         Err(e) => operational_error(&format!("creating pyramid plan: {e}")),
     };
     // @doc-snippet:end slot=planner
+    let planner = match args.iiif_id.clone() {
+        Some(id) => planner.with_iiif_id(id),
+        None => planner,
+    };
     let plan = planner.plan();
 
     let extra = ExtraMemory::of(args, &plan, raster.format());
@@ -780,6 +1068,28 @@ fn dedupe_window_bytes(requested: usize, plan: &PyramidPlan) -> usize {
 
 /// The engine config: the flags `main.rs` already reads, plus this module's.
 pub(crate) fn engine_config(args: &PyramidArgs) -> EngineConfig {
+    // `--retry-multiplier` and `--no-retry-jitter` shape whichever retrying
+    // policy the other flags chose; `check_knobs` refused them without one.
+    let shape = |policy: RetryPolicy| {
+        let policy = match args.retry_multiplier {
+            Some(m) => policy.with_multiplier(m),
+            None => policy,
+        };
+        if args.no_retry_jitter {
+            policy.with_jitter(false)
+        } else {
+            policy
+        }
+    };
+    let failure_policy = match args
+        .pipeline
+        .failure_policy()
+        .unwrap_or_else(|| crate::build_failure_policy(args))
+    {
+        FailurePolicy::RetryThenFail(p) => FailurePolicy::RetryThenFail(shape(p)),
+        FailurePolicy::RetryThenSkip(p) => FailurePolicy::RetryThenSkip(shape(p)),
+        other => other,
+    };
     // @doc-snippet:begin slot=engine-config imports=EngineConfig,BlankTileStrategy,FailurePolicy,DedupeStrategy,RetryPolicy
     let mut config = EngineConfig::default()
         // @doc-test: builder_engine_surface.rs::builder_honours_with_concurrency:100
@@ -795,11 +1105,7 @@ pub(crate) fn engine_config(args: &PyramidArgs) -> EngineConfig {
         // @doc-test: phase3_retry.rs::retries_on_transient_errors:256
         // @doc-flag: retry-backoff kind=param param_name=retry-backoff
         // @doc-test: builder_resume_retry.rs::builder_with_failure_policy_accepts_every_variant:145
-        .with_failure_policy(
-            args.pipeline
-                .failure_policy()
-                .unwrap_or_else(|| crate::build_failure_policy(args)),
-        ) // @doc-flag: failure-policy kind=param param_name=failure-policy
+        .with_failure_policy(failure_policy) // @doc-flag: failure-policy kind=param param_name=failure-policy
         .skip_blanks(args.pipeline.drop_blanks);
     if let Some(ds) = crate::build_dedupe_strategy(args) {
         // @doc-test: phase3_dedupe_blanks.rs::blanks_dedupe_manifest_lists_references:364
@@ -808,6 +1114,9 @@ pub(crate) fn engine_config(args: &PyramidArgs) -> EngineConfig {
         config = config.with_dedupe_strategy(ds); // @doc-flag: dedupe-all kind=append
     }
     // @doc-snippet:end slot=engine-config
+    if let Some(rgb) = args.background {
+        config.background_rgb = rgb;
+    }
     config
 }
 
@@ -930,6 +1239,15 @@ pub(crate) fn run(args: PyramidArgs, cancel: CancelToken) {
     if let Err(refusal) = check_combinations(&args, &target) {
         refusal.exit();
     }
+    // One line, on stderr, so `--events` keeps stdout to itself.
+    if matches!(target, Target::ObjectStore { .. })
+        && crate::resolve_sink_uri(&args).starts_with("s3://")
+    {
+        eprintln!(
+            "Note: s3:// is a deprecated spelling of object-store://; it still works, writes \
+             the same key layout into --object-store-root and uploads nothing."
+        );
+    }
     let to_archive = matches!(target, Target::Archive(_));
     let layout = crate::resolve_layout(&args, to_archive);
     let tile_format = crate::resolve_tile_format(&args, to_archive);
@@ -939,7 +1257,7 @@ pub(crate) fn run(args: PyramidArgs, cancel: CancelToken) {
         }
         _ => None,
     };
-    if args.memory_budget.is_some() {
+    if args.memory_budget.is_some() && args.engine.is_none() {
         eprintln!(
             "Note: --memory-budget only applies to a fresh run into a tile tree \
              (--storage directory, without --resume or --verify), so this run uses the \
@@ -992,7 +1310,9 @@ pub(crate) fn run(args: PyramidArgs, cancel: CancelToken) {
             (run.engine(&sink, Some(policy)), dir)
         }
         Target::ObjectStore { bucket, prefix } => {
-            let store = object_store.expect("prepared above for an s3:// target");
+            let Some(store) = object_store else {
+                operational_error("the object-store sink was not prepared before the run");
+            };
             object_store::run(&run, store, &bucket, &prefix, tile_format)
         }
     };
@@ -1027,6 +1347,23 @@ fn archive_sink(
         }
         options = options.with_dedupe_memory_bytes(window);
     }
+    let p = &args.pipeline;
+    if let Some(compression) = p.pmtiles_internal_compression {
+        options = options.with_internal_compression(compression.into());
+    }
+    if let Some(bounds) = p.pmtiles_bounds {
+        options = options.with_bounds_degrees(bounds);
+    }
+    if let Some(center) = p.pmtiles_centre {
+        options = options
+            .with_center_degrees(center.lon, center.lat)
+            .with_center_zoom(center.zoom);
+    }
+    // The core fills its own `vnd.libviprs` namespace in whatever else the
+    // metadata says, so these three are all a caller sets.
+    options.metadata.name = p.pmtiles_name.clone();
+    options.metadata.description = p.pmtiles_description.clone();
+    options.metadata.attribution = p.pmtiles_attribution.clone();
     // @doc-snippet:begin slot=sink-pmtiles imports=PmTilesSink,TileFormat
     // @doc-test: cli_e2e.rs::pyramid_default_output_is_a_pmtiles_archive:1
     // @doc-flag: storage kind=param param_name=storage
@@ -1085,6 +1422,16 @@ impl Run<'_> {
             return builder.run_region(r.x, r.y, r.width, r.height);
         }
         let mut builder = builder.with_observer_arc(self.events.clone());
+        if let Some(engine) = self.args.engine {
+            builder = builder.with_engine(engine.into());
+            if let Some(mb) = self.args.memory_budget {
+                builder = builder.with_memory_budget(crate::budget_bytes(
+                    mb,
+                    self.plan,
+                    self.raster.format(),
+                ));
+            }
+        }
         if let Some(policy) = resume {
             builder = builder.with_resume(policy);
         }
@@ -1306,19 +1653,21 @@ mod object_store {
     ) -> Arc<DirectoryObjectStore> {
         let Some(root) = args.pipeline.object_store_root.clone() else {
             usage_error(
-                "an s3:// sink needs somewhere to write: --object-store-root DIR",
-                "this build has no network transport, so the object-store sink writes \
-                 through a local stub store; name its directory",
+                "an object-store sink needs somewhere to write: --object-store-root DIR",
+                "viprs uploads nothing (libviprs#1119): the sink writes the bucket's key layout \
+                 into DIR, which you then sync with `aws s3 sync` or `rclone`; name that \
+                 directory",
             );
         };
         match DirectoryObjectStore::for_bucket(&root, bucket) {
             Ok(store) => Arc::new(store),
-            Err(SinkError::Other(why)) => {
-                usage_error(&why, "a bucket is one plain name, such as s3://tiles/run-1")
-            }
+            Err(SinkError::Other(why)) => usage_error(
+                &why,
+                "a bucket is one plain name, such as object-store://tiles/run-1",
+            ),
             Err(e) => usage_error(
                 &e.to_string(),
-                "a bucket is one plain name, such as s3://tiles/run-1",
+                "a bucket is one plain name, such as object-store://tiles/run-1",
             ),
         }
     }
@@ -1368,8 +1717,10 @@ mod object_store {
     /// usage mistake (README, "Exit codes").
     pub(super) fn prepare(_args: &PyramidArgs, _bucket: &str, _prefix: &str) -> NoStore {
         operational_error(
-            "the s3:// sink needs the `s3` feature, which this viprs was built without; \
-             rebuild with `--features s3`, and run `viprs features` to see what this build has",
+            "the object-store sink (object-store:// or s3://) needs the `object-store-sink` \
+             feature, which this viprs was built without; rebuild with \
+             `--features object-store-sink` (the older `--features s3` also works), and run \
+             `viprs features` to see what this build has",
         );
     }
 

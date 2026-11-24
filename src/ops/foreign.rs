@@ -11,7 +11,7 @@
 //! | `jpegsave` | `--Q`, `--subsample-mode` | `jpegload` | `--shrink` |
 //! | `pngsave` | `--compression`, `--interlace`, `--palette`, `--bitdepth` (1 without `--palette` is bilevel) | `pngload` | |
 //! | `tiffsave` | `--compression` | `tiffload` | `--page`, `--max-pages` |
-//! | `webpsave` | `--lossless` | `webpload` | `--page`, `--n` |
+//! | `webpsave` | `--lossless`, `--keep` (`none` or `all`) | `webpload` | `--page`, `--n` |
 //! | `gifsave` | `--dither`, `--bitdepth`, `--interlace` | `gifload` | `--page`, `--n`, `--max-pages` |
 //! | `jxlsave` | `--lossless` | `jxlload` | `--page`, `--n` |
 //! | `jp2ksave` | `--lossless` or `--ratio`, `--tile-width`, `--tile-height` | `jp2kload` | |
@@ -301,7 +301,19 @@ pub fn commands() -> Vec<Command> {
                 .default_value("none")
                 .help("Strip compression"),
         ),
-        saver("webpsave", "Save an image as lossless WebP.").arg(lossless()),
+        saver("webpsave", "Save an image as lossless WebP.")
+            .arg(lossless())
+            .arg(
+                Arg::new("keep")
+                    .long("keep")
+                    .value_parser(["none", "all"])
+                    .default_value("none")
+                    .help(
+                        "Metadata to carry into the file: none (the default), or all, which \
+                         writes the source's ICC profile, EXIF and XMP into their RIFF chunks. \
+                         The core writes all three or none, so vips's per-chunk values are refused",
+                    ),
+            ),
         saver("gifsave", "Save an image as GIF.")
             .arg(
                 Arg::new("dither")
@@ -589,9 +601,18 @@ fn encode(format: &str, raster: &Raster, m: &ArgMatches) -> Result<Vec<u8>> {
         "webp" => {
             // --lossless is a required argument, so clap has already refused
             // a command line without it.
-            integer()?.encode_webp(
-                libviprs::webp::SaveOptions::default().with_keep(libviprs::webp::Keep::None),
-            )?
+            // `keep` is only defined on `webpsave`; a `.webp` OUT reached through
+            // another command keeps nothing, as it always has.
+            let keep = match m
+                .try_get_one::<String>("keep")
+                .ok()
+                .flatten()
+                .map(String::as_str)
+            {
+                Some("all") => libviprs::webp::Keep::All,
+                _ => libviprs::webp::Keep::None,
+            };
+            integer()?.encode_webp(libviprs::webp::SaveOptions::default().with_keep(keep))?
         }
         "gif" => {
             let options = libviprs::gif::SaveOptions::default()

@@ -110,14 +110,15 @@ fn dzi_manifest_takes_its_format_after_an_equals_sign() {
 }
 
 // ---------------------------------------------------------------------------
-// --layout: zoomify and iiif are plan-only
+// --layout: zoomify and iiif never go into an archive
 // ---------------------------------------------------------------------------
 
 #[test]
-fn pyramid_layout_does_not_take_the_plan_only_layouts() {
-    // `plan` answers sidecar questions for zoomify and iiif, but `pyramid`
-    // has no cells for writing them and an archive cannot hold them, so its
-    // --layout stays deep-zoom, xyz or google, as the README says.
+fn pyramid_refuses_zoomify_and_iiif_into_an_archive() {
+    // `pyramid` writes zoomify and iiif into a directory or an object store
+    // since #152 (tests/cli_pyramid_knobs_152.rs has those cells), but an
+    // archive addresses tiles by z/x/y only, so into one they are still a
+    // usage error: now the CLI's own refusal rather than clap's.
     let dir = unique_dir("pyramid-layout");
     let input = png_input(&dir);
     for layout in ["zoomify", "iiif"] {
@@ -131,8 +132,8 @@ fn pyramid_layout_does_not_take_the_plan_only_layouts() {
         ]);
         assert_usage_error(&out, &format!("pyramid --layout {layout}"));
         assert!(
-            stderr(&out).contains("invalid value"),
-            "clap should name the bad value, got:\n{}",
+            stderr(&out).contains("cannot be addressed inside a PMTiles archive"),
+            "the refusal should say why, got:\n{}",
             stderr(&out)
         );
         assert!(!target.exists(), "nothing may be written for a usage error");
