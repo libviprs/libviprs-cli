@@ -78,6 +78,7 @@ cargo install --path .
 | `dwg-acadsharp` | the experimental DWG reader, chosen with `viprs vector ... --provider acadsharp` (ACadSharp through `acadsharp-rs`, over a native library). In `full`, not in the default set |
 | `pvec-raster` (default) | the `.pvec` raster commands, `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters`, and the read side, `viprs pvec info`, `validate`, `text` and `calibrate` (see [`viprs pvec`](#viprs-pvec)) |
 | `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout, and `viprs pvec layouts` (see [`viprs pvec`](#viprs-pvec)), and `viprs plot` (see [`viprs plot`](#viprs-plot)); turns `dwg-acadrust` on |
+| `pvec-export` | `viprs pvec export`, a `.pvec` as GML, GeoPackage, a vector tile, a PMTiles archive or STEP, with PVec's fidelity report (see [`viprs pvec`](#viprs-pvec)). In `full`, not in the default set; turns `pvec-raster` on |
 | `pvec-raster-thumbnail` | `viprs pvec thumbnail` and `viprs pvec convert --thumbnail`, a PNG of a sheet with strokes only (no text, no fills). In `full`, not in the default set; turns `pvec-convert` and `svg` on |
 | `object-store-sink` | the `object-store://` sink, which writes the object-store key layout into a directory and uploads nothing |
 | `s3` | the same sink under its old name (the core treats `s3` as a deprecated alias for `object-store-sink`); `s3://` still works and prints one deprecation line |
@@ -398,7 +399,36 @@ viprs pvec calibrate plan.pvec --remove
 
 `validate` gives the verdict PVec's own `pvec validate` gives, and the tests hold it to that tool's library. A raster whose tiles the reader refuses, a calibration it refuses (the CAL-11 residual check included) and a component stream that does not decode are reported with what refused them, and none of them fails the file, because the geometry does not depend on them; PVec's validator does not read the streams at all. With `--json` it prints its report either way, `"valid": false` with the `rule` and `error` when the file fails, and still exits 1 then.
 
+Ask a `.pvec` what is where, and how finely a curve can be drawn. Both go through PVec's own `PickIndex` and `Tessellate` at the revision the core pins, and the tests hold them to those calls on the same file. They need `pvec-raster`, and every length is in source units.
+
+```sh
+viprs pvec pick plan.pvec --point 200,2 --tolerance 3      # the entity within 3 units of the point
+viprs pvec pick plan.pvec --nearest 1000,1300              # the nearest entity, wherever it is
+viprs pvec pick plan.pvec --nearest 1000,1300 --tolerance 50   # ... but only within 50
+viprs pvec pick plan.pvec --rect 0,0,1000,1000 --mode contains --json
+viprs pvec tessellate plan.pvec --error 0.5                # every curve to within 0.5 units
+viprs pvec tessellate plan.pvec --error-px 0.5 --units-per-pixel 2 --json
+```
+
+`pick` takes exactly one of `--point`, `--rect` or `--nearest`. A hit is one tab-separated line, `entity distance param bounds capability` (`param` is the curve parameter of the nearest point, or `-` for an entity held only as a preview), and a query with no hit prints nothing, says `no hit` on stderr and exits 0. `--point` needs `--tolerance`, the pick radius; for `--nearest` it is the largest distance, and without it the nearest entity is found wherever it is. `--rect X0,Y0,X1,Y1` prints one id per line: `--mode intersects` (the default) takes entities whose bounds meet the rectangle, `--mode contains` those inside it. A bare line has no bounds, so the index leaves it out and says so. `--json` prints `{"v": 1, "query", "hit" | "entities", "skipped"}`.
+
+`tessellate` needs a budget, `--error` in source units or `--error-px` with `--units-per-pixel`, and prints one line per entity, `entity vertices screen_error_px world_error`, or with `--json` the same per entity plus the budget and the largest error found. A polyline is its own tessellation. A budget one curve cannot reach in `--max-segments` (65536 by default) segments is exit 1, naming the entity, after every other entity has been reported; a bad number is exit 2.
+
 `calibrate` takes exactly one of `--scale`, `--plan-scale`, `--measured` or `--remove`. A plan scale of `1:100` on a sheet drawn in millimetres (`--paper-unit 0.001`) is 0.1 m per drawing unit, and a measured pair is the distance over the points' length. A georeference the file already carries stays, and `--remove` drops only the scale record. A value that is not a positive finite number, or two `--measured` points that are one point, is a usage error and nothing is touched.
+
+Write a `.pvec` out for other software:
+
+```sh
+viprs pvec export plan.pvec plan.gml  --format gml  --tolerance 0.5 --report plan.fidelity.json
+viprs pvec export plan.pvec plan.gpkg --format gpkg --tolerance 0.5
+viprs pvec export plan.pvec plan.mvt  --format mvt  --tile 3/6/1
+viprs pvec export plan.pvec plan.pmtiles --format pmtiles --zooms 0-3
+viprs pvec export plan.pvec plan.stp  --format step --report plan.fidelity.md
+```
+
+These are PVec's own writers (`pvec-interchange`), behind the `pvec-export` feature, which is in `full` and not in the default build: without it the command exits 1 and names the feature, and a usage mistake is still exit 2. Every export comes with the fidelity report of what was done to each entity (exact, exact under another parametrisation, an equivalent compound, a bounded approximation with its measured error, or left out). `--report PATH` writes it, as Markdown when the name ends in `.md` and JSON otherwise, and a lossy export says so on stderr whether or not you ask. The report is counted against the drawing, so an entity a writer dropped without a record is a failed export, not a quiet one.
+
+`gml` and `gpkg` need `--tolerance`, the most a curve written as line segments may deviate, in the output's units. `gml` takes `--srs NAME` (written as `srsName`, never looked up; the default `urn:pvec:local` is the drawing's own units) and, like `step`, `--affine A,B,C,D,TX,TY` to map the coordinates. `mvt` and `pmtiles` are display only: the drawing's declared bounds are fitted into a square map with their top-left at the map's top-left, so tile `0/0/0` is the whole drawing, and every entity goes to one layer, `entities`. `mvt` writes the one tile `--tile Z/X/Y` names (`0/0/0` by default) and `pmtiles` every tile of `--zooms MIN-MAX` (at most 6, `0-0` by default); `--error-px` is their chord budget in pixels of a 256 pixel tile. STEP takes exact curves only, and a raster in the drawing is listed in the report as left out. No clock is read, so the same file and flags give the same bytes, and the output is written beside itself and renamed over, so a failed export leaves no file. `OUT` may not be the input.
 
 `--pvec-into` is required: a `.pvec` needs at least one entity (WRT-01), and scan-only sheets stay out of v1 (ADR 0018). The output is a copy of the drawing with the raster added, so it may name the drawing itself to replace it. A drawing that declares capabilities or styles entities is refused, because adding a raster cannot carry those over yet.
 

@@ -74,6 +74,12 @@ pvec-convert = ["libviprs/pvec-convert", "dwg-acadrust"]
 # in through `svg`, so it is in `full` and not in the default build; without it both exit 1 and name
 # this feature, and a usage mistake is still exit 2 (libviprs-cli#150).
 pvec-raster-thumbnail = ["libviprs/pvec-raster-thumbnail", "pvec-convert", "svg"]
+# `viprs pvec export FILE OUT --format gml|gpkg|mvt|pmtiles|step`: PVec's interchange writers and the
+# fidelity report that says what each one did to the geometry (libviprs-cli#154). The crate is a direct
+# dependency at the revision the core pins, since libviprs neither uses nor re-exports it. It is in `full`
+# and not in `default`; without it the command exits 1 and names this feature, and a usage mistake is
+# still exit 2.
+pvec-export = ["pvec-raster", "dep:pvec-interchange"]
 # JBIG2 image streams in a PDF page for `viprs pvec convert PAGE.pdf` (libviprs-cli#151): the core's pure
 # Rust decoder. Not in `default`, and not in `full` either: the core keeps it out of its own default until
 # 24 hours of its fuzz target run clean, and `full` is what gets shipped and tested as "everything". Without
@@ -97,6 +103,7 @@ full = [
     "pvec-raster",
     "pvec-convert",
     "pvec-raster-thumbnail",
+    "pvec-export",
 ]
 
 [dependencies]
@@ -125,6 +132,9 @@ pvec-capabilities = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba5
 # that do. Same revision as the facade, and both were already in the lock through it.
 pvec-container = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10", optional = true }
 pvec-components = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10", optional = true }
+# `viprs pvec export` (libviprs-cli#154): the GML, GeoPackage, vector tile, PMTiles and STEP writers and the
+# fidelity report. Same revision as the facade, so the curves the facade reads are the type these write.
+pvec-interchange = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10", optional = true }
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
@@ -136,6 +146,10 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 acadrust = { git = "https://github.com/libviprs/acadrust", rev = "5bf63c7b1653fbb5a51f2f8a5a5a3f01a567c094", version = "0.6.8" }
 flate2 = "1"
 lopdf = "0.36"
+# The independent checks of `viprs pvec export` (libviprs-cli#154): a real SQLite opens the GeoPackage and an
+# XML parser reads the GML, neither of them the writer's own code.
+rusqlite = { version = "0.32", features = ["bundled"] }
+roxmltree = "0.21"
 # The tests build the drawings the raster joins; the facade does not re-export the curve
 # constructors. Same revision as the facade above.
 pvec-geometry = { git = "https://github.com/libviprs/pvec", rev = "e1a768ba53b0fc4d530fc8b528c04159299c6f10" }

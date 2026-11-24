@@ -31,6 +31,7 @@ The pin is its own commit (the first of CV2.1), gated on its own, so a regressio
 | `pvec-raster`, `pvec-convert` | same names (default) | covered |
 | `pvec-write`, `pvec-normalized`, `pvec-spline` | through `pvec-convert` and `dwg-acadrust` | covered |
 | `pvec-raster-thumbnail` | `pvec-raster-thumbnail` (in `full`, not in `default`) | covered (CV2.1) |
+| none (`pvec-interchange` is PVec's, not the core's) | `pvec-export` (in `full`, not in `default`) | covered (CV2.5) |
 | `jbig2` | `jbig2` (not in `default`, and not in `full` until the core records its 24 clean fuzz hours) | covered (CV2.2); without it a PDF page that needs the decoder exits 1 and names the feature |
 | `serde` | none | not-CLI: it only widens the Rust API; every viprs `--json` output is its own schema |
 | `test-util` | none | not-CLI: a sink that sleeps on purpose, for stress tests |
@@ -177,14 +178,14 @@ The pin is its own commit (the first of CV2.1), gated on its own, so a regressio
 | `TextStream` records | `pvec text` | covered (CV1.3) |
 | `recalibrate_file` | `pvec calibrate` | covered (CV1.4) |
 | Raster placements and tiles | `pvec rasters` | covered |
-| `PickIndex` (point, rect, nearest) | none | missing, CV2.5 |
-| `Tessellate` against an error budget | none | missing, CV2.5 |
-| `pvec-interchange` exports (GML, GeoPackage, MVT, STEP, fidelity report) | none | missing, CV2.5 (a new direct dependency at the core's pvec rev) |
+| `PickIndex` (point, rect, nearest) | `pvec pick` | covered (CV2.5) |
+| `Tessellate` against an error budget | `pvec tessellate` (`--error`, or `--error-px` with `--units-per-pixel`) | covered (CV2.5) |
+| `pvec-interchange` exports (GML, GeoPackage, MVT, PMTiles, STEP, fidelity report) | `pvec export`, with `--report` (feature `pvec-export`, in `full`) | covered (CV2.5; a new optional direct dependency at the core's pvec rev, +1 package in the normal tree) |
 | Streaming API (spatial directory, Tier 0, viewport queries) | none | not-CLI: incremental loading for a viewer; a one-shot command has no viewport. `pvec info` reports whether the directory exists |
 | `pvec-scene` paint plan | none | not-CLI: PVec ships no rasteriser, so there is no `.pvec` to image path to expose (owner question) |
 | `pvec-wasm` | none | not-CLI: the browser ABI |
 | PVec's own `pvec` binary: `inspect`, `validate`, `calibrate`, `dump-manifest`, `capabilities` | `pvec info`, `pvec validate`, `pvec calibrate`, `pvec info --json`, `pvec info` (manifest capabilities and skipped streams) | covered (CV1.1, CV1.2, CV1.4) |
-| PVec's own `pvec tessellate` | none | missing, CV2.5 |
+| PVec's own `pvec tessellate` | `pvec tessellate` | covered (CV2.5) |
 | `pvec compare-step` | none | not in this epic: it needs an external OpenCASCADE evaluator report |
 | `pvec bench-open` | none | not-CLI: a benchmark, which only runs through the Mercury queue |
 
