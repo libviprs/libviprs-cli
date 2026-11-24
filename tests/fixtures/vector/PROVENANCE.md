@@ -22,3 +22,10 @@ unit and its one paper layout, `Layout1`, is empty, so `viprs pvec convert` has 
 
 - bytes: 10892
 - sha256: `af2f9edf744fd0e94215415ad33cf93a739fe5692b272a523eda9603d14279c5`
+
+`g13_deep_blocks.dwg` is libviprs `tests/fixtures/cad/g13/g13_deep_blocks.dwg` copied byte for byte at the CLI's
+core pin (`71cbbe0`); its provenance is that directory's `PROVENANCE.md` (written by ACadSharp's `DwgWriter` 3.7.1, content
+libviprs's own, MIT). `g13_deep_blocks.dwg` nests INSERTs six deep, so `--max-block-depth` can be tripped above 0 and both
+readers can be held to the same depth.
+
+- bytes: 11051, sha256: `2749f007a82dd4156b61c151ebb6097cb1d36d4551d6e31611b8d39e86fb0f19`

@@ -39,6 +39,11 @@ fn sample() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vector/sample_AC1018.dwg")
 }
 
+#[cfg(feature = "dwg-acadrust")]
+fn deep_blocks() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vector/g13_deep_blocks.dwg")
+}
+
 fn s(p: &Path) -> &str {
     p.to_str().unwrap()
 }
@@ -133,7 +138,7 @@ const READER_FLAGS: [&str; 12] = [
     "--max-spline-knots",
     "--max-insert-grid",
     "--max-expanded-instances",
-    "--max-allocation-bytes",
+    "--max-alloc-bytes",
     "--max-name-bytes",
     "--max-input-bytes",
     "--max-string-bytes",
@@ -399,8 +404,9 @@ fn a_tiler_combination_the_library_refuses_is_a_usage_error() {
 fn an_acadrust_limit_refuses_a_drawing_past_it_and_names_the_limit() {
     let err = refused(&["--max-entities", "1"], 1);
     assert!(err.contains("max_entities"), "{err}");
-    // The same ceiling under --hardened: the flag tightens the hardened profile, it does not
-    // replace it with the defaults.
+    // The ceiling still holds with --hardened on. acadrust's hardened preset is only its input
+    // cap (it sets no SourceLimits), so this shows the flag survives the preset; the flag
+    // tightening a hardened ceiling is ACadSharp's case, in the native cells of vector_cli.rs.
     let err = refused(&["--hardened", "--max-entities", "1"], 1);
     assert!(err.contains("max_entities"), "{err}");
 }
@@ -424,7 +430,7 @@ fn every_acadrust_limit_at_its_default_changes_nothing() {
         "1000000",
         "--max-expanded-instances",
         "10000000",
-        "--max-allocation-bytes",
+        "--max-alloc-bytes",
         "2147483648",
         "--max-name-bytes",
         "1020",
@@ -433,13 +439,113 @@ fn every_acadrust_limit_at_its_default_changes_nothing() {
     assert_eq!(same["fidelity"], base["fidelity"]);
 }
 
+/// Each acadrust limit flag reaches the INSERT walk: a ceiling of 1 under what the sample holds is
+/// refused, exit 1, and the message names the `SourceLimits` field and what it saw. Ignore any one
+/// flag and its row passes the drawing instead.
+///
+/// `--max-block-depth` needs deeper nesting than the sample has (one level), so it has its own
+/// cell on `g13_deep_blocks.dwg` below. `--max-insert-grid` has no committed drawing that trips
+/// it: none holds a MINSERT, so the smallest legal value, 1, passes all of them. Its mapping onto
+/// `SourceLimits` is pinned by a unit test in `src/vector.rs` instead.
 #[cfg(feature = "dwg-acadrust")]
 #[test]
-fn the_acadrust_allocation_and_name_limits_reach_the_walk() {
-    let err = refused(&["--max-allocation-bytes", "1"], 1);
-    assert!(err.contains("max_allocation_bytes"), "{err}");
-    let err = refused(&["--max-name-bytes", "0"], 1);
-    assert!(err.contains("max_name_bytes"), "{err}");
+fn each_acadrust_limit_refuses_a_drawing_past_it_and_names_the_field() {
+    for (flag, field, observed) in [
+        ("--max-entities", "max_entities", "observed 2"),
+        (
+            "--max-polyline-points",
+            "max_polyline_vertices",
+            "observed 5",
+        ),
+        (
+            "--max-spline-control-points",
+            "max_spline_control_points",
+            "observed 4",
+        ),
+        ("--max-spline-knots", "max_spline_knots", "observed 8"),
+        (
+            "--max-expanded-instances",
+            "max_expanded_instances",
+            "observed 2",
+        ),
+        ("--max-alloc-bytes", "max_allocation_bytes", "observed"),
+        ("--max-name-bytes", "max_name_bytes", "observed 5"),
+    ] {
+        let err = refused(&["--provider", "acadrust", flag, "1"], 1);
+        assert!(
+            err.contains(&format!("limit {field} exceeded")) && err.contains(observed),
+            "{flag} 1: {err}"
+        );
+    }
+}
+
+/// `g13_deep_blocks.dwg` nests INSERTs six deep: a depth ceiling of 5 refuses it and 6 reads it.
+#[cfg(feature = "dwg-acadrust")]
+#[test]
+fn max_block_depth_refuses_nesting_past_it() {
+    let deep = deep_blocks();
+    let out = run(&[
+        "vector",
+        "report",
+        s(&deep),
+        "--max-zoom",
+        "0",
+        "--max-block-depth",
+        "5",
+    ]);
+    assert_eq!(
+        code(&out),
+        1,
+        "stdout:\n{}\nstderr:\n{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("limit max_block_depth exceeded"),
+        "{}",
+        stderr(&out)
+    );
+    let out = run(&[
+        "vector",
+        "report",
+        s(&deep),
+        "--max-zoom",
+        "0",
+        "--max-block-depth",
+        "6",
+    ]);
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+}
+
+/// A ceiling of 0 is refused while the command line is parsed, for every reader limit and with
+/// either reader named. ACadSharp reads a 0 as "no limit", so before this a 0 written over
+/// `--hardened` switched that ceiling off; acadrust read it as a ceiling of 0. Neither is what
+/// someone typing 0 meant, so the smallest limit is 1.
+#[test]
+fn a_reader_limit_of_zero_is_a_usage_error() {
+    let acadsharp_only = [
+        "--max-input-bytes",
+        "--max-string-bytes",
+        "--max-output-bytes",
+    ];
+    let shared = [
+        "--max-block-depth",
+        "--max-entities",
+        "--max-polyline-points",
+    ];
+    for flag in READER_FLAGS {
+        let providers: &[&str] = if acadsharp_only.contains(&flag) {
+            &["acadsharp"]
+        } else if shared.contains(&flag) {
+            &["acadrust", "acadsharp"]
+        } else {
+            &["acadrust"]
+        };
+        for provider in providers {
+            let err = refused(&[flag, "0", "--provider", provider, "--hardened"], 2);
+            assert!(err.contains(flag), "{flag} 0 --provider {provider}: {err}");
+        }
+    }
 }
 
 #[test]
@@ -463,7 +569,7 @@ fn a_limit_the_chosen_reader_does_not_have_is_a_usage_error() {
         "--max-spline-knots",
         "--max-insert-grid",
         "--max-expanded-instances",
-        "--max-allocation-bytes",
+        "--max-alloc-bytes",
         "--max-name-bytes",
     ] {
         let err = refused(&[flag, "1000", "--provider", "acadsharp"], 2);
