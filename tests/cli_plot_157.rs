@@ -23,8 +23,16 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn run(args: &[&str]) -> Output {
+    // None of the default-plot variables leaks in from the machine running the tests, and the config
+    // directory is one that does not exist (libviprs-cli#162), so a plot here walks to the built-in files.
     let out = Command::new(env!("CARGO_BIN_EXE_viprs"))
         .args(args)
+        .env_remove("LIBVIPRS_PLOT_CTB")
+        .env_remove("LIBVIPRS_PLOT_PC3")
+        .env(
+            "LIBVIPRS_CONFIG_DIR",
+            std::env::temp_dir().join(format!("viprs-plot-157-no-config-{}", std::process::id())),
+        )
         .output()
         .expect("viprs must spawn");
     // A binary with no `plot` command exits 2 too, which would pass every usage cell for the wrong reason.
@@ -229,16 +237,22 @@ fn entities(err: &str) -> u64 {
 
 // ---- usage: exit 2, nothing written ---------------------------------------------------------------
 
-/// `--pc3` without `--ctb` is a usage error: the supported inputs are a CTB alone or both.
+/// `--pc3` without `--ctb` is a plot (libviprs-cli#162): each file has its own default, so the table is the
+/// built-in one and the PC3 fills the device.
+#[cfg(feature = "pvec-convert")]
 #[test]
-fn a_pc3_without_a_ctb_exits_2_and_writes_nothing() {
+fn a_pc3_without_a_ctb_plots_with_the_built_in_table() {
     let dir = scratch("pc3-alone");
     let (_, pc3_path) = files(&dir);
     let out_pdf = dir.join("out.pdf");
     let out = run(&["plot", s(&sample()), s(&out_pdf), "--pc3", s(&pc3_path)]);
-    assert_eq!(code(&out), 2, "{}", stderr(&out));
-    assert!(stderr(&out).contains("--ctb"), "{}", stderr(&out));
-    assert!(!out_pdf.exists());
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("plot style table: built-in monochrome"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(pages(&out_pdf).len(), 3);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -448,7 +462,7 @@ fn a_missing_drawing_exits_1() {
 
 // ---- PDF ------------------------------------------------------------------------------------------
 
-/// With no `--layout` every print layout is a page, in tab order, and a plot with no CTB says so.
+/// With no `--layout` every print layout is a page, in tab order, and a plot with no CTB says which one it used.
 #[cfg(feature = "pvec-convert")]
 #[test]
 fn every_print_layout_is_a_page_by_default() {
@@ -459,8 +473,8 @@ fn every_print_layout_is_a_page_by_default() {
     assert!(std::fs::read(&out_pdf).unwrap().starts_with(b"%PDF-"));
     assert_eq!(pages(&out_pdf).len(), 3);
     assert!(
-        stderr(&out).contains("no --ctb"),
-        "a plot with no style table says it draws object colours:\n{}",
+        stderr(&out).contains("plot style table: built-in monochrome"),
+        "a plot with no style table says it used the built-in one:\n{}",
         stderr(&out)
     );
     // Only the PDF is left in the directory: no scratch directory, no temporary file.
@@ -525,7 +539,11 @@ fn the_ctb_is_applied_to_the_pages() {
     assert_eq!(code(&run(&["plot", s(&sample()), s(&plain)])), 0);
     let out = run(&["plot", s(&sample()), s(&styled), "--ctb", s(&red)]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    assert!(!stderr(&out).contains("no --ctb"), "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("built-in monochrome"),
+        "{}",
+        stderr(&out)
+    );
     assert_eq!(reds(&plain), 0);
     assert!(
         reds(&styled) > 0,
@@ -995,13 +1013,7 @@ fn a_build_without_pvec_convert_exits_1_and_names_it() {
     let out = run(&["plot", s(&sample()), s(&dir.join("o.pdf"))]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     assert!(stderr(&out).contains("pvec-convert"), "{}", stderr(&out));
-    let out = run(&[
-        "plot",
-        s(&sample()),
-        s(&dir.join("o.pdf")),
-        "--pc3",
-        "x.pc3",
-    ]);
+    let out = run(&["plot", s(&sample()), s(&dir.join("o.pdf")), "--dpi", "100"]);
     assert_eq!(code(&out), 2, "{}", stderr(&out));
     let _ = std::fs::remove_dir_all(dir);
 }
