@@ -46,6 +46,7 @@ mod features;
 /// and the missing-feature refusal (libviprs-cli#64).
 mod input;
 
+mod paths;
 /// `viprs pdf`, `viprs geo` and the planner query flags (#68).
 mod pdf_geo_plan;
 mod plot;

@@ -28,10 +28,11 @@
 //! `PdfPlot` and `PmTilesPlot` plot paper layouts only, so `--model` takes `--format pvec`. `PmTilesPlot` has no
 //! switch for text and fills, so an archive is strokes only, as the core's own default is.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Args, ValueEnum};
 
+use crate::paths::same_file;
 use crate::usage_error;
 
 /// What `viprs plot` writes.
@@ -117,23 +118,6 @@ pub(crate) struct PlotArgs {
     /// written, except the sheets a PVEC set had already published.
     #[arg(long, value_name = "SECONDS", value_parser = parse_seconds)]
     deadline: Option<f64>,
-}
-
-/// Whether two paths are the same file, one of which may not exist yet. A path is its canonical self when
-/// it exists, and its directory's canonical self with its own name otherwise.
-fn same_file(a: &Path, b: &Path) -> bool {
-    let resolved = |p: &Path| {
-        p.canonicalize().unwrap_or_else(|_| {
-            let dir = p
-                .parent()
-                .filter(|d| !d.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            dir.canonicalize()
-                .map(|d| d.join(p.file_name().unwrap_or_default()))
-                .unwrap_or_else(|_| p.to_path_buf())
-        })
-    };
-    resolved(a) == resolved(b)
 }
 
 /// A plain file name: what is joined onto OUT and onto nothing else.
@@ -244,6 +228,7 @@ mod imp {
     use super::*;
 
     use std::io::Read;
+    use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -681,7 +666,7 @@ mod imp {
         let partial = args.out.join(format!("{stem}.sheets.json.partial"));
         let body = serde_json::json!({
             "schema_version": 1,
-            "source": args.drawing.display().to_string(),
+            "source": args.drawing.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
             "stem": stem,
             "sheets": rows,
         });
