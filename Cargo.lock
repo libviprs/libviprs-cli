@@ -1474,7 +1474,7 @@ dependencies = [
 [[package]]
 name = "libviprs"
 version = "0.6.1"
-source = "git+https://github.com/libviprs/libviprs?rev=d1e94342b33a1347a026d685eb8b03ca70bc49fe#d1e94342b33a1347a026d685eb8b03ca70bc49fe"
+source = "git+https://github.com/libviprs/libviprs?rev=dbb4d2bf397c8c9c0395f28d96e36fcf0b284e10#dbb4d2bf397c8c9c0395f28d96e36fcf0b284e10"
 dependencies = [
  "ab_glyph",
  "acadrust",
