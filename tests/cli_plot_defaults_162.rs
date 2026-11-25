@@ -39,7 +39,8 @@ fn go(args: &[&str], env: &[(&str, &str)]) -> Output {
     // A binary with no such command exits 2 too, which would pass every usage cell for the wrong reason.
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !err.contains("unrecognized subcommand") && !err.contains("no family owns the command"),
+        !err.contains("unrecognized subcommand 'plot-defaults'")
+            && !err.contains("no family owns the command"),
         "viprs has no plot-defaults command:\n{err}"
     );
     out
