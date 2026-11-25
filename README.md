@@ -67,7 +67,7 @@ cargo install --path .
 
 | Feature | What it turns on |
 |---|---|
-| `pdfium` (default) | `--render` for vector PDFs, binding `libpdfium.so` at runtime |
+| `pdfium` (default) | `--render` for vector PDFs, and `viprs plot --format pmtiles`, binding `libpdfium.so` at runtime |
 | `pdfium-static` | PDFium linked at build time instead; needs a static `libpdfium.a` and `PDFIUM_STATIC_LIB_PATH` |
 | `avif` | AVIF decoding |
 | `svg` | SVG rasterising: a `.svg` file, or any input whose root element is `svg` (the core sniffs it by content); a gzipped `.svgz` is refused |
@@ -77,7 +77,7 @@ cargo install --path .
 | `dwg-acadrust` (default) | the default DWG reader behind `viprs vector views`, `build` and `report`: the pure Rust acadrust reader, no native library (see [`viprs vector`](#viprs-vector)) |
 | `dwg-acadsharp` | the experimental DWG reader, chosen with `viprs vector ... --provider acadsharp` (ACadSharp through `acadsharp-rs`, over a native library). In `full`, not in the default set |
 | `pvec-raster` (default) | the `.pvec` raster commands, `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters`, and the read side, `viprs pvec info`, `validate`, `text` and `calibrate` (see [`viprs pvec`](#viprs-pvec)) |
-| `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout, and `viprs pvec layouts` (see [`viprs pvec`](#viprs-pvec)); turns `dwg-acadrust` on |
+| `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout, and `viprs pvec layouts` (see [`viprs pvec`](#viprs-pvec)), and `viprs plot` (see [`viprs plot`](#viprs-plot)); turns `dwg-acadrust` on |
 | `pvec-export` | `viprs pvec export`, a `.pvec` as GML, GeoPackage, a vector tile, a PMTiles archive or STEP, with PVec's fidelity report (see [`viprs pvec`](#viprs-pvec)). In `full`, not in the default set; turns `pvec-raster` on |
 | `pvec-raster-thumbnail` | `viprs pvec thumbnail` and `viprs pvec convert --thumbnail`, a PNG of a sheet with strokes only (no text, no fills). In `full`, not in the default set; turns `pvec-convert` and `svg` on |
 | `object-store-sink` | the `object-store://` sink, which writes the object-store key layout into a directory and uploads nothing |
@@ -105,7 +105,7 @@ One contract for every command, built-ins and ops alike:
 | `0` | Success. |
 | `1` | Operational failure: an input that cannot be read or decoded, an I/O error, an op that refuses its input (or a value only the input can rule out), a check that found a problem (`verify`, `pmtiles verify`), a pyramid that skipped tiles under `--skip-failed`, or a feature this build left out (the message names the `--features` flag to rebuild with). |
 | `2` | Usage mistake: an unknown flag, a missing or conflicting argument (including a required mode flag such as `webpsave`'s `--lossless`), a value clap, a built-in or an op refuses on the command line alone, or a combination of flags that has no meaning. Nothing is written. |
-| `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself, `vector build` and `vector report` do the same (nothing is left at the output), and so does `pvec convert` (the sheets already published stay, and no `sheets.json` is written); any other command dies by the signal, which a shell reports as 130 too. |
+| `130` | Interrupted by Ctrl-C (SIGINT). `pyramid` catches it, stops at the next tile and exits 130 itself, `vector build` and `vector report` do the same (nothing is left at the output), and so does `pvec convert` (the sheets already published stay, and no `sheets.json` is written), and `plot` (the same, and a PDF is never left half written); any other command dies by the signal, which a shell reports as 130 too. |
 
 A missing feature is a 1 rather than a 2 on purpose: the command line was fine, this binary just cannot do it, and rebuilding fixes it where retyping would not.
 
@@ -437,6 +437,28 @@ Under `--storage pvec` the grid is the un-centred Google grid and nothing else: 
 `to-pvec` reads the georeference the archive stores since libviprs#1328, never re-encodes a tile, and refuses an archive that is not a Google, un-centred, overlap-free pyramid of 256, 512 or 1024 pixel PNG, JPEG or WebP tiles with a recorded source size. An archive that stores no georeference needs `--pixel-to-source`.
 
 `rasters --json` prints `{"v": 1, "rasters": [...], "skipped": [...]}`; a skipped raster carries the `RASTER-NN` rule that refused it. `--tile ID LEVEL COL ROW OUT` writes the stored bytes of one tile (`-` for stdout) and nothing else.
+
+### `viprs plot`
+
+`viprs plot` plots a DWG the way a plotter does, with a plot style table and a plotter config (libviprs-cli#157, the CLI half of libviprs#1670):
+
+```bash
+viprs plot plan.dwg plan.pdf                                 # every print layout, one PDF page each
+viprs plot plan.dwg plan.pdf --ctb mono.ctb --pc3 pdf.pc3    # with a plot style table and a plotter
+viprs plot plan.dwg plan.pdf --layout A-101 --layout A-102   # only those (repeatable), in tab order
+viprs plot plan.dwg tiles/ --format pmtiles --dpi 200        # one PMTiles archive per layout (needs pdfium)
+viprs plot plan.dwg sheets/ --format pvec --ctb mono.ctb     # one .pvec per layout
+viprs plot plan.dwg out/ --format pvec --model --unit m --layer-state Review   # model space
+viprs plot plan.dwg plan.pdf --progress --deadline 600
+```
+
+OUT is the PDF itself for `--format pdf`, which is what an OUT ending in `.pdf` means when no `--format` is given, and a directory (created when it does not exist) for `pmtiles` and `pvec`, where each sheet is `<stem>.<NN>-<slug>.<ext>` and `<stem>.sheets.json` is written last. Nothing is written outside OUT, a `--stem` is a plain file name, OUT can never be the drawing, the CTB or the PC3 (exit 2), and every write goes to a name of its own and is renamed into place, so a plot that fails leaves what was at OUT as it was.
+
+`--ctb` and `--pc3` go through the core's loaders and never get read any other way: a file over 1 MiB, or a CTB that inflates past 8 MiB, is refused with exit 1 and the core's code (`plot-file-too-large`, `plot-file-inflated-too-large`, `plot-file-unrecognised`). `--pc3` without `--ctb` is a usage error (exit 2). A layout's own page setup wins over the PC3, which only fills what the layout leaves empty (paper, printable area); a plot with no `--ctb` draws the objects' own colours and says so on stderr.
+
+`--layer-state NAME` applies a layer state the drawing stores, under its mask, with the name matched with ASCII case ignored. A name the drawing does not store exits 1 and lists the ones it does, before anything is written. With `--model` and no state, the layer table as the drawing saved it decides what is drawn. The core plots model space as a PVEC only, so `--model` needs `--format pvec` (exit 1 otherwise, naming it); PDF and PMTiles are paper layouts. A PMTiles archive is the plotted page rendered at `--dpi` (36 to 600, 300 by default) and cut into tiles, strokes only for now, and it needs the `pdfium` feature (exit 1, naming it, without).
+
+`--progress` prints `[2/64] A-101 started` and `[2/64] A-101 written` lines on stderr, and `--deadline SECONDS` stops the plot at the next check with exit 1 and the code `DEADLINE`. Ctrl-C stops it through the core's cancel token: exit 130, no PDF and no scratch directory left (a PVEC set keeps the sheets it had already published and writes no index). Exit codes are the usual ones: 1 for a failed sheet, a refused plot file, an unknown layout or layer state, a limit or the deadline, or a missing feature; 2 for a usage mistake. It needs the `pvec-convert` feature, on by default.
 
 ### `viprs features`
 

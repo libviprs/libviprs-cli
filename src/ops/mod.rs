@@ -334,6 +334,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "verify",
     "vector",
     "pvec",
+    "plot",
 ];
 
 /// Assemble the full `viprs` CLI: the frozen derived commands unioned with

@@ -118,7 +118,7 @@ ctrlc = "3"
 # Pinned by rev; never from a registry. The core's own
 # default features are off here, so `dwg-acadrust` above is what turns the
 # default reader on, the way `pdfium` does for PDFium.
-libviprs = { git = "https://github.com/libviprs/libviprs", rev = "4b443f2f81e2701559127904a9008c09387c5122", default-features = false }
+libviprs = { git = "https://github.com/libviprs/libviprs", rev = "d1e94342b33a1347a026d685eb8b03ca70bc49fe", default-features = false }
 # PVec's facade and capability registry, for `viprs pyramid --storage pvec`, `viprs pmtiles
 # to-pvec` and `viprs pvec rasters` (libviprs-cli#130). The revision is the one the core pins
 # (`pvec-facade` in libviprs's own Cargo.toml), so both name one `PvecWriter`; moving it means
@@ -140,6 +140,12 @@ tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
+# `tests/cli_plot_157.rs` writes its model-space drawing with acadrust, the same fork at the same revision
+# the core pins, and reads the plotted PDFs with lopdf and builds a CTB that inflates past the bound with
+# flate2: no real drawing is committed, every file is made in the test (libviprs-cli#157).
+acadrust = { git = "https://github.com/libviprs/acadrust", rev = "5bf63c7b1653fbb5a51f2f8a5a5a3f01a567c094", version = "0.6.8" }
+flate2 = "1"
+lopdf = "0.36"
 # The independent checks of `viprs pvec export` (libviprs-cli#154): a real SQLite opens the GeoPackage and an
 # XML parser reads the GML, neither of them the writer's own code.
 rusqlite = { version = "0.32", features = ["bundled"] }
