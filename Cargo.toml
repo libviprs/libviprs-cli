@@ -118,7 +118,7 @@ ctrlc = "3"
 # Pinned by rev; never from a registry. The core's own
 # default features are off here, so `dwg-acadrust` above is what turns the
 # default reader on, the way `pdfium` does for PDFium.
-libviprs = { git = "https://github.com/libviprs/libviprs", rev = "d1e94342b33a1347a026d685eb8b03ca70bc49fe", default-features = false }
+libviprs = { git = "https://github.com/libviprs/libviprs", rev = "dbb4d2bf397c8c9c0395f28d96e36fcf0b284e10", default-features = false }
 # PVec's facade and capability registry, for `viprs pyramid --storage pvec`, `viprs pmtiles
 # to-pvec` and `viprs pvec rasters` (libviprs-cli#130). The revision is the one the core pins
 # (`pvec-facade` in libviprs's own Cargo.toml), so both name one `PvecWriter`; moving it means

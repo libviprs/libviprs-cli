@@ -335,6 +335,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "vector",
     "pvec",
     "plot",
+    "plot-defaults",
 ];
 
 /// Assemble the full `viprs` CLI: the frozen derived commands unioned with

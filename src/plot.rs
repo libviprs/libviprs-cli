@@ -4,6 +4,8 @@
 //! ```text
 //! viprs plot <drawing.dwg> <out.pdf>                          every print layout, one page each
 //! viprs plot <drawing.dwg> <out.pdf> --ctb A.ctb --pc3 B.pc3  with a plot style table and a plotter
+//! viprs plot <drawing.dwg> <out.pdf> --ctb none               the objects' own colours and widths
+//! viprs plot <drawing.dwg> <out.pdf> --no-defaults            flags only: no variable, no stored default
 //! viprs plot <drawing.dwg> <out-dir> --format pmtiles --dpi 200   one raster archive per sheet
 //! viprs plot <drawing.dwg> <out-dir> --format pvec --layout A-101 only that layout (repeatable)
 //! viprs plot <drawing.dwg> <out-dir> --format pvec --model        model space, one .pvec
@@ -14,7 +16,9 @@
 //! design is the consensus comment on libviprs#1670 (D2, D3, D6). This file parses the arguments, refuses
 //! what has no meaning before anything is written, reads the two plot files through the core's loaders
 //! (`load_plot_style` and `load_pc3`, which hold a file to 1 MiB and what a CTB inflates to to 8 MiB) and
-//! picks the exit code.
+//! picks the exit code. Each of the two plot files walks its own precedence, the flag, then
+//! `LIBVIPRS_PLOT_CTB` / `LIBVIPRS_PLOT_PC3`, then the stored default of `viprs plot-defaults`, then the
+//! built-in one (libviprs-cli#162, `crate::plot_defaults`).
 //!
 //! # Exit codes
 //!
@@ -74,14 +78,22 @@ pub(crate) struct PlotArgs {
     format: Option<Format>,
 
     /// The plot style table (a .ctb), read through the core's loader: at most 1 MiB, and at most 8 MiB
-    /// inflated. Without one the plot draws the objects' own colours and says so.
+    /// inflated. Without one the walk goes on to LIBVIPRS_PLOT_CTB, then the stored default
+    /// (`viprs plot-defaults set`), then the built-in monochrome table. `--ctb none` plots the objects' own
+    /// colours and widths.
     #[arg(long, value_name = "FILE")]
     ctb: Option<PathBuf>,
 
     /// The plotter config (a .pc3, JSON or binary). Its paper and printable area fill what a layout's
-    /// own page setup leaves empty, and never replace what it says. A usage error without `--ctb`.
-    #[arg(long, value_name = "FILE", requires = "ctb")]
+    /// own page setup leaves empty, and never replace what it says. Without one the walk goes on to
+    /// LIBVIPRS_PLOT_PC3, then the stored default, then the built-in PDF device, and it needs no `--ctb`.
+    #[arg(long, value_name = "FILE")]
     pc3: Option<PathBuf>,
+
+    /// Skip LIBVIPRS_PLOT_CTB, LIBVIPRS_PLOT_PC3 and the stored default, so a run depends on its flags
+    /// alone. `--ctb` and `--pc3` still apply.
+    #[arg(long)]
+    no_defaults: bool,
 
     /// Plot only this paper layout (repeatable), matched with ASCII case ignored. They come out in tab
     /// order. Without it every print layout is plotted.
@@ -227,15 +239,12 @@ pub(crate) fn run(args: PlotArgs) {
 mod imp {
     use super::*;
 
-    use std::io::Read;
-    use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
 
     use libviprs::cad::CadSource;
-    use libviprs::cad::plot_files::{
-        MAX_PLOT_FILE_BYTES, Pc3File, PlotDevice, PlotStyleTable, load_pc3, load_plot_style,
-    };
+    use libviprs::cad::plot_defaults::PlotDefaultFile;
+    use libviprs::cad::plot_files::{PlotStyleTable, default_plot_style};
     use libviprs::pvec::components::StreamSelection;
     use libviprs::pvec::dwg_acadrust::AcadrustProvider;
     use libviprs::pvec::{DwgProvider, SourceUnit, ViewProfile};
@@ -247,6 +256,7 @@ mod imp {
 
     use crate::operational_error;
     use crate::pipeline::{EXIT_INTERRUPTED, install_sigint};
+    use crate::plot_defaults::{Source, describe, device, table, walk};
     use crate::vector::with_causes;
 
     /// `--progress`: the core's sheet events, as lines on stderr.
@@ -274,48 +284,6 @@ mod imp {
                 },
                 _ => {}
             }
-        }
-    }
-
-    /// A plot file's bytes, read through a cap one byte past the core's, so the loader refuses an
-    /// oversize file by its own rule and a huge one is never read whole.
-    fn read_plot_file(path: &Path) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        let read = std::fs::File::open(path).and_then(|f| {
-            f.take(MAX_PLOT_FILE_BYTES as u64 + 1)
-                .read_to_end(&mut bytes)
-        });
-        if let Err(e) = read {
-            operational_error(&format!("cannot read {}: {e}", path.display()));
-        }
-        bytes
-    }
-
-    /// The CTB, loaded through the core.
-    fn load_ctb(path: &Path) -> PlotStyleTable {
-        let name = path
-            .file_name()
-            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        load_plot_style(&name, &read_plot_file(path)).unwrap_or_else(|e| {
-            operational_error(&format!("{}: {e} ({})", path.display(), e.code()))
-        })
-    }
-
-    /// The PC3's device facts, loaded through the core. A binary PC3 is read and kept whole by the
-    /// core but has no media to read, so it fills nothing and says so.
-    fn load_device(path: &Path) -> Option<PlotDevice> {
-        match load_pc3(&read_plot_file(path)) {
-            Ok(Pc3File::Json(pc3)) => Some(PlotDevice::from_pc3(&pc3).unwrap_or_else(|e| {
-                operational_error(&format!("{}: {e} ({})", path.display(), e.code()))
-            })),
-            Ok(_) => {
-                eprintln!(
-                    "note: {} is a binary PC3, which the core keeps but does not read the paper from, so it fills nothing",
-                    path.display()
-                );
-                None
-            }
-            Err(e) => operational_error(&format!("{}: {e} ({})", path.display(), e.code())),
         }
     }
 
@@ -354,12 +322,40 @@ mod imp {
             );
         }
 
-        // The plot files first: a refusal writes nothing.
-        let table = args.ctb.as_deref().map(load_ctb);
-        let device = args.pc3.as_deref().and_then(load_device);
-        if table.is_none() {
-            eprintln!("note: no --ctb given, so the plot draws the objects' own colours");
+        // The plot files first: a refusal writes nothing. Each walks the flag, the variable, the stored
+        // default and the built-in on its own (libviprs-cli#162).
+        let (ctb_pick, pc3_pick) = walk(args.ctb.as_deref(), args.pc3.as_deref(), args.no_defaults);
+        for pick in [&ctb_pick, &pc3_pick] {
+            if let Source::Env(_, path) | Source::Stored(path) = &pick.source
+                && same_file(path, &args.out)
+            {
+                usage_error(
+                    &format!(
+                        "OUT {} is the default file in use ({}), and the plot would overwrite it",
+                        args.out.display(),
+                        path.display()
+                    ),
+                    "give an OUT of its own",
+                );
+            }
         }
+        eprintln!(
+            "note: plot style table: {}",
+            describe(PlotDefaultFile::Ctb, &ctb_pick.source)
+        );
+        eprintln!(
+            "note: plotter config: {}",
+            describe(PlotDefaultFile::Pc3, &pc3_pick.source)
+        );
+        // The built-in table is the core's own for a PDF or a PMTiles plot, which notes that it used it; a
+        // PVEC is handed it, so the same plot is monochrome whichever format it is written in. The built-in
+        // device only fills a layout that has no paper of its own, and model space has no layout.
+        let table = table(&ctb_pick).or_else(|| (format == Format::Pvec).then(default_plot_style));
+        let device = if args.model && matches!(pc3_pick.source, Source::BuiltIn) {
+            None
+        } else {
+            device(&pc3_pick)
+        };
         let settings = PlotSettings {
             device,
             ..PlotSettings::default()
