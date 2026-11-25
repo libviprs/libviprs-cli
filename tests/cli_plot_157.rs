@@ -313,6 +313,80 @@ fn an_out_equal_to_an_input_is_refused_and_the_input_is_left_alone() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A hard link to an input is the input: OUT is refused when it is the drawing, the CTB or the PC3 under another name.
+#[cfg(unix)]
+#[test]
+fn an_out_that_is_a_hard_link_to_an_input_is_refused_and_the_input_is_left_alone() {
+    let dir = scratch("out-hardlink");
+    let (ctb_path, pc3_path) = files(&dir);
+    let drawing = dir.join("copy.dwg");
+    std::fs::copy(sample(), &drawing).unwrap();
+    let before = [&drawing, &ctb_path, &pc3_path].map(|p| std::fs::read(p).unwrap());
+    for (input, case) in [
+        (&drawing, "drawing"),
+        (&ctb_path, "ctb"),
+        (&pc3_path, "pc3"),
+    ] {
+        let link = dir.join(format!("{case}-link.pdf"));
+        std::fs::hard_link(input, &link).unwrap();
+        let out = run(&[
+            "plot",
+            s(&drawing),
+            s(&link),
+            "--format",
+            "pdf",
+            "--ctb",
+            s(&ctb_path),
+            "--pc3",
+            s(&pc3_path),
+        ]);
+        assert_eq!(code(&out), 2, "{case}: {}", stderr(&out));
+    }
+    let after = [&drawing, &ctb_path, &pc3_path].map(|p| std::fs::read(p).unwrap());
+    assert_eq!(before, after, "an input was written through a hard link");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A symlink to an input is refused too, and the link is not replaced by the plot.
+#[cfg(unix)]
+#[test]
+fn an_out_that_is_a_symlink_to_an_input_is_refused_and_the_input_is_left_alone() {
+    let dir = scratch("out-symlink");
+    let (ctb_path, pc3_path) = files(&dir);
+    let drawing = dir.join("copy.dwg");
+    std::fs::copy(sample(), &drawing).unwrap();
+    let before = [&drawing, &ctb_path, &pc3_path].map(|p| std::fs::read(p).unwrap());
+    for (input, case) in [
+        (&drawing, "drawing"),
+        (&ctb_path, "ctb"),
+        (&pc3_path, "pc3"),
+    ] {
+        let link = dir.join(format!("{case}-sym.pdf"));
+        std::os::unix::fs::symlink(input, &link).unwrap();
+        let out = run(&[
+            "plot",
+            s(&drawing),
+            s(&link),
+            "--format",
+            "pdf",
+            "--ctb",
+            s(&ctb_path),
+            "--pc3",
+            s(&pc3_path),
+        ]);
+        assert_eq!(code(&out), 2, "{case}: {}", stderr(&out));
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+    let after = [&drawing, &ctb_path, &pc3_path].map(|p| std::fs::read(p).unwrap());
+    assert_eq!(before, after, "an input was written through a symlink");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A stem is a plain file name, so nothing is written outside OUT.
 #[test]
 fn a_stem_with_a_separator_is_refused() {
@@ -817,6 +891,13 @@ fn pmtiles_writes_one_archive_per_sheet() {
     let names = indexed(&out_dir, "sample_AC1018");
     assert_eq!(names.len(), 1, "{names:?}");
     assert!(names[0].ends_with(".pmtiles"), "{names:?}");
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out_dir.join("sample_AC1018.sheets.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        index["source"], "sample_AC1018.dwg",
+        "the index names the file, not the typed path"
+    );
     let info = run(&["pmtiles", "verify", s(&out_dir.join(&names[0]))]);
     assert_eq!(code(&info), 0, "{}", stderr(&info));
     let _ = std::fs::remove_dir_all(dir);
@@ -862,42 +943,46 @@ fn a_deadline_stops_the_plot_with_exit_1_and_no_file() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Ctrl-C after the first sheet starts cancels cleanly: exit 130, no PDF and no scratch left. If the
-/// plot beat the signal (it finished and exited 0) there was nothing to cancel, and the cell says so.
+/// Ctrl-C after the first sheet starts cancels cleanly: exit 130, no PDF and no scratch left. The signal
+/// goes out on the first "[1/3]" line, before the first page is done, so the plot has something to cancel;
+/// a run that still finishes first is tried again, and the cell fails if none of three is cancelled.
 #[cfg(all(unix, feature = "pvec-convert"))]
 #[test]
 fn ctrl_c_cancels_through_the_token_and_leaves_nothing() {
     let dir = scratch("sigint");
     let out_pdf = dir.join("o.pdf");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_viprs"))
-        .args(["plot", s(&sample()), s(&out_pdf), "--progress"])
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let pid = child.id().to_string();
-    let mut seen = String::new();
-    let mut sent = false;
-    for line in BufReader::new(child.stderr.take().unwrap()).lines() {
-        let line = line.unwrap();
-        seen.push_str(&line);
-        seen.push('\n');
-        if !sent && line.contains("[1/3]") {
-            let kill = Command::new("kill").args(["-INT", &pid]).status().unwrap();
-            assert!(kill.success());
-            sent = true;
+    let mut last = String::new();
+    for _ in 0..3 {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_viprs"))
+            .args(["plot", s(&sample()), s(&out_pdf), "--progress"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id().to_string();
+        let mut seen = String::new();
+        let mut sent = false;
+        for line in BufReader::new(child.stderr.take().unwrap()).lines() {
+            let line = line.unwrap();
+            seen.push_str(&line);
+            seen.push('\n');
+            if !sent && line.contains("[1/3]") {
+                let kill = Command::new("kill").args(["-INT", &pid]).status().unwrap();
+                assert!(kill.success());
+                sent = true;
+            }
         }
+        let status = child.wait().unwrap();
+        assert!(sent, "no progress line before the end:\n{seen}");
+        if status.code() == Some(130) {
+            assert!(!out_pdf.exists());
+            assert_eq!(listing(&dir), Vec::<String>::new());
+            let _ = std::fs::remove_dir_all(dir);
+            return;
+        }
+        last = seen;
+        let _ = std::fs::remove_file(&out_pdf);
     }
-    let status = child.wait().unwrap();
-    assert!(sent, "no progress line before the end:\n{seen}");
-    if status.code() == Some(0) {
-        eprintln!("the plot finished before the signal landed, nothing to cancel");
-        let _ = std::fs::remove_dir_all(dir);
-        return;
-    }
-    assert_eq!(status.code(), Some(130), "{seen}");
-    assert!(!out_pdf.exists());
-    assert_eq!(listing(&dir), Vec::<String>::new());
-    let _ = std::fs::remove_dir_all(dir);
+    panic!("three plots were signalled and none was cancelled (exit 130):\n{last}");
 }
 
 // ---- builds ---------------------------------------------------------------------------------------
