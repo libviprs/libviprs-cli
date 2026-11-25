@@ -1008,6 +1008,44 @@ fn a_bad_default_stops_the_plot_before_anything_is_written() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// OUT is never the stored default either: plotting onto `plot/default.ctb` or `plot/default.pc3` is a usage
+/// error (exit 2), also through a symlink and a hard link, and the stored bytes are as they were.
+#[cfg(all(unix, feature = "pvec-convert"))]
+#[test]
+fn out_is_never_the_stored_default_not_even_through_a_link() {
+    let dir = scratch("out-stored");
+    let cfg = dir.join("cfg");
+    let a = put(&dir, "a.ctb", &ctb(true));
+    let device = pc3([200.0, 100.0], [5.0, 10.0, 195.0, 90.0]);
+    let b = put(&dir, "b.pc3", &device);
+    let out = run(
+        &cfg,
+        &["plot-defaults", "set", "--ctb", s(&a), "--pc3", s(&b)],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let drawing = sample();
+    for (name, bytes) in [("default.ctb", ctb(true)), ("default.pc3", device.clone())] {
+        let target = stored(&cfg, name);
+        let sym = dir.join(format!("sym-{name}.pdf"));
+        std::os::unix::fs::symlink(&target, &sym).unwrap();
+        let hard = dir.join(format!("hard-{name}.pdf"));
+        std::fs::hard_link(&target, &hard).unwrap();
+        for out_path in [target.clone(), sym, hard] {
+            let out = run(
+                &cfg,
+                &["plot", s(&drawing), s(&out_path), "--format", "pdf"],
+            );
+            assert_eq!(code(&out), 2, "{}: {}", out_path.display(), stderr(&out));
+            assert_eq!(
+                std::fs::read(&target).unwrap(),
+                bytes,
+                "{name} was overwritten"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// `--ctb none` is a table choice and needs no `--pc3`, and the two do not conflict.
 #[cfg(feature = "pvec-convert")]
 #[test]

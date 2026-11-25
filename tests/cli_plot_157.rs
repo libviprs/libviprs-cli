@@ -22,19 +22,22 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn run(args: &[&str]) -> Output {
-    // None of the default-plot variables leaks in from the machine running the tests, and the config
-    // directory is one that does not exist (libviprs-cli#162), so a plot here walks to the built-in files.
-    let out = Command::new(env!("CARGO_BIN_EXE_viprs"))
-        .args(args)
-        .env_remove("LIBVIPRS_PLOT_CTB")
+/// A viprs command that no stored default or default-plot variable of the machine running the tests can
+/// reach: the config directory is one that does not exist (libviprs-cli#162), so a plot walks to the
+/// built-in files. Every spawn in this file goes through it.
+fn viprs() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_viprs"));
+    cmd.env_remove("LIBVIPRS_PLOT_CTB")
         .env_remove("LIBVIPRS_PLOT_PC3")
         .env(
             "LIBVIPRS_CONFIG_DIR",
             std::env::temp_dir().join(format!("viprs-plot-157-no-config-{}", std::process::id())),
-        )
-        .output()
-        .expect("viprs must spawn");
+        );
+    cmd
+}
+
+fn run(args: &[&str]) -> Output {
+    let out = viprs().args(args).output().expect("viprs must spawn");
     // A binary with no `plot` command exits 2 too, which would pass every usage cell for the wrong reason.
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -971,7 +974,7 @@ fn ctrl_c_cancels_through_the_token_and_leaves_nothing() {
     let out_pdf = dir.join("o.pdf");
     let mut last = String::new();
     for _ in 0..3 {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_viprs"))
+        let mut child = viprs()
             .args(["plot", s(&sample()), s(&out_pdf), "--progress"])
             .stderr(Stdio::piped())
             .spawn()
