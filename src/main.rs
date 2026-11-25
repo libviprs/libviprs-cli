@@ -50,6 +50,8 @@ mod paths;
 /// `viprs pdf`, `viprs geo` and the planner query flags (#68).
 mod pdf_geo_plan;
 mod plot;
+/// `viprs plot-defaults` and the precedence walk of `viprs plot` (libviprs-cli#162).
+mod plot_defaults;
 
 /// The pipeline controls on `viprs pyramid`, and `viprs verify`
 /// (libviprs-cli#66).
@@ -155,6 +157,16 @@ enum Command {
     /// repeatable, `--model` plots model space as a PVEC, and `--layer-state NAME` applies a saved layer
     /// state first. It needs the `pvec-convert` feature, and PMTiles the `pdfium` one.
     Plot(Box<plot::PlotArgs>),
+
+    /// Write, store, show and clear the default plot style table and plotter config.
+    ///
+    /// `viprs plot-defaults write DIR` puts the built-in `.ctb` and `.pc3` in DIR as real files, `set` stores
+    /// copies of your own under the config directory (`LIBVIPRS_CONFIG_DIR`, else XDG or HOME, a relative
+    /// value ignored), `show` says which level each file comes from, and `clear` removes the stored pair.
+    /// `viprs plot` walks each file on its own: the flag, then `LIBVIPRS_PLOT_CTB` / `LIBVIPRS_PLOT_PC3`, then
+    /// the stored default, then the built-in; `--no-defaults` skips the middle two. It needs the
+    /// `pvec-convert` feature.
+    PlotDefaults(Box<plot_defaults::PlotDefaultsArgs>),
 }
 
 #[derive(Parser)]
@@ -1142,7 +1154,7 @@ fn main() {
     match matches.subcommand() {
         Some((
             "pyramid" | "info" | "plan" | "test-image" | "pmtiles" | "features" | "pdf" | "geo"
-            | "verify" | "vector" | "pvec" | "plot",
+            | "verify" | "vector" | "pvec" | "plot" | "plot-defaults",
             _,
         )) => {
             let cli = Cli::from_arg_matches(&matches)
@@ -1160,6 +1172,7 @@ fn main() {
                 Command::Vector(args) => vector::run(*args),
                 Command::Pvec(args) => pvec_raster::run(*args),
                 Command::Plot(args) => plot::run(*args),
+                Command::PlotDefaults(args) => plot_defaults::run(*args),
             }
         }
         Some(("__dump-commands", sub)) => ops::run_dump(sub),

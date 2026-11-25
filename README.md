@@ -77,7 +77,7 @@ cargo install --path .
 | `dwg-acadrust` (default) | the default DWG reader behind `viprs vector views`, `build` and `report`: the pure Rust acadrust reader, no native library (see [`viprs vector`](#viprs-vector)) |
 | `dwg-acadsharp` | the experimental DWG reader, chosen with `viprs vector ... --provider acadsharp` (ACadSharp through `acadsharp-rs`, over a native library). In `full`, not in the default set |
 | `pvec-raster` (default) | the `.pvec` raster commands, `viprs pyramid --storage pvec`, `viprs pmtiles to-pvec` and `viprs pvec rasters`, and the read side, `viprs pvec info`, `validate`, `text` and `calibrate` (see [`viprs pvec`](#viprs-pvec)) |
-| `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout, and `viprs pvec layouts` (see [`viprs pvec`](#viprs-pvec)), and `viprs plot` (see [`viprs plot`](#viprs-plot)); turns `dwg-acadrust` on |
+| `pvec-convert` (default) | `viprs pvec convert`, a DWG to one `.pvec` per paper layout, and `viprs pvec layouts` (see [`viprs pvec`](#viprs-pvec)), and `viprs plot` and `viprs plot-defaults` (see [`viprs plot`](#viprs-plot) and [`viprs plot-defaults`](#viprs-plot-defaults)); turns `dwg-acadrust` on |
 | `pvec-export` | `viprs pvec export`, a `.pvec` as GML, GeoPackage, a vector tile, a PMTiles archive or STEP, with PVec's fidelity report (see [`viprs pvec`](#viprs-pvec)). In `full`, not in the default set; turns `pvec-raster` on |
 | `pvec-raster-thumbnail` | `viprs pvec thumbnail` and `viprs pvec convert --thumbnail`, a PNG of a sheet with strokes only (no text, no fills). In `full`, not in the default set; turns `pvec-convert` and `svg` on |
 | `object-store-sink` | the `object-store://` sink, which writes the object-store key layout into a directory and uploads nothing |
@@ -445,6 +445,9 @@ Under `--storage pvec` the grid is the un-centred Google grid and nothing else: 
 ```bash
 viprs plot plan.dwg plan.pdf                                 # every print layout, one PDF page each
 viprs plot plan.dwg plan.pdf --ctb mono.ctb --pc3 pdf.pc3    # with a plot style table and a plotter
+viprs plot plan.dwg plan.pdf --pc3 pdf.pc3                   # a plotter alone: the table is the built-in monochrome one
+viprs plot plan.dwg plan.pdf --ctb none                      # the objects' own colours and widths
+viprs plot plan.dwg plan.pdf --no-defaults                   # flags only: no variable, no stored default
 viprs plot plan.dwg plan.pdf --layout A-101 --layout A-102   # only those (repeatable), in tab order
 viprs plot plan.dwg tiles/ --format pmtiles --dpi 200        # one PMTiles archive per layout (needs pdfium)
 viprs plot plan.dwg sheets/ --format pvec --ctb mono.ctb     # one .pvec per layout
@@ -454,11 +457,29 @@ viprs plot plan.dwg plan.pdf --progress --deadline 600
 
 OUT is the PDF itself for `--format pdf`, which is what an OUT ending in `.pdf` means when no `--format` is given, and a directory (created when it does not exist) for `pmtiles` and `pvec`, where each sheet is `<stem>.<NN>-<slug>.<ext>` and `<stem>.sheets.json` is written last. Nothing is written outside OUT, a `--stem` is a plain file name, OUT can never be the drawing, the CTB or the PC3 (exit 2), and every write goes to a name of its own and is renamed into place, so a plot that fails leaves what was at OUT as it was.
 
-`--ctb` and `--pc3` go through the core's loaders and never get read any other way: a file over 1 MiB, or a CTB that inflates past 8 MiB, is refused with exit 1 and the core's code (`plot-file-too-large`, `plot-file-inflated-too-large`, `plot-file-unrecognised`). `--pc3` without `--ctb` is a usage error (exit 2). A layout's own page setup wins over the PC3, which only fills what the layout leaves empty (paper, printable area); a plot with no `--ctb` draws the objects' own colours and says so on stderr.
+`--ctb` and `--pc3` go through the core's loaders and never get read any other way: a file over 1 MiB, or a CTB that inflates past 8 MiB, is refused with exit 1 and the core's code (`plot-file-too-large`, `plot-file-inflated-too-large`, `plot-file-unrecognised`). `--pc3` without `--ctb` is a plot like any other, since each file has its own default (libviprs-cli#162). A layout's own page setup wins over the PC3, which only fills what the layout leaves empty (paper, printable area).
+
+Each of the two files walks its own precedence: the flag (`--ctb`, `--pc3`), then the variable (`LIBVIPRS_PLOT_CTB`, `LIBVIPRS_PLOT_PC3`, a path), then the pair stored with [`viprs plot-defaults set`](#viprs-plot-defaults), then the built-in one. With none of them a plot is monochrome: every stroke, text and fill black at 0.25 mm (the built-in table, which the core applies itself and notes as `plot-style-default-monochrome`, and which a `--format pvec` plot is handed too), on the built-in PDF device. `--ctb none` is the table's way out of that: the objects' own colours and widths, whatever else is set (a file really named `none` is `./none`). `--no-defaults` skips the variables and the stored pair and never a flag. Two `note:` lines on stderr say which table and which plotter config were used and where each came from. A variable that names a file that is not there, or a stored file that no longer loads (`plot-default-unreadable`), exits 1 and nothing is written, rather than falling back to the next level without saying.
 
 `--layer-state NAME` applies a layer state the drawing stores, under its mask, with the name matched with ASCII case ignored. A name the drawing does not store exits 1 and lists the ones it does, before anything is written. With `--model` and no state, the layer table as the drawing saved it decides what is drawn. The core plots model space as a PVEC only, so `--model` needs `--format pvec` (exit 1 otherwise, naming it); PDF and PMTiles are paper layouts. A PMTiles archive is the plotted page rendered at `--dpi` (36 to 600, 300 by default) and cut into tiles, strokes only for now, and it needs the `pdfium` feature (exit 1, naming it, without).
 
 `--progress` prints `[2/64] A-101 started` and `[2/64] A-101 written` lines on stderr, and `--deadline SECONDS` stops the plot at the next check with exit 1 and the code `DEADLINE`. Ctrl-C stops it through the core's cancel token: exit 130, no PDF and no scratch directory left (a PVEC set keeps the sheets it had already published and writes no index). Exit codes are the usual ones: 1 for a failed sheet, a refused plot file, an unknown layout or layer state, a limit or the deadline, or a missing feature; 2 for a usage mistake. It needs the `pvec-convert` feature, on by default.
+
+### `viprs plot-defaults`
+
+`viprs plot-defaults` keeps the default plot style table (a `.ctb`) and plotter config (a `.pc3`) that `viprs plot` uses when it is given none (libviprs-cli#162, step 7 of the plan on libviprs#1670, on the core's `cad::plot_defaults`):
+
+```bash
+viprs plot-defaults write ./defaults                          # libviprs-monochrome.ctb and libviprs-pdf.pc3, as real files
+viprs plot-defaults set --ctb office.ctb --pc3 office.pc3     # store copies; later plots use them
+viprs plot-defaults show                                      # the directory, and where each file comes from
+viprs plot-defaults show --json --no-defaults --ctb none      # what a plot with those flags would walk to
+viprs plot-defaults clear --ctb                               # remove the stored table (both without a flag)
+```
+
+`write` puts the two built-in files in the directory (created when it does not exist). It keeps a file that is already there unless `--force`, never writes through a symlink, and writes each file to a name of its own and renames it into place. `set` reads each file through the core's loaders (1 MiB, 8 MiB inflated) and stores nothing unless both pass the checks a plot makes: an STB applies nothing and a PC3 with no readable device facts has nothing to give, so both are refused, with the core's codes. The copies keep their bytes under fixed names, `plot/default.ctb` and `plot/default.pc3`, in a directory that is 0700 and files that are 0600 on unix, and your own file names are never used. The two files are the whole state, so you can also drop them in by hand. `show` loads each file the way a plot does, and `--json` prints `{"config_dir", "ctb": {"source", "path"}, "pc3": {...}}` where the source is `flag`, `env`, `stored`, `built-in` or `none`. `clear` removes what was stored and nothing else, and says so when there was nothing.
+
+The config directory is `LIBVIPRS_CONFIG_DIR` itself when it is an absolute path, else `$XDG_CONFIG_HOME/libviprs` or `~/.config/libviprs` (Linux and anything else), `~/Library/Application Support/libviprs` (macOS) or `%APPDATA%\libviprs` (Windows). A relative value is ignored, and with no absolute one `set` and `clear` exit 1 and name `LIBVIPRS_CONFIG_DIR`. Nothing creates the directory but `set`: a plot only reads it, and a stored file that no longer loads, or a symlink where one belongs, is an error (`plot-default-unreadable`, `plot-default-unsafe`), never a quiet fall back to the built-in. Exit codes: 0, 1 for a refused file, a missing file named by a variable or an unusable directory, 2 for a usage mistake (`set` with no file). It needs the `pvec-convert` feature, on by default.
 
 ### `viprs features`
 
