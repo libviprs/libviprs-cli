@@ -326,13 +326,14 @@ mod imp {
         // default and the built-in on its own (libviprs-cli#162).
         let (ctb_pick, pc3_pick) = walk(args.ctb.as_deref(), args.pc3.as_deref(), args.no_defaults);
         for pick in [&ctb_pick, &pc3_pick] {
-            if let Source::Env(var, path) = &pick.source
+            if let Source::Env(_, path) | Source::Stored(path) = &pick.source
                 && same_file(path, &args.out)
             {
                 usage_error(
                     &format!(
-                        "OUT {} is the file {var} names, and the plot would overwrite it",
-                        args.out.display()
+                        "OUT {} is the default file in use ({}), and the plot would overwrite it",
+                        args.out.display(),
+                        path.display()
                     ),
                     "give an OUT of its own",
                 );

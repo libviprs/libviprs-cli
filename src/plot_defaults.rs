@@ -144,6 +144,7 @@ mod imp {
     use std::fs;
     use std::io::{ErrorKind, Read, Write};
     use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use libviprs::cad::plot_defaults::{self, PlotDefaultFile};
     use libviprs::cad::plot_files::{
@@ -360,12 +361,20 @@ mod imp {
         for (name, bytes) in &files {
             let target = dir.join(name);
             let scratch = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+            // Without --force the file goes into place with a hard link, which fails when something
+            // appeared at the target since the check above, instead of a rename that would replace it.
             let written = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&scratch)
                 .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
-                .and_then(|()| fs::rename(&scratch, &target));
+                .and_then(|()| {
+                    if force {
+                        fs::rename(&scratch, &target)
+                    } else {
+                        fs::hard_link(&scratch, &target).and_then(|()| fs::remove_file(&scratch))
+                    }
+                });
             if let Err(e) = written {
                 let _ = fs::remove_file(&scratch);
                 operational_error(&format!("cannot write {}: {e}", target.display()));
@@ -393,11 +402,7 @@ mod imp {
             })
         })
         .collect();
-        let check =
-            std::env::temp_dir().join(format!("viprs-plot-defaults-{}", std::process::id()));
-        if let Err(e) = fs::create_dir(&check) {
-            operational_error(&format!("cannot make {}: {e}", check.display()));
-        }
+        let check = scratch_dir();
         let refused = items.iter().find_map(|(which, path, bytes)| {
             plot_defaults::store(&check, *which, bytes)
                 .err()
@@ -417,6 +422,31 @@ mod imp {
                 dir.join("plot").join(stored_name(*which)).display()
             );
         }
+    }
+
+    /// A scratch directory of our own: a name no other process or earlier call has (process id, clock and
+    /// a counter), made with `create_dir` so an existing one is never reused, and 0700 on unix.
+    fn scratch_dir() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        for _ in 0..16 {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let path = std::env::temp_dir().join(format!(
+                "viprs-plot-defaults-{}-{nanos:x}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            match builder.create(&path) {
+                Ok(()) => return path,
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+                Err(e) => operational_error(&format!("cannot make {}: {e}", path.display())),
+            }
+        }
+        operational_error("cannot find an unused scratch directory name")
     }
 
     /// `show`: the walk, with each file loaded the way a plot would load it.
