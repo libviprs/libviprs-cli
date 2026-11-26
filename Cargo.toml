@@ -1,6 +1,6 @@
 [package]
 name = "libviprs-cli"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 authors = ["Roman Goldmann <roman@devshell.org>"]
 rust-version = "1.99"
@@ -118,7 +118,7 @@ ctrlc = "3"
 # Pinned by rev; never from a registry. The core's own
 # default features are off here, so `dwg-acadrust` above is what turns the
 # default reader on, the way `pdfium` does for PDFium.
-libviprs = { git = "https://github.com/libviprs/libviprs", rev = "dbb4d2bf397c8c9c0395f28d96e36fcf0b284e10", default-features = false }
+libviprs = { git = "https://github.com/libviprs/libviprs", rev = "2eec3ab76f370b00610e91777344001adddb2a2f", default-features = false }
 # PVec's facade and capability registry, for `viprs pyramid --storage pvec`, `viprs pmtiles
 # to-pvec` and `viprs pvec rasters` (libviprs-cli#130). The revision is the one the core pins
 # (`pvec-facade` in libviprs's own Cargo.toml), so both name one `PvecWriter`; moving it means
@@ -143,7 +143,7 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 # `tests/cli_plot_157.rs` writes its model-space drawing with acadrust, the same fork at the same revision
 # the core pins, and reads the plotted PDFs with lopdf and builds a CTB that inflates past the bound with
 # flate2: no real drawing is committed, every file is made in the test (libviprs-cli#157).
-acadrust = { git = "https://github.com/libviprs/acadrust", rev = "5bf63c7b1653fbb5a51f2f8a5a5a3f01a567c094", version = "0.6.8" }
+acadrust = { git = "https://github.com/libviprs/acadrust", rev = "ceccd10e2a875138034664e61af3b8c7ce9408ff", version = "0.6.8" }
 flate2 = "1"
 lopdf = "0.36"
 # The independent checks of `viprs pvec export` (libviprs-cli#154): a real SQLite opens the GeoPackage and an

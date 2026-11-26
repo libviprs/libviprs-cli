@@ -21,7 +21,7 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 [[package]]
 name = "acadrust"
 version = "0.6.8"
-source = "git+https://github.com/libviprs/acadrust?rev=5bf63c7b1653fbb5a51f2f8a5a5a3f01a567c094#5bf63c7b1653fbb5a51f2f8a5a5a3f01a567c094"
+source = "git+https://github.com/libviprs/acadrust?rev=ceccd10e2a875138034664e61af3b8c7ce9408ff#ceccd10e2a875138034664e61af3b8c7ce9408ff"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -31,6 +31,7 @@ dependencies = [
  "foldhash",
  "indexmap",
  "itoa",
+ "memchr",
  "memmap2",
  "nom 7.1.3",
  "oem_cp",
@@ -1473,8 +1474,8 @@ dependencies = [
 
 [[package]]
 name = "libviprs"
-version = "0.6.1"
-source = "git+https://github.com/libviprs/libviprs?rev=dbb4d2bf397c8c9c0395f28d96e36fcf0b284e10#dbb4d2bf397c8c9c0395f28d96e36fcf0b284e10"
+version = "0.7.0"
+source = "git+https://github.com/libviprs/libviprs?rev=2eec3ab76f370b00610e91777344001adddb2a2f#2eec3ab76f370b00610e91777344001adddb2a2f"
 dependencies = [
  "ab_glyph",
  "acadrust",
@@ -1518,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "libviprs-cli"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "acadrust",
  "anyhow",
